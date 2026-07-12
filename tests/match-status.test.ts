@@ -6,8 +6,10 @@ describe("match status presentation mapping", () => {
     ["0", "scheduled", "未赛"],
     ["1", "live", "进行"],
     ["2", "halftime", "中场"],
+    ["3", "live", "进行"],
+    ["45", "live", "进行"],
     ["-1", "finished", "完场"],
-    ["3", "unknown", "未知"],
+    ["-10", "unknown", "未知"],
     ["", "unknown", "未知"],
     [undefined, "unknown", "未知"],
     ["unexpected", "unknown", "未知"],
@@ -19,8 +21,9 @@ describe("match status presentation mapping", () => {
     expect(getMatchRowClass("0")).toBe("match-row--scheduled");
     expect(getMatchRowClass("1")).toBe("match-row--live");
     expect(getMatchRowClass("2")).toBe("match-row--halftime");
+    expect(getMatchRowClass("3")).toBe("match-row--live");
     expect(getMatchRowClass("-1")).toBe("match-row--finished");
-    expect(getMatchRowClass("3")).toBe("match-row--unknown");
+    expect(getMatchRowClass("-10")).toBe("match-row--unknown");
   });
 });
 

@@ -22,9 +22,9 @@ export type MatchStatus = {
 export function getMatchStatus(rawState: string | null | undefined): MatchStatus {
   const state = rawState ?? "";
   if (state === "0") return { kind: "scheduled", label: "未赛", rawState: state, Icon: Clock3 };
-  if (state === "1") return { kind: "live", label: "进行", rawState: state, Icon: Radio };
   if (state === "2") return { kind: "halftime", label: "中场", rawState: state, Icon: Pause };
   if (state === "-1") return { kind: "finished", label: "完场", rawState: state, Icon: CircleCheck };
+  if (/^[1-9]\d*$/.test(state)) return { kind: "live", label: "进行", rawState: state, Icon: Radio };
   return { kind: "unknown", label: "未知", rawState: state, Icon: CircleHelp };
 }
 
