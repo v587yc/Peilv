@@ -86,8 +86,27 @@ jobs:
           ssh -i ~/.ssh/audit_key -p "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
-            "sudo /usr/local/sbin/peilv-control preflight '$RELEASE_ID' '$migrations'" \
-            | tee preflight.md
+            bash -s -- "$RELEASE_ID" "$migrations" <<'REMOTE' | tee preflight.md
+          set -Eeuo pipefail
+          release_id="$1"
+          migrations="$2"
+          for _ in {1..90}; do
+            status=0
+            output="$(sudo -n /usr/local/sbin/peilv-control preflight "$release_id" "$migrations" 2>&1)" || status=$?
+            if (( status == 0 )); then
+              printf '%s\n' "$output"
+              exit 0
+            fi
+            if grep -Fxq 'A peilv systemd job is currently running' <<<"$output"; then
+              sleep 5
+              continue
+            fi
+            printf '%s\n' "$output" >&2
+            exit "$status"
+          done
+          printf 'Timed out waiting for peilv systemd jobs to finish\n' >&2
+          exit 1
+          REMOTE
           [[ -s preflight.md ]]
           cat preflight.md >> "$GITHUB_STEP_SUMMARY"
           {
