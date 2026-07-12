@@ -253,6 +253,11 @@ ln -s "$release_dir" "$base/current.next"
 mv -Tf "$base/current.next" "$base/current"
 switched=1
 systemctl start peilv.service
+for _ in {1..30}; do
+  curl -fsS http://127.0.0.1:5000/ >/dev/null 2>&1 && break
+  systemctl is-failed --quiet peilv.service && break
+  sleep 1
+done
 
 [[ "$(readlink -f "$base/current")" == "$release_dir" ]]
 [[ "$(systemctl is-active peilv.service)" == active ]]
