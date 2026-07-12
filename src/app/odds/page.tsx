@@ -1065,6 +1065,25 @@ function isAutomationCompensationAvailable(now = new Date()): boolean {
   return hour > 12 || (hour === 12 && minute >= 2);
 }
 
+function previousBeijingDateKey(now = new Date()): string {
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+  const beijingYesterday = new Date(utcMs + 8 * 60 * 60000);
+  beijingYesterday.setDate(beijingYesterday.getDate() - 1);
+  return beijingYesterday.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+async function syncHistoricalScores(dateKey: string): Promise<{ persistedResults: number; status: string }> {
+  const response = await fetch(`/api/schedule?date=${dateKey}&mode=history`);
+  const json = await response.json();
+  if (!response.ok || !json.success) {
+    throw new Error(json.error || "赛果同步失败");
+  }
+  return {
+    persistedResults: Number(json.data?.ingestion?.persistence?.persistedResults || json.data?.ingestion?.cached?.finishedResultCount || 0),
+    status: String(json.data?.ingestion?.status || "unknown"),
+  };
+}
+
 function automationTaskLabel(type: AutomationTaskStatusData["taskType"]): string {
   return {
     "odds-fetch": "赔率抓取",
@@ -4319,21 +4338,16 @@ export default function OddsMonitorPage() {
                   <button
                     className="w-full text-left text-[11px] text-blue-400 hover:bg-gray-800 px-2 py-1.5 rounded"
                     onClick={async () => {
-                      const now = new Date();
-                      const beijingOffset = 8 * 60;
-                      const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-                      const beijingNow = new Date(utcMs + beijingOffset * 60000);
-                      const yesterday = new Date(beijingNow);
-                      yesterday.setDate(yesterday.getDate() - 1);
-                      const yd = yesterday.toISOString().slice(0, 10).replace(/-/g, "");
+                      const yd = previousBeijingDateKey();
                       try {
+                        const scoreSync = await syncHistoricalScores(yd);
                         const vr = await fetch(`/api/analysis/verify?startDate=${yd}&endDate=${yd}`);
                         const vj = await vr.json();
                         const [handicapLearn, totalLearn] = await Promise.all(["handicap", "total"].map(market => fetch("/api/analysis/learn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ market, league: "ALL", minSamples: 3 }) })));
                         const [handicapResult, totalResult] = await Promise.all([handicapLearn.json(), totalLearn.json()]);
                         const learnedPatterns = (handicapResult.patternsFound || 0) + (totalResult.patternsFound || 0);
                         await loadEvolutionStats();
-                        toast.success("验证与学习完成", { description: `验证 ${vj.verified || 0} 场 · 命中 ${vj.correct || 0} 场 · 新增 ${learnedPatterns} 个模式` });
+                        toast.success("验证与学习完成", { description: `同步赛果 ${scoreSync.persistedResults} 场 · 验证 ${vj.verified || 0} 场 · 命中 ${vj.correct || 0} 场 · 新增 ${learnedPatterns} 个模式` });
                       } catch (err) { toast.error("验证学习失败", { description: err instanceof Error ? err.message : "网络请求失败", duration: 8000 }); }
                     }}
                   >
@@ -6677,21 +6691,15 @@ export default function OddsMonitorPage() {
               <button
                 className="text-[11px] text-gray-500 hover:text-blue-400 transition-colors"
                 onClick={async () => {
-                  // Verify yesterday's predictions then learn
-                  const now = new Date();
-                  const beijingOffset = 8 * 60;
-                  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-                  const beijingNow = new Date(utcMs + beijingOffset * 60000);
-                  const yesterday = new Date(beijingNow);
-                  yesterday.setDate(yesterday.getDate() - 1);
-                  const yd = yesterday.toISOString().slice(0, 10).replace(/-/g, "");
+                  const yd = previousBeijingDateKey();
                   try {
+                    const scoreSync = await syncHistoricalScores(yd);
                     const vr = await fetch(`/api/analysis/verify?startDate=${yd}&endDate=${yd}`);
                     const vj = await vr.json();
                     const lr = await fetch("/api/analysis/learn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ league: "ALL", minSamples: 3 }) });
                     const lj = await lr.json();
                     await loadEvolutionStats();
-                    toast.success("验证与学习完成", { description: `验证 ${vj.verified || 0} 场 · 命中 ${vj.correct || 0} 场 · 新增 ${lj.patternsFound || 0} 个模式` });
+                    toast.success("验证与学习完成", { description: `同步赛果 ${scoreSync.persistedResults} 场 · 验证 ${vj.verified || 0} 场 · 命中 ${vj.correct || 0} 场 · 新增 ${lj.patternsFound || 0} 个模式` });
                   } catch (err) { toast.error("验证学习失败", { description: err instanceof Error ? err.message : "网络请求失败", duration: 8000 }); }
                 }}
               >

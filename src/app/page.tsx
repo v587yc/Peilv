@@ -1,4 +1,8 @@
 import Link from "next/link";
+import packageJson from "../../package.json";
+
+const buildSha = process.env.GITHUB_SHA || process.env.VERCEL_GIT_COMMIT_SHA || "";
+const appVersion = `${packageJson.version}${buildSha ? ` · ${buildSha.slice(0, 7)}` : ""}`;
 
 const entries = [
   {
@@ -66,8 +70,9 @@ export default function Home() {
           ))}
         </section>
 
-        <footer className="mt-auto pt-10 text-xs text-muted-foreground">
-          入口页不会自动跳转；需要默认打开监控时使用 <Link href="/odds" className="text-cyan-400 hover:text-cyan-300">/odds</Link>。
+        <footer className="mt-auto flex flex-wrap items-center justify-between gap-3 pt-10 text-xs text-muted-foreground">
+          <span>入口页不会自动跳转；需要默认打开监控时使用 <Link href="/odds" className="text-cyan-400 hover:text-cyan-300">/odds</Link>。</span>
+          <span className="rounded-full border border-border bg-card px-3 py-1 font-mono text-[11px] text-foreground">版本 v{appVersion}</span>
         </footer>
       </div>
     </main>
