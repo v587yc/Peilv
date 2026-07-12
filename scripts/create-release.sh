@@ -20,6 +20,8 @@ required=(
   next.config.ts
   scripts/start.sh
   scripts/reconcile-automation.sh
+  infra/local-data/compose.yml
+  infra/local-data/nginx/default.conf
 )
 
 for path in "${required[@]}"; do
@@ -56,10 +58,13 @@ trap 'rm -rf "$stage_dir"' EXIT
 ) | tar -xf - -C "$stage_dir"
 cp -a public "$stage_dir/public"
 cp -a migrations "$stage_dir/migrations"
-mkdir -p "$stage_dir/dist" "$stage_dir/scripts"
+mkdir -p "$stage_dir/dist" "$stage_dir/scripts" "$stage_dir/infra/local-data/nginx" "$stage_dir/infra/local-data/sql"
 cp dist/server.js "$stage_dir/dist/server.js"
 cp package.json pnpm-lock.yaml .npmrc next.config.ts "$stage_dir/"
 cp scripts/start.sh scripts/reconcile-automation.sh "$stage_dir/scripts/"
+cp infra/local-data/compose.yml "$stage_dir/infra/local-data/compose.yml"
+cp infra/local-data/nginx/default.conf "$stage_dir/infra/local-data/nginx/default.conf"
+cp infra/local-data/sql/*.sql "$stage_dir/infra/local-data/sql/"
 
 tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
   -czf "$archive" -C "$stage_dir" .

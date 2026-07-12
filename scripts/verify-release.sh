@@ -62,6 +62,8 @@ required=(
   next.config.ts
   scripts/start.sh
   scripts/reconcile-automation.sh
+  infra/local-data/compose.yml
+  infra/local-data/nginx/default.conf
 )
 
 members="$(normalize_members)"
