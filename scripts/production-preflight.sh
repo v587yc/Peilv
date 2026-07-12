@@ -8,7 +8,7 @@ if [[ ! "$release_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
   printf 'Invalid release ID\n' >&2
   exit 1
 fi
-if [[ -n "$migration_csv" && ! "$migration_csv" =~ ^[0-9A-Za-z._-]+\.sql(,[0-9A-Za-z._-]+\.sql)*$ ]]; then
+if [[ -n "$migration_csv" && ! "$migration_csv" =~ ^[0-9A-Za-z._-]+\.sql(=[0-9A-Za-z._-]+)?(,[0-9A-Za-z._-]+\.sql(=[0-9A-Za-z._-]+)?)*$ ]]; then
   printf 'Invalid migration list\n' >&2
   exit 1
 fi
@@ -61,9 +61,24 @@ mapfile -t applied_versions < <(
 pending=()
 if [[ -n "$migration_csv" ]]; then
   IFS=',' read -r -a migration_files <<<"$migration_csv"
-  for migration in "${migration_files[@]}"; do
-    version="${migration%.sql}"
-    if ! printf '%s\n' "${applied_versions[@]}" | grep -Fxq "$version"; then
+  for migration_entry in "${migration_files[@]}"; do
+    migration="${migration_entry%%=*}"
+    version="${migration_entry#*=}"
+    if [[ "$version" == "$migration_entry" ]]; then
+      version="${migration%.sql}"
+    fi
+    aliases=("$version")
+    if [[ "$migration" == "0001_production_baseline.sql" ]]; then
+      aliases+=("0001_canonical_baseline")
+    fi
+    found=0
+    for alias in "${aliases[@]}"; do
+      if printf '%s\n' "${applied_versions[@]}" | grep -Fxq "$alias"; then
+        found=1
+        break
+      fi
+    done
+    if (( found == 0 )); then
       pending+=("$migration")
     fi
   done

@@ -81,8 +81,8 @@ tar -xzf "$archive" -C "$extract_dir" --no-same-owner --no-same-permissions
 
 while IFS= read -r migration; do
   name="$(basename "$migration")"
-  version="${name%.sql}"
-  if [[ ! "$name" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ ]] || ! grep -Fq "'$version'" "$migration"; then
+  version="$(sed -n '/INSERT INTO schema_migrations(version, description)/,/ON CONFLICT/p' "$migration" | sed -nE "0,/^[[:space:]]*'([^']+)'[[:space:]]*,?[[:space:]]*$/s//\\1/p" | head -n 1)"
+  if [[ ! "$name" =~ ^[0-9]{4}_[a-z0-9_]+\.sql$ || -z "$version" ]]; then
     printf 'Migration filename or registered version is invalid: %s\n' "$name" >&2
     exit 1
   fi

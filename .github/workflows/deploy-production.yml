@@ -97,7 +97,8 @@ jobs:
             member="${member#./}"
             [[ "$member" == migrations/*.sql ]] || continue
             name="${member##*/}"
-            migrations="${migrations:+$migrations,}$name"
+            version="$(tar -xOzf "$archive" "$member" | sed -n '/INSERT INTO schema_migrations(version, description)/,/ON CONFLICT/p' | sed -nE "0,/^[[:space:]]*'([^']+)'[[:space:]]*,?[[:space:]]*$/s//\\1/p" | head -n 1)"
+            migrations="${migrations:+$migrations,}$name=$version"
           done < <(tar -tzf "$archive")
           ssh -i ~/.ssh/audit_key -p "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \

@@ -190,9 +190,24 @@ backup_sha="$(sha256sum "$backup" | awk '{print $1}')"
 mapfile -t migrations < <(find "$release_dir/migrations" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
 applied=()
 for migration in "${migrations[@]}"; do
-  version="${migration%.sql}"
-  if docker exec local-data-postgres-1 sh -lc \
-    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$version" | grep -Fxq 1; then
+  version="$(sed -n '/INSERT INTO schema_migrations(version, description)/,/ON CONFLICT/p' "$release_dir/migrations/$migration" | sed -nE "0,/^[[:space:]]*'([^']+)'[[:space:]]*,?[[:space:]]*$/s//\\1/p" | head -n 1)"
+  if [[ -z "$version" ]]; then
+    printf 'Unable to determine migration version: %s\n' "$migration" >&2
+    exit 1
+  fi
+  aliases=("$version")
+  if [[ "$migration" == "0001_production_baseline.sql" ]]; then
+    aliases+=("0001_canonical_baseline")
+  fi
+  already_applied=0
+  for alias in "${aliases[@]}"; do
+    if docker exec local-data-postgres-1 sh -lc \
+      'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$alias" | grep -Fxq 1; then
+      already_applied=1
+      break
+    fi
+  done
+  if (( already_applied == 1 )); then
     continue
   fi
 
