@@ -41,6 +41,7 @@ jobs:
       - name: Download artifact from latest preflight if needed
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_ID: ${{ inputs.release_id }}
         run: |
           if [[ -f "release-artifacts/peilv-$RELEASE_ID.tar.gz" ]]; then
