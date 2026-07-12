@@ -50,7 +50,7 @@ jobs:
           rm -rf release-artifacts
           mkdir -p release-artifacts
           run_id="$(gh run list --workflow production-preflight.yml --branch main --status success --limit 20 --json databaseId --jq '.[].databaseId' | while read -r id; do
-            if gh run download "$id" -n "production-'"$RELEASE_ID"'" -D release-artifacts >/dev/null 2>&1; then
+            if gh run download "$id" -n "production-$RELEASE_ID" -D release-artifacts >/dev/null 2>&1; then
               echo "$id"
               break
             fi
