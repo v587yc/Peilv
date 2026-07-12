@@ -5,7 +5,7 @@ import { sendFeishuAIAnalysis } from "@/app/api/feishu/_helpers";
 import { isInternalRequest } from "@/lib/internal-auth";
 import { upsertMatchT30Task } from "@/lib/automation/match-t30-task";
 import { SupabaseAutomationRepository } from "@/lib/automation/repository";
-import { serializeVerification } from "@/lib/verification/market-service";
+import { serializeVerification, settleMarket } from "@/lib/verification/market-service";
 import {
   finalizeAnalysisProbability,
   prepareAnalysisProbability,
@@ -170,6 +170,8 @@ interface AnalysisResult {
   total_trend: string;
   total_action: string;
   probability: AnalysisProbabilityOutput;
+  verification?: ReturnType<typeof serializeVerification>;
+  settlementEvidence?: Record<string, unknown>;
 }
 
 // --- Rule Engine ---
@@ -1328,7 +1330,7 @@ export async function POST(request: NextRequest) {
         if (key) indicatorSignals[key] = ind.signal;
       }
 
-      const { error: saveError } = await supabase.from(predictionTable).upsert({
+      const predictionPayload = {
         match_id: body.matchId,
         match_date: matchDate,
         source,
@@ -1415,11 +1417,44 @@ export async function POST(request: NextRequest) {
         actual_handicap_trend: null,
         actual_water_direction: null,
         verified_at: null,
-      }, { onConflict: "match_id,match_date" });
+      };
+
+      const { error: saveError } = await supabase.from(predictionTable).upsert(predictionPayload, { onConflict: "match_id,match_date" });
 
       if (saveError) {
         console.error("[Analysis] Save prediction error:", saveError.message);
         return NextResponse.json({ success: false, error: `分析完成但保存预测失败: ${saveError.message}` }, { status: 500 });
+      }
+
+      const { data: matchResult } = await supabase.from("match_results")
+        .select("home_score,away_score,status")
+        .eq("match_id", body.matchId)
+        .eq("match_date", matchDate)
+        .maybeSingle();
+      if (matchResult?.status === "finished") {
+        const now = new Date().toISOString();
+        const settledRow = { ...predictionPayload };
+        const settlementUpdate = {
+          actual_score_margin: Number(matchResult.home_score) - Number(matchResult.away_score),
+          actual_total_goals: Number(matchResult.home_score) + Number(matchResult.away_score),
+          ...settleMarket(settledRow, "handicap", matchResult, undefined, now),
+          ...settleMarket(settledRow, "total", matchResult, undefined, now),
+        };
+        const { data: settledRows, error: settleError } = await supabase.from(predictionTable)
+          .update(settlementUpdate)
+          .eq("match_id", body.matchId)
+          .eq("match_date", matchDate)
+          .select("*");
+        if (settleError) {
+          console.error("[Analysis] Immediate settlement error:", settleError.message);
+        } else {
+          const settled = settledRows?.[0] ? { ...settledRow, ...settledRows[0] } : { ...settledRow, ...settlementUpdate };
+          result.verification = serializeVerification(settled);
+          result.settlementEvidence = {
+            actualScoreMargin: settled.actual_score_margin,
+            actualTotalGoals: settled.actual_total_goals,
+          };
+        }
       }
 
       if (source === "production") {

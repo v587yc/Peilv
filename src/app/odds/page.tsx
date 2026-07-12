@@ -1072,6 +1072,16 @@ function previousBeijingDateKey(now = new Date()): string {
   return beijingYesterday.toISOString().slice(0, 10).replace(/-/g, "");
 }
 
+function normalizeMatchDateKey(value: string | undefined | null, fallbackYear = new Date().getFullYear()): string {
+  if (!value) return "";
+  if (/^\d{8}$/.test(value)) return value;
+  const iso = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) return `${iso[1]}${iso[2].padStart(2, "0")}${iso[3].padStart(2, "0")}`;
+  const cn = value.match(/(\d{1,2})月(\d{1,2})日/);
+  if (cn) return `${fallbackYear}${cn[1].padStart(2, "0")}${cn[2].padStart(2, "0")}`;
+  return value.replace(/-/g, "");
+}
+
 async function syncHistoricalScores(dateKey: string): Promise<{ persistedResults: number; status: string }> {
   const response = await fetch(`/api/schedule?date=${dateKey}&mode=history`);
   const json = await response.json();
@@ -1750,20 +1760,23 @@ export default function OddsMonitorPage() {
   const currentDbDate = useMemo(() => {
     if (dataScheduleMode === "today") {
       if (!matchDate) return "";
-      // matchDate is like "04月23日", convert to YYYYMMDD
-      const m = matchDate.match(/(\d{1,2})月(\d{1,2})日/);
-      if (m) {
-        const now = new Date();
-        const month = m[1].padStart(2, "0");
-        const day = m[2].padStart(2, "0");
-        return `${now.getFullYear()}${month}${day}`;
-      }
-      return matchDate;
+      return normalizeMatchDateKey(matchDate);
     }
     if (dataDate) return dataDate.replace(/-/g, "");
     return "";
   }, [dataScheduleMode, matchDate, dataDate]);
   useEffect(() => { currentDbDateRef.current = currentDbDate; }, [currentDbDate]);
+
+  const verificationDateKeys = useMemo(() => {
+    const keys = new Set<string>();
+    if (currentDbDate) keys.add(currentDbDate);
+    for (const match of dataTabMatches) {
+      const dateKey = normalizeMatchDateKey(match.matchDate);
+      if (dateKey) keys.add(dateKey);
+    }
+    if (keys.size === 0) keys.add(previousBeijingDateKey());
+    return Array.from(keys).sort();
+  }, [currentDbDate, dataTabMatches]);
 
   useEffect(() => {
     oddsGenerationRef.current += 1;
@@ -2923,6 +2936,31 @@ export default function OddsMonitorPage() {
       // silently fail
     }
   }, []);
+
+  const verifyAndLearn = useCallback(async () => {
+    try {
+      let synced = 0;
+      let verified = 0;
+      let correct = 0;
+      for (const dateKey of verificationDateKeys) {
+        const scoreSync = await syncHistoricalScores(dateKey);
+        synced += scoreSync.persistedResults;
+        const vr = await fetch(`/api/analysis/verify?startDate=${dateKey}&endDate=${dateKey}`);
+        const vj = await vr.json();
+        if (!vr.ok || !vj.success) throw new Error(vj.error || "自动验证失败");
+        verified += Number(vj.verified || 0);
+        correct += Number(vj.correct || 0);
+        await loadPredictionsFromDb(dateKey);
+      }
+      const [handicapLearn, totalLearn] = await Promise.all(["handicap", "total"].map(market => fetch("/api/analysis/learn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ market, league: "ALL", minSamples: 3 }) })));
+      const [handicapResult, totalResult] = await Promise.all([handicapLearn.json(), totalLearn.json()]);
+      const learnedPatterns = (handicapResult.patternsFound || 0) + (totalResult.patternsFound || 0);
+      await loadEvolutionStats();
+      toast.success("验证与学习完成", { description: `日期 ${verificationDateKeys.join(", ")} · 同步赛果 ${synced} 场 · 验证 ${verified} 场 · 命中 ${correct} 场 · 新增 ${learnedPatterns} 个模式` });
+    } catch (err) {
+      toast.error("验证学习失败", { description: err instanceof Error ? err.message : "网络请求失败", duration: 8000 });
+    }
+  }, [loadEvolutionStats, loadPredictionsFromDb, verificationDateKeys]);
 
   // Load evolution stats on mount
   useEffect(() => {
@@ -4337,19 +4375,7 @@ export default function OddsMonitorPage() {
                   <hr className="border-gray-700 my-1" />
                   <button
                     className="w-full text-left text-[11px] text-blue-400 hover:bg-gray-800 px-2 py-1.5 rounded"
-                    onClick={async () => {
-                      const yd = previousBeijingDateKey();
-                      try {
-                        const scoreSync = await syncHistoricalScores(yd);
-                        const vr = await fetch(`/api/analysis/verify?startDate=${yd}&endDate=${yd}`);
-                        const vj = await vr.json();
-                        const [handicapLearn, totalLearn] = await Promise.all(["handicap", "total"].map(market => fetch("/api/analysis/learn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ market, league: "ALL", minSamples: 3 }) })));
-                        const [handicapResult, totalResult] = await Promise.all([handicapLearn.json(), totalLearn.json()]);
-                        const learnedPatterns = (handicapResult.patternsFound || 0) + (totalResult.patternsFound || 0);
-                        await loadEvolutionStats();
-                        toast.success("验证与学习完成", { description: `同步赛果 ${scoreSync.persistedResults} 场 · 验证 ${vj.verified || 0} 场 · 命中 ${vj.correct || 0} 场 · 新增 ${learnedPatterns} 个模式` });
-                      } catch (err) { toast.error("验证学习失败", { description: err instanceof Error ? err.message : "网络请求失败", duration: 8000 }); }
-                    }}
+                    onClick={verifyAndLearn}
                   >
                     验证+学习
                   </button>
@@ -6690,18 +6716,7 @@ export default function OddsMonitorPage() {
               )}
               <button
                 className="text-[11px] text-gray-500 hover:text-blue-400 transition-colors"
-                onClick={async () => {
-                  const yd = previousBeijingDateKey();
-                  try {
-                    const scoreSync = await syncHistoricalScores(yd);
-                    const vr = await fetch(`/api/analysis/verify?startDate=${yd}&endDate=${yd}`);
-                    const vj = await vr.json();
-                    const lr = await fetch("/api/analysis/learn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ league: "ALL", minSamples: 3 }) });
-                    const lj = await lr.json();
-                    await loadEvolutionStats();
-                    toast.success("验证与学习完成", { description: `同步赛果 ${scoreSync.persistedResults} 场 · 验证 ${vj.verified || 0} 场 · 命中 ${vj.correct || 0} 场 · 新增 ${lj.patternsFound || 0} 个模式` });
-                  } catch (err) { toast.error("验证学习失败", { description: err instanceof Error ? err.message : "网络请求失败", duration: 8000 }); }
-                }}
+                onClick={verifyAndLearn}
               >
                 验证+学习
               </button>
