@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTitanLiveResults, parseTitanSchedule } from "@/lib/titan-schedule";
+import { parseTitanAnalysisHeader, parseTitanLiveResults, parseTitanSchedule } from "@/lib/titan-schedule";
 
 function page(rows: string, title = "2026年07月10日完场比分、赛程赛果") {
   return Buffer.from(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body><script>importantSclass=",41,";</script><table id="table_live">${rows}</table></body></html>`);
@@ -43,6 +43,42 @@ function liveRow(overrides: Record<number, string> = {}) {
   });
   return `A[0]="${fields.join("^")}";`;
 }
+
+describe("Titan match detail header parser", () => {
+  it("extracts realtime state and score fields by match id", () => {
+    const fields = Array.from({ length: 74 }, () => "");
+    Object.assign(fields, {
+      0: "中国U17",
+      1: "尼日利亚U17",
+      4: "-1",
+      5: "20260711193500",
+      10: "1",
+      11: "1",
+      15: "国际友谊",
+      26: "1",
+      27: "1",
+      72: "3021846",
+      73: "0",
+    });
+    expect(parseTitanAnalysisHeader(fields.join("^"))).toMatchObject({
+      id: "3021846",
+      state: "-1",
+      time: "19:35",
+      matchDate: "20260711",
+      homeTeam: "中国U17",
+      awayTeam: "尼日利亚U17",
+      homeScore: "1",
+      awayScore: "1",
+      halfHomeScore: "1",
+      halfAwayScore: "1",
+      league: "国际友谊",
+    });
+  });
+
+  it("rejects malformed header text", () => {
+    expect(parseTitanAnalysisHeader("not a titan header")).toBeNull();
+  });
+});
 
 describe("Titan schedule parser", () => {
   it("parses rows regardless of attribute order and preserves real scores", () => {

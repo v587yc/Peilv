@@ -30,6 +30,20 @@ export interface ScheduleLeague {
   isHot: boolean;
 }
 
+export interface TitanMatchDetailScore {
+  id: string;
+  state: string;
+  time: string;
+  matchDate: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: string;
+  awayScore: string;
+  halfHomeScore: string;
+  halfAwayScore: string;
+  league: string;
+}
+
 export type ScheduleContentStatus = "ok" | "valid_empty" | "blocked" | "wrong_page" | "encoding_error" | "layout_drift";
 
 export interface ScheduleParserDiagnostics {
@@ -306,6 +320,38 @@ function liveMatchDate(value: string): string | null {
   const date = new Date(Date.UTC(year, zeroBasedMonth, day));
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== zeroBasedMonth || date.getUTCDate() !== day) return null;
   return `${year}${String(zeroBasedMonth + 1).padStart(2, "0")}${String(day).padStart(2, "0")}`;
+}
+
+function compactMatchDate(value: string): string {
+  return /^\d{14}$/.test(value) ? value.slice(0, 8) : "";
+}
+
+function compactMatchTime(value: string): string {
+  return /^\d{14}$/.test(value) ? `${value.slice(8, 10)}:${value.slice(10, 12)}` : "";
+}
+
+function fieldScore(value: string | undefined): string {
+  return /^\d+$/.test(value || "") ? String(Number(value)) : "";
+}
+
+export function parseTitanAnalysisHeader(text: string): TitanMatchDetailScore | null {
+  const fields = text.trim().split("^");
+  if (fields.length < 12 || !/^\d+$/.test(fields[72] || "")) return null;
+  const homeScore = fieldScore(fields[10]);
+  const awayScore = fieldScore(fields[11]);
+  return {
+    id: fields[72],
+    state: fields[4] || "",
+    time: compactMatchTime(fields[5] || ""),
+    matchDate: compactMatchDate(fields[5] || ""),
+    homeTeam: fields[0] || "",
+    awayTeam: fields[1] || "",
+    homeScore,
+    awayScore,
+    halfHomeScore: fieldScore(fields[26]),
+    halfAwayScore: fieldScore(fields[27]),
+    league: fields[15] || "",
+  };
 }
 
 function trailingRank(value: string): string {

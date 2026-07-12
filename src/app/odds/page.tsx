@@ -416,6 +416,22 @@ interface ApiCompanyOdds {
   ftTotalUnderLive: string;
 }
 
+interface ApiMatchDetailScore {
+  id: string;
+  state: string;
+  time: string;
+  matchDate: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: string;
+  awayScore: string;
+  halfHomeScore: string;
+  halfAwayScore: string;
+  league: string;
+  source?: string;
+  observedAt?: string;
+}
+
 interface ApiMatchOddsResponse {
   matchId: string;
   openTime: string;
@@ -2263,17 +2279,37 @@ export default function OddsMonitorPage() {
     matchRefreshVersionRef.current.set(matchId, requestId);
     setFetchingMatches(prev => new Set(prev).add(matchId));
     try {
+      const applyDetailScore = (score: ApiMatchDetailScore | null | undefined) => {
+        if (!score?.id) return;
+        const patch = (match: MatchData): MatchData => match.id === score.id
+          ? {
+            ...match,
+            state: score.state || match.state,
+            time: score.time || match.time,
+            matchDate: score.matchDate || match.matchDate,
+            homeScore: score.homeScore || match.homeScore,
+            awayScore: score.awayScore || match.awayScore,
+            halfHomeScore: score.halfHomeScore || match.halfHomeScore,
+            halfAwayScore: score.halfAwayScore || match.halfAwayScore,
+          }
+          : match;
+        setMatches(prev => prev.map(patch));
+        setScheduleMatches(prev => prev.map(patch));
+      };
+
       const res = await fetch(`/api/data/match/${matchId}`);
       const json = await res.json();
-      if (!res.ok || !json.success || !json.data) {
-        throw new Error(json.error || json.detail || "无赔率数据");
-      }
-      if (!isLatestRefreshResponse({
+      const responseIsLatest = isLatestRefreshResponse({
         request: requestId,
         latestRequest: latestOddsRequestRef.current.get(matchId) ?? -1,
         generation,
         latestGeneration: oddsGenerationRef.current,
-      })) return false;
+      });
+      if (responseIsLatest) applyDetailScore(json.score as ApiMatchDetailScore | null | undefined);
+      if (!res.ok || !json.success || !json.data) {
+        throw new Error(json.error || json.detail || "无赔率数据");
+      }
+      if (!responseIsLatest) return false;
 
       const item = json.data as ApiMatchOddsResponse;
       const source = typeof json.source === "string" && json.source ? json.source : "titan-analysis-odds";

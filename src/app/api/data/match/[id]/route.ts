@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchTitanUrlBuffer } from "@/lib/titan-vip-fetch";
+import { parseTitanAnalysisHeader } from "@/lib/titan-schedule";
+import { persistScheduleResults } from "@/lib/verification/match-results";
+import { getSupabaseClient } from "@/storage/database/supabase-client";
 
 // Abbreviated name → full name mapping (from website data like "Crow*" → "皇冠")
 const ABBR_TO_FULL: Record<string, string> = {
@@ -28,6 +31,30 @@ const FETCH_HEADERS: Record<string, string> = {
 async function fetchUrl(url: string, retries = 1): Promise<string> {
   const buffer = await fetchTitanUrlBuffer(url, FETCH_HEADERS, retries, 15_000);
   return new TextDecoder("utf-8").decode(buffer);
+}
+
+function analysisHeaderPath(matchId: string, locale: "cn" | "big" = "cn"): string {
+  return `/phone/txt/analysisheader/${locale}/${matchId.slice(0, 1)}/${matchId.slice(1, 3)}/${matchId}.txt`;
+}
+
+async function fetchMatchDetailScore(matchId: string) {
+  if (!/^\d+$/.test(matchId)) return null;
+  const observedAt = new Date().toISOString();
+  const headers = { ...FETCH_HEADERS, Referer: `https://live.titan007.com/detail/${matchId}.htm`, Accept: "*/*" };
+  const urls = [
+    `https://livestatic.titan007.com${analysisHeaderPath(matchId, "cn")}`,
+    `https://live.titan007.com${analysisHeaderPath(matchId, "cn")}`,
+  ];
+  for (const url of urls) {
+    try {
+      const buffer = await fetchTitanUrlBuffer(url, headers, 1, 10_000);
+      const score = parseTitanAnalysisHeader(new TextDecoder("utf-8").decode(buffer));
+      if (score?.id === matchId) return { ...score, source: "titan_analysis_header", observedAt };
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 const NO_STORE_HEADERS = {
@@ -186,16 +213,24 @@ export async function GET(
     const { id: matchId } = await params;
     const { searchParams } = new URL(request.url);
     const companyIds = searchParams.get("companies") || "";
+    const detailScore = await fetchMatchDetailScore(matchId);
+    if (detailScore?.matchDate) {
+      persistScheduleResults(
+        getSupabaseClient(),
+        [detailScore as unknown as Record<string, unknown>],
+        { scoreSource: detailScore.source, observedAt: detailScore.observedAt, finishedOnly: true },
+      ).catch(error => console.error("[MatchAPI] Score persistence error:", error instanceof Error ? error.message : error));
+    }
 
     // Fetch the odds iframe page which contains allCompOdds with euro-asian data
     const html = await fetchUrl(`https://zq.titan007.com/analysis/odds/${matchId}.htm`);
     if (!html || html.length < 100) {
-      return jsonNoStore({ error: "无法获取赔率数据" }, { status: 404 });
+      return jsonNoStore({ success: false, error: "无法获取赔率数据", score: detailScore }, { status: 404 });
     }
 
     const allOdds = parseAllCompOdds(html);
     if (allOdds.length === 0) {
-      return jsonNoStore({ error: "无赔率数据" }, { status: 404 });
+      return jsonNoStore({ success: false, error: "无赔率数据", score: detailScore }, { status: 404 });
     }
     const sourceObservedAt = new Date().toISOString();
 
@@ -241,6 +276,7 @@ export async function GET(
       success: true,
       source: "titan-analysis-odds",
       sourceObservedAt,
+      score: detailScore,
       data: {
         matchId,
         openTime: "",
