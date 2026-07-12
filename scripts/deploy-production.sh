@@ -234,9 +234,7 @@ systemd-run \
   --gid=peilv \
   --working-directory="$release_dir" \
   --property="EnvironmentFile=$base/shared/app.env" \
-  --setenv=PORT=5001 \
-  --setenv=DEPLOY_RUN_PORT=5001 \
-  /usr/bin/node dist/server.js >/dev/null
+  /usr/bin/env PORT=5001 DEPLOY_RUN_PORT=5001 /usr/bin/node dist/server.js >/dev/null
 
 for _ in {1..30}; do
   curl -fsS http://127.0.0.1:5001/ >/dev/null 2>&1 && break
