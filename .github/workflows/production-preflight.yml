@@ -72,13 +72,14 @@ jobs:
           PROD_PORT: ${{ secrets.PROD_PORT }}
           PROD_USER: ${{ secrets.PROD_AUDIT_USER }}
         run: |
+          set -Eeuo pipefail
           archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
           [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$RELEASE_SHA" ]]
           migrations=''
           while IFS= read -r member; do
-            member="${member#./}"
-            [[ "$member" == migrations/*.sql ]] || continue
-            name="${member##*/}"
+            normalized_member="${member#./}"
+            [[ "$normalized_member" == migrations/*.sql ]] || continue
+            name="${normalized_member##*/}"
             version="$(tar -xOzf "$archive" "$member" | sed -n '/INSERT INTO schema_migrations(version, description)/,/ON CONFLICT/p' | sed -nE "0,/^[[:space:]]*'([^']+)'[[:space:]]*,?[[:space:]]*$/s//\\1/p" | head -n 1)"
             migrations="${migrations:+$migrations,}$name=$version"
           done < <(tar -tzf "$archive")
@@ -87,6 +88,7 @@ jobs:
             "$PROD_USER@$PROD_HOST" \
             "sudo /usr/local/sbin/peilv-control preflight '$RELEASE_ID' '$migrations'" \
             | tee preflight.md
+          [[ -s preflight.md ]]
           cat preflight.md >> "$GITHUB_STEP_SUMMARY"
           {
             printf '\n## If you approve this preflight\n\n'

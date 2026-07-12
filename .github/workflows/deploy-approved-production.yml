@@ -75,6 +75,7 @@ jobs:
           PROD_PORT: ${{ secrets.PROD_PORT }}
           PROD_USER: ${{ secrets.PROD_DEPLOY_USER }}
         run: |
+          set -Eeuo pipefail
           archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
           checksum="$archive.sha256"
           [[ -f "$archive" && -f "$checksum" ]]
@@ -87,4 +88,5 @@ jobs:
             "$PROD_USER@$PROD_HOST" \
             "sudo /usr/local/sbin/peilv-control deploy '$RELEASE_ID' '$RELEASE_SHA'" \
             | tee deployment-result.txt
+          [[ -s deployment-result.txt ]]
           cat deployment-result.txt >> "$GITHUB_STEP_SUMMARY"
