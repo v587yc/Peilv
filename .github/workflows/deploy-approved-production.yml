@@ -1,0 +1,90 @@
+name: Deploy approved production
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Release ID from the Production preflight summary
+        required: true
+        type: string
+      release_sha:
+        description: SHA-256 from the Production preflight summary
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: peilv-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate input format
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          [[ "$RELEASE_ID" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-${{ inputs.release_id }}
+          path: release-artifacts
+          run-id: ${{ github.run_id }}
+        continue-on-error: true
+      - name: Download artifact from latest preflight if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          if [[ -f "release-artifacts/peilv-$RELEASE_ID.tar.gz" ]]; then
+            exit 0
+          fi
+          rm -rf release-artifacts
+          mkdir -p release-artifacts
+          run_id="$(gh run list --workflow production-preflight.yml --branch main --status success --limit 20 --json databaseId --jq '.[].databaseId' | while read -r id; do
+            if gh run download "$id" -n "production-'"$RELEASE_ID"'" -D release-artifacts >/dev/null 2>&1; then
+              echo "$id"
+              break
+            fi
+          done)"
+          if [[ -z "$run_id" ]]; then
+            printf 'Could not find preflight artifact for release %s\n' "$RELEASE_ID" >&2
+            exit 1
+          fi
+      - name: Configure deployment SSH
+        env:
+          SSH_KEY: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
+          SSH_HOST_KEY: ${{ secrets.PROD_SSH_HOST_KEY }}
+        run: |
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+      - name: Upload and deploy approved release
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_PORT: ${{ secrets.PROD_PORT }}
+          PROD_USER: ${{ secrets.PROD_DEPLOY_USER }}
+        run: |
+          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
+          checksum="$archive.sha256"
+          [[ -f "$archive" && -f "$checksum" ]]
+          [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$RELEASE_SHA" ]]
+          scp -i ~/.ssh/deploy_key -P "$PROD_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$archive" "$checksum" "$PROD_USER@$PROD_HOST:/opt/peilv/incoming/"
+          ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$PROD_USER@$PROD_HOST" \
+            "sudo /usr/local/sbin/peilv-control deploy '$RELEASE_ID' '$RELEASE_SHA'" \
+            | tee deployment-result.txt
+          cat deployment-result.txt >> "$GITHUB_STEP_SUMMARY"

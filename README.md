@@ -39,7 +39,12 @@ Playwright 使用 `playwright.config.ts` 在 `127.0.0.1:3100` 启动独立生产
 
 推送到 GitHub 会运行 `.github/workflows/ci.yml`，自动完成单元测试、类型检查、ESLint、生产构建、Playwright E2E 和无密钥发布包检查。CI 不读取生产环境变量，也不会修改生产服务器。
 
-生产发布通过 GitHub Actions 的 `Deploy production` 手动触发。工作流先构建制品并执行只读生产预检，随后在 `production` Environment 等待批准；批准后才上传 release、备份数据库、应用待执行迁移、运行 5001 候选检查并原子切换。详细约束和回滚步骤以 `PRODUCTION_DEPLOYMENT.md` 为准。
+生产发布改为两个手动按钮，避免没有 GitHub Environment 审批功能时误发布：
+
+1. 先运行 `Production preflight`：只构建发布包并只读检查服务器，绝不修改生产环境。完成后在 Summary 里查看 `Release ID`、`Release SHA-256`、当前版本、回退版本和待执行迁移。
+2. 确认预检没问题后，再运行 `Deploy approved production`：把上一步 Summary 里的 `Release ID` 和 `Release SHA-256` 填进去，才会真正上传、备份、迁移、5001 候选检查并原子切换。
+
+详细约束和回滚步骤以 `PRODUCTION_DEPLOYMENT.md` 为准。
 
 本地验证发布包：
 

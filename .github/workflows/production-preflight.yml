@@ -1,4 +1,4 @@
-name: Deploy production
+name: Production preflight
 
 on:
   workflow_dispatch:
@@ -7,13 +7,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: peilv-production
+  group: peilv-production-preflight
   cancel-in-progress: false
 
 jobs:
-  build-release:
+  build-and-preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
       release_sha: ${{ steps.release.outputs.release_sha }}
@@ -55,24 +55,6 @@ jobs:
           release_sha="$(sed -n '1{s/ .*//;p;}' "$checksum")"
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
           echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: production-${{ steps.release.outputs.release_id }}
-          path: |
-            release-artifacts/peilv-${{ steps.release.outputs.release_id }}.tar.gz
-            release-artifacts/peilv-${{ steps.release.outputs.release_id }}.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 14
-
-  production-preflight:
-    needs: build-release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: production-${{ needs.build-release.outputs.release_id }}
-          path: release-artifacts
       - name: Configure read-only SSH
         env:
           SSH_KEY: ${{ secrets.PROD_AUDIT_SSH_KEY }}
@@ -82,10 +64,10 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/audit_key
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
           chmod 0600 ~/.ssh/audit_key ~/.ssh/known_hosts
-      - name: Verify artifact and inspect production
+      - name: Inspect production without changes
         env:
-          RELEASE_ID: ${{ needs.build-release.outputs.release_id }}
-          RELEASE_SHA: ${{ needs.build-release.outputs.release_sha }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_PORT: ${{ secrets.PROD_PORT }}
           PROD_USER: ${{ secrets.PROD_AUDIT_USER }}
@@ -107,52 +89,22 @@ jobs:
             | tee preflight.md
           cat preflight.md >> "$GITHUB_STEP_SUMMARY"
           {
-            printf '\n- Artifact SHA-256: `%s`\n' "$RELEASE_SHA"
-            printf -- '- Commit: `%s`\n' '${{ needs.build-release.outputs.commit_sha }}'
+            printf '\n## If you approve this preflight\n\n'
+            printf -- '- Run workflow: `Deploy approved production`\n'
+            printf -- '- Use release ID: `%s`\n' "$RELEASE_ID"
+            printf -- '- Use release SHA-256: `%s`\n' "$RELEASE_SHA"
+            printf -- '- Commit: `%s`\n' '${{ steps.commit.outputs.commit_sha }}'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: preflight-${{ needs.build-release.outputs.release_id }}
+          name: production-${{ steps.release.outputs.release_id }}
+          path: |
+            release-artifacts/peilv-${{ steps.release.outputs.release_id }}.tar.gz
+            release-artifacts/peilv-${{ steps.release.outputs.release_id }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preflight-${{ steps.release.outputs.release_id }}
           path: preflight.md
           retention-days: 14
-
-  deploy-production:
-    needs: [build-release, production-preflight]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    environment:
-      name: production
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: production-${{ needs.build-release.outputs.release_id }}
-          path: release-artifacts
-      - name: Configure deployment SSH
-        env:
-          SSH_KEY: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
-          SSH_HOST_KEY: ${{ secrets.PROD_SSH_HOST_KEY }}
-        run: |
-          install -d -m 0700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
-          chmod 0600 ~/.ssh/deploy_key ~/.ssh/known_hosts
-      - name: Upload and deploy approved release
-        env:
-          RELEASE_ID: ${{ needs.build-release.outputs.release_id }}
-          RELEASE_SHA: ${{ needs.build-release.outputs.release_sha }}
-          PROD_HOST: ${{ secrets.PROD_HOST }}
-          PROD_PORT: ${{ secrets.PROD_PORT }}
-          PROD_USER: ${{ secrets.PROD_DEPLOY_USER }}
-        run: |
-          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
-          checksum="$archive.sha256"
-          [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$RELEASE_SHA" ]]
-          scp -i ~/.ssh/deploy_key -P "$PROD_PORT" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$archive" "$checksum" "$PROD_USER@$PROD_HOST:/opt/peilv/incoming/"
-          ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$PROD_USER@$PROD_HOST" \
-            "sudo /usr/local/sbin/peilv-control deploy '$RELEASE_ID' '$RELEASE_SHA'" \
-            | tee deployment-result.txt
-          cat deployment-result.txt >> "$GITHUB_STEP_SUMMARY"
