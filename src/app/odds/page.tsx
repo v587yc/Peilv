@@ -48,7 +48,7 @@ import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AIAnalysisResultPanel } from "./_components/ai-analysis-result-panel";
-import { MatchSituation, MatchStatusBadge, getMatchRowClass } from "./_components/match-status";
+import { MatchSituation, MatchStatusBadge, getMatchRowClass, getMatchStatus, type MatchStatusKind } from "./_components/match-status";
 import { canApplyDatabaseOdds, mergeAiCompanyOdds } from "@/lib/odds-client-merge";
 import type { AnalysisProbabilityOutput } from "@/lib/probability";
 import type { SettlementSummary, PredictionMarket } from "@/lib/verification";
@@ -64,6 +64,23 @@ import {
 } from "@/lib/odds-refresh";
 
 // --- Types ---
+type OtherMatchFilter = "all" | Exclude<MatchStatusKind, "scheduled">;
+
+const OTHER_MATCH_FILTERS: Array<{ key: OtherMatchFilter; label: string; description: string }> = [
+  { key: "all", label: "全部", description: "全部其他赛况" },
+  { key: "live", label: "进行", description: "正在进行的比赛" },
+  { key: "halftime", label: "中场", description: "中场休息的比赛" },
+  { key: "finished", label: "完场", description: "已经结束的比赛" },
+  { key: "unknown", label: "未知", description: "状态待确认的比赛" },
+];
+
+const OTHER_MATCH_STATUS_PRIORITY: Record<Exclude<MatchStatusKind, "scheduled">, number> = {
+  live: 0,
+  halftime: 1,
+  unknown: 2,
+  finished: 3,
+};
+
 interface MatchData {
   id: string;
   league: string;
@@ -1159,6 +1176,7 @@ export default function OddsMonitorPage() {
   const [leagues, setLeagues] = useState<LeagueData[]>([]);
   const [hotMatchCount, setHotMatchCount] = useState(0); // Total hot matches across ALL states
   const [selectedLeagues, setSelectedLeagues] = useState<Set<string>>(new Set());
+  const [otherMatchFilter, setOtherMatchFilter] = useState<OtherMatchFilter>("all");
   const [pinnedMatches, setPinnedMatches] = useState<Set<string>>(new Set());
   const [pinnedMatchInfo, setPinnedMatchInfo] = useState<Map<string, PinnedMatchInfo>>(new Map());
   const [minOddsSum, setMinOddsSum] = useState("1.84");
@@ -2522,9 +2540,16 @@ export default function OddsMonitorPage() {
         otherStates.push(row);
       }
     }
-    // Sort both groups by original website order (orderIndex)
+    // Sort both groups by status priority, original website order (orderIndex)
     notStarted.sort((a, b) => a.match.orderIndex - b.match.orderIndex);
-    otherStates.sort((a, b) => a.match.orderIndex - b.match.orderIndex);
+    otherStates.sort((a, b) => {
+      const aKind = getMatchStatus(a.match.state).kind;
+      const bKind = getMatchStatus(b.match.state).kind;
+      const aPriority = aKind === "scheduled" ? 99 : OTHER_MATCH_STATUS_PRIORITY[aKind];
+      const bPriority = bKind === "scheduled" ? 99 : OTHER_MATCH_STATUS_PRIORITY[bKind];
+      if (aPriority !== bPriority) return aPriority - bPriority;
+      return a.match.orderIndex - b.match.orderIndex;
+    });
     return { notStarted, otherStates };
   }, [dataTabMatches, dataSelectedLeagues, fetchedMatches, fetchingMatches, dbCompanyOddsMap, crownLiveOddsFromDb, crown12OddsFromDb, dataCompanyIds]);
 
@@ -3992,8 +4017,29 @@ export default function OddsMonitorPage() {
       const aPinned = pinnedMatches.has(a.id) ? 0 : 1;
       const bPinned = pinnedMatches.has(b.id) ? 0 : 1;
       if (aPinned !== bPinned) return aPinned - bPinned;
+      const aKind = getMatchStatus(a.state).kind;
+      const bKind = getMatchStatus(b.state).kind;
+      const aPriority = aKind === "scheduled" ? 99 : OTHER_MATCH_STATUS_PRIORITY[aKind];
+      const bPriority = bKind === "scheduled" ? 99 : OTHER_MATCH_STATUS_PRIORITY[bKind];
+      if (aPriority !== bPriority) return aPriority - bPriority;
       return a.orderIndex - b.orderIndex;
     }), [matches, selectedLeagues, pinnedMatches]);
+
+  const otherStateCounts = useMemo(() => {
+    const counts: Record<OtherMatchFilter, number> = { all: otherStateMatches.length, live: 0, halftime: 0, finished: 0, unknown: 0 };
+    for (const match of otherStateMatches) {
+      const kind = getMatchStatus(match.state).kind;
+      if (kind !== "scheduled") counts[kind] += 1;
+    }
+    return counts;
+  }, [otherStateMatches]);
+
+  const visibleOtherStateMatches = useMemo(() => {
+    if (otherMatchFilter === "all") return otherStateMatches;
+    return otherStateMatches.filter((match) => getMatchStatus(match.state).kind === otherMatchFilter);
+  }, [otherStateMatches, otherMatchFilter]);
+
+  const activeOtherMatchFilterLabel = OTHER_MATCH_FILTERS.find(filter => filter.key === otherMatchFilter)?.label ?? "全部";
 
   // --- Odds comparison summary (from all matches with notes) ---
   const oddsComparisonSummary = useMemo(() => {
@@ -4699,13 +4745,14 @@ export default function OddsMonitorPage() {
                             })()}
                             <span className={cn("font-medium", analysisResults.has(match.id) && analysisResults.get(match.id)!.prediction === "主" ? "text-red-400" : "text-white")}>{match.homeTeam}{match.homeRank && <span className="text-gray-500 text-[11px] ml-0.5">[{match.homeRank}]</span>}</span>
                             {predComp?.predictedSide === "home" && predComp.oddsDiff !== null && (
-                              <span
+                              <button
                                 className={cn(
                                   "text-[11px] px-1 py-0 rounded font-medium cursor-pointer hover:opacity-80",
                                   predComp.action === "重注" ? "text-red-300 bg-red-900/40" :
                                   predComp.action === "轻注" ? "text-orange-300 bg-orange-900/40" :
                                   "text-blue-300 bg-blue-900/40"
                                 )}
+                                type="button"
                                 onClick={() => {
                                   setExpandedCrown((prev) => {
                                     const next = new Set(prev);
@@ -4719,7 +4766,7 @@ export default function OddsMonitorPage() {
                                 {predComp.handicapChange && (
                                   <span className="ml-0.5 text-yellow-300">{predComp.handicapChange}</span>
                                 )}
-                              </span>
+                              </button>
                             )}
                             {predComp?.predictedSide === "away" && predComp.handicapChange && (
                               <span className="text-[11px] text-yellow-300">{predComp.handicapChange}</span>
@@ -4847,13 +4894,14 @@ export default function OddsMonitorPage() {
                               );
                             })()}
                             {predComp?.predictedSide === "away" && predComp.oddsDiff !== null && (
-                              <span
+                              <button
                                 className={cn(
                                   "text-[11px] px-1 py-0 rounded font-medium cursor-pointer hover:opacity-80",
                                   predComp.action === "重注" ? "text-red-300 bg-red-900/40" :
                                   predComp.action === "轻注" ? "text-orange-300 bg-orange-900/40" :
                                   "text-blue-300 bg-blue-900/40"
                                 )}
+                                type="button"
                                 onClick={() => {
                                   setExpandedCrown((prev) => {
                                     const next = new Set(prev);
@@ -4867,7 +4915,7 @@ export default function OddsMonitorPage() {
                                 {predComp.handicapChange && (
                                   <span className="ml-0.5 text-yellow-300">{predComp.handicapChange}</span>
                                 )}
-                              </span>
+                              </button>
                             )}
                             {predComp?.predictedSide === "home" && predComp.handicapChange && (
                               <span className="text-[11px] text-yellow-300">{predComp.handicapChange}</span>
@@ -5079,7 +5127,8 @@ export default function OddsMonitorPage() {
                                   <div className="mt-1 flex flex-wrap items-center gap-1">
                                     <button
                                       className="text-[11px] text-blue-400 hover:text-blue-300 underline mr-2"
-                                      onClick={() => {
+                                      type="button"
+                                onClick={() => {
                                         setExpandedCrown(prev => {
                                           const next = new Set(prev);
                                           if (next.has(match.id)) next.delete(match.id);
@@ -5104,7 +5153,8 @@ export default function OddsMonitorPage() {
                                             <button
                                               key={c.companyId}
                                               className="text-[11px] px-1.5 py-0.5 rounded border border-gray-700 text-gray-500 hover:text-cyan-300 hover:border-cyan-600 transition-colors"
-                                              onClick={() => {
+                                              type="button"
+                                onClick={() => {
                                                 setMonitorCompanyIds(prev => [...prev, c.companyId]);
                                               }}
                                             >
@@ -5122,7 +5172,8 @@ export default function OddsMonitorPage() {
                                           <button
                                             key={c.companyId}
                                             className="text-[11px] px-1.5 py-0.5 rounded border border-cyan-700 text-cyan-300 hover:text-red-300 hover:border-red-600 transition-colors"
-                                            onClick={() => {
+                                            type="button"
+                                onClick={() => {
                                               setMonitorCompanyIds(prev => prev.filter(id => id !== c.companyId));
                                             }}
                                           >
@@ -5279,16 +5330,56 @@ export default function OddsMonitorPage() {
 
         {/* In-progress / finished matches section */}
         {otherStateMatches.length > 0 && (
-          <div className="mt-4">
-            <div className="match-group-title">
-              <span>其他赛况</span>
-              <strong>{otherStateMatches.length}</strong>
-              <span>包含进行、中场、完场及未知状态</span>
+          <section className="other-matches-section" aria-labelledby="other-matches-heading">
+            <div className="other-matches-header">
+              <div className="other-matches-title">
+                <span id="other-matches-heading">其他赛况</span>
+                <strong>{visibleOtherStateMatches.length}/{otherStateMatches.length}</strong>
+                <small>当前：{activeOtherMatchFilterLabel} · 进行/中场/完场/未知分层查看</small>
+              </div>
+              <div className="other-matches-filters" aria-label="其他赛况状态筛选">
+                {OTHER_MATCH_FILTERS.map((filter) => (
+                  <button
+                    key={filter.key}
+                    type="button"
+                    className={cn("other-matches-filter", otherMatchFilter === filter.key && "other-matches-filter--active")}
+                    onClick={() => setOtherMatchFilter(filter.key)}
+                    aria-pressed={otherMatchFilter === filter.key}
+                    title={filter.description}
+                  >
+                    <span>{filter.label}</span>
+                    <strong>{otherStateCounts[filter.key]}</strong>
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="odds-table-wrap">
-              <table className="w-full text-xs">
+              <table className="other-matches-table w-full text-xs">
+                <thead>
+                  <tr>
+                    <th scope="colgroup" className="px-1 py-1.5 text-center" colSpan={2}>操作</th>
+                    <th scope="col" className="px-1 py-1.5 text-center w-7">状态</th>
+                    <th scope="colgroup" className="px-1 py-1.5 text-center" colSpan={2}>标记</th>
+                    <th scope="col" className="px-2 py-1.5 text-left w-[90px]">联赛</th>
+                    <th scope="col" className="px-2 py-1.5 text-center w-24">赛况</th>
+                    <th scope="col" className="px-2 py-1.5 text-right">主队</th>
+                    <th scope="colgroup" className="px-2 py-1.5 text-center" colSpan={3}>皇冠亚盘</th>
+                    <th scope="col" className="px-2 py-1.5 text-left">客队</th>
+                    <th scope="colgroup" className="px-2 py-1.5 text-center" colSpan={3}>皇冠进球数</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {otherStateMatches.map((match) => {
+                  {visibleOtherStateMatches.length === 0 ? (
+                    <tr>
+                      <td colSpan={15}>
+                        <div className="other-matches-empty">
+                          <strong>当前筛选暂无赛事</strong>
+                          <span>{activeOtherMatchFilterLabel} 分类下暂时没有比赛，切回全部可查看其他状态。</span>
+                          <button type="button" onClick={() => setOtherMatchFilter("all")}>查看全部其他赛况</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : visibleOtherStateMatches.map((match) => {
                     const isPinned = pinnedMatches.has(match.id);
                     const matchNotes = notes.get(match.id);
                     const rowClass = getMatchRowClass(match.state);
@@ -5315,7 +5406,10 @@ export default function OddsMonitorPage() {
                         <tr className={cn("border-b border-gray-800/30", rowClass)}>
                           <td className="px-0.5 py-0.5 text-center w-5">
                             <button
-                              className="inline-flex items-center justify-center w-4 h-5 rounded hover:bg-gray-700/50 text-gray-500 hover:text-gray-300 transition-transform"
+                              className="odds-icon-button text-gray-500 hover:text-gray-300 transition-transform"
+                              type="button"
+                              aria-label={expandedCompanies.has(match.id) ? "收起公司赔率" : "展开公司赔率"}
+                              aria-expanded={expandedCompanies.has(match.id)}
                               onClick={() => {
                                 const isExpanded = expandedCompanies.has(match.id);
                                 setExpandedCompanies(prev => {
@@ -5337,9 +5431,10 @@ export default function OddsMonitorPage() {
                           <td className="px-1 py-0.5 text-center w-7">
                             <button
                               className={cn(
-                                "inline-flex items-center justify-center w-5 h-5 rounded hover:bg-gray-700/50",
+                                "odds-icon-button",
                                 isPinned ? "text-blue-400" : "text-gray-600"
                               )}
+                              type="button"
                               onClick={() => togglePin(match.id)}
                               title={isPinned ? "取消置顶" : "置顶"}
                             >
@@ -5352,7 +5447,8 @@ export default function OddsMonitorPage() {
                           <td className="px-1 py-0.5 text-center w-7">
                             {matchNotes && (
                               <button
-                                className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-gray-700/50 text-emerald-400"
+                                className="odds-icon-button text-emerald-400"
+                                type="button"
                                 onClick={() => openNoteDialog(match.id)}
                                 title="编辑笔记"
                               >
@@ -5364,10 +5460,11 @@ export default function OddsMonitorPage() {
                             {dataScheduleMode !== "history" && (
                               <button
                                 className={cn(
-                                  "inline-flex items-center justify-center w-5 h-5 rounded hover:bg-gray-700/50 transition-colors",
+                                  "odds-icon-button transition-colors",
                                   analysisResults.has(match.id) ? "text-purple-400" : "text-gray-600 hover:text-purple-400",
                                   analyzingMatchId === match.id && "animate-pulse text-purple-400"
                                 )}
+                                type="button"
                                 onClick={() => {
                                   if (analysisResults.has(match.id)) {
                                     const nextExp = analysisExpanded === match.id ? null : match.id; setAnalysisExpanded(nextExp); if (nextExp) loadAnalysisDetail(nextExp);
@@ -5402,10 +5499,10 @@ export default function OddsMonitorPage() {
                           <td className="px-2 py-0.5 text-right leading-tight">
                             <span className="text-gray-400">{match.homeTeam}{match.homeRank && <span className="text-gray-600 text-[11px] ml-0.5">[{match.homeRank}]</span>}</span>
                           </td>
-                          <td className="px-1 py-0.5 text-right leading-tight">
+                          <td className="px-1 py-0.5 text-right leading-tight odds-number-cell">
                             <span className="text-gray-500">{displayOdds ? (displayOdds.handicapHome || "--") : "--"}</span>
                           </td>
-                          <td className="px-1 py-0.5 text-center font-bold leading-tight">
+                          <td className="px-1 py-0.5 text-center font-bold leading-tight odds-number-cell odds-number-cell--line">
                             <a
                               href={`https://vip.titan007.com/changeDetail/3in1Odds.aspx?id=${match.id}&companyid=3&l=0`}
                               target="_blank"
@@ -5415,7 +5512,7 @@ export default function OddsMonitorPage() {
                               <span className="text-gray-400">{displayOdds ? (formatHandicapLine(displayOdds.handicapLine || "") || "--") : "--"}</span>
                             </a>
                           </td>
-                          <td className="px-1 py-0.5 text-left leading-tight">
+                          <td className="px-1 py-0.5 text-left leading-tight odds-number-cell">
                             <span className="text-gray-500">{displayOdds ? (displayOdds.handicapAway || "--") : "--"}</span>
                           </td>
                           <td className="px-2 py-0.5 text-left leading-tight">
@@ -5444,13 +5541,13 @@ export default function OddsMonitorPage() {
                               </div>
                             )}
                           </td>
-                          <td className="px-1 py-0.5 text-right leading-tight">
+                          <td className="px-1 py-0.5 text-right leading-tight odds-number-cell">
                             <span className="text-gray-500">{displayOdds ? (displayOdds.totalOver || "--") : "--"}</span>
                           </td>
-                          <td className="px-1 py-0.5 text-center font-bold leading-tight">
+                          <td className="px-1 py-0.5 text-center font-bold leading-tight odds-number-cell odds-number-cell--line">
                             <span className="text-gray-400">{displayOdds ? (displayOdds.totalLine || "--") : "--"}</span>
                           </td>
-                          <td className="px-1 py-0.5 text-left leading-tight">
+                          <td className="px-1 py-0.5 text-left leading-tight odds-number-cell">
                             <span className="text-gray-500">{displayOdds ? (displayOdds.totalUnder || "--") : "--"}</span>
                           </td>
                         </tr>
@@ -5565,7 +5662,8 @@ export default function OddsMonitorPage() {
                                   {hasExtra && (
                                     <button
                                       className="mt-0.5 text-[11px] text-blue-400 hover:text-blue-300 underline"
-                                      onClick={() => {
+                                      type="button"
+                                onClick={() => {
                                         setExpandedCrown(prev => {
                                           const next = new Set(prev);
                                           if (next.has(match.id)) next.delete(match.id);
@@ -5628,7 +5726,7 @@ export default function OddsMonitorPage() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </section>
         )}
 
         </>
@@ -5842,8 +5940,9 @@ export default function OddsMonitorPage() {
                               {/* Expand company odds */}
                               <td className="px-0.5 py-0.5 text-center w-5">
                                 <button
-                                  className="inline-flex items-center justify-center w-4 h-5 rounded hover:bg-gray-700/50 text-gray-500 hover:text-gray-300 transition-transform"
-                                  onClick={() => {
+                                  className="odds-icon-button text-gray-500 hover:text-gray-300 transition-transform"
+                                  type="button"
+                                onClick={() => {
                                     const isExpanded = reportExpandedCompanies.has(row.matchId);
                                     setReportExpandedCompanies(prev => {
                                       const next = new Set(prev);
@@ -5872,7 +5971,8 @@ export default function OddsMonitorPage() {
                                       "bg-gray-700/30 text-gray-400 hover:bg-gray-700/50",
                                       analysisExpanded === row.matchId && "ring-1 ring-purple-500/50"
                                     )}
-                                    onClick={() => { const next = analysisExpanded === row.matchId ? null : row.matchId; setAnalysisExpanded(next); if (next) loadAnalysisDetail(next); }}
+                                    type="button"
+                                onClick={() => { const next = analysisExpanded === row.matchId ? null : row.matchId; setAnalysisExpanded(next); if (next) loadAnalysisDetail(next); }}
                                     title={`水位: ${analysisResults.get(row.matchId)!.waterDirection} ${analysisResults.get(row.matchId)!.prediction} · 模型自评 ${analysisResults.get(row.matchId)!.accuracy}`}
                                   >
                                     {analysisResults.get(row.matchId)!.waterDirection === "主降水" ? "▼主" : analysisResults.get(row.matchId)!.waterDirection === "客降水" ? "▼客" : "→"}
@@ -6100,7 +6200,8 @@ export default function OddsMonitorPage() {
                                         <div className="mt-1 flex flex-wrap items-center gap-1">
                                           <button
                                             className="text-[11px] text-blue-400 hover:text-blue-300 underline mr-2"
-                                            onClick={() => {
+                                            type="button"
+                                onClick={() => {
                                               setReportExpandedCrown(prev => {
                                                 const next = new Set(prev);
                                                 if (next.has(row.matchId)) next.delete(row.matchId);
@@ -6124,7 +6225,8 @@ export default function OddsMonitorPage() {
                                                   <button
                                                     key={c.companyId}
                                                     className="text-[11px] px-1.5 py-0.5 rounded border border-gray-700 text-gray-500 hover:text-cyan-300 hover:border-cyan-600 transition-colors"
-                                                    onClick={() => {
+                                                    type="button"
+                                onClick={() => {
                                                       setMonitorCompanyIds(prev => [...prev, c.companyId]);
                                                     }}
                                                   >
@@ -6141,7 +6243,8 @@ export default function OddsMonitorPage() {
                                                 <button
                                                   key={c.companyId}
                                                   className="text-[11px] px-1.5 py-0.5 rounded border border-cyan-700 text-cyan-300 hover:text-red-300 hover:border-red-600 transition-colors"
-                                                  onClick={() => {
+                                                  type="button"
+                                onClick={() => {
                                                     setMonitorCompanyIds(prev => prev.filter(id => id !== c.companyId));
                                                   }}
                                                 >
@@ -6959,7 +7062,8 @@ export default function OddsMonitorPage() {
                                         ? "bg-yellow-600/20 text-yellow-400 cursor-wait"
                                         : "bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 hover:text-blue-300"
                                     )}
-                                    onClick={() => {
+                                    type="button"
+                                onClick={() => {
                                       setFailedMatches(prev => { const next = new Map(prev); next.delete(match.id); return next; });
                                       fetchSingleMatchOdds(match.id);
                                     }}
@@ -7070,10 +7174,19 @@ export default function OddsMonitorPage() {
                           {pagedOtherStates.length > 0 && (
                             <tr>
                               <td colSpan={dataScheduleMode === "history" ? 17 : 15} className="py-2 px-3 border-t border-b border-border bg-surface-2/80">
-                                <div className="match-group-title mb-0">
-                                  <span>其他赛况</span>
-                                  <strong>{otherStates.length}</strong>
-                                  <span>进行、中场、完场及未知状态</span>
+                                <div className="other-matches-data-divider">
+                                  <div className="other-matches-title">
+                                    <span>其他赛况</span>
+                                    <strong>{otherStates.length}</strong>
+                                    <small>当前页显示 {pagedOtherStates.length} 场 · 进行/中场/完场/未知集中在下方</small>
+                                  </div>
+                                  <div className="other-matches-data-counts" aria-label="数据中心其他赛况状态统计">
+                                    {OTHER_MATCH_FILTERS.filter(filter => filter.key !== "all").map(filter => {
+                                      const count = otherStates.filter(row => getMatchStatus(row.match.state).kind === filter.key).length;
+                                      if (count === 0) return null;
+                                      return <span key={filter.key}>{filter.label} {count}</span>;
+                                    })}
+                                  </div>
                                 </div>
                               </td>
                             </tr>

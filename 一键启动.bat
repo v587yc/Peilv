@@ -7,6 +7,12 @@ set "SCRIPT_VERSION=2026.07.09"
 set "PORT=5000"
 set "APP_URL=http://localhost:%PORT%"
 set "PNPM_VERSION=9.0.0"
+set "DB_TUNNEL_PORT=54321"
+set "DB_SSH_HOST=156.239.40.5"
+set "DB_SSH_PORT=22"
+set "DB_SSH_USER=root"
+set "DB_SSH_KEY=%USERPROFILE%\Downloads\id_ed25519_1panel"
+set "SSH_EXE=%SystemRoot%\System32\OpenSSH\ssh.exe"
 
 cd /d "%~dp0"
 
@@ -25,7 +31,7 @@ if not exist "package.json" (
   exit /b 1
 )
 
-echo [1/6] 检查 Node.js...
+echo [1/7] 检查 Node.js...
 where node >nul 2>nul
 if errorlevel 1 (
   echo.
@@ -39,7 +45,7 @@ for /f "tokens=*" %%v in ('node -v 2^>nul') do set "NODE_VERSION=%%v"
 echo 已检测到 Node.js：%NODE_VERSION%
 
 echo.
-echo [2/6] 检查 pnpm...
+echo [2/7] 检查 pnpm...
 where pnpm >nul 2>nul
 if errorlevel 1 (
   echo 未检测到 pnpm，尝试通过 Corepack 启用 pnpm...
@@ -88,7 +94,7 @@ if not exist ".env" (
 )
 
 echo.
-echo [3/6] 检查依赖...
+echo [3/7] 检查依赖...
 if not exist "node_modules" (
   echo 未找到 node_modules，正在安装依赖，首次启动可能需要几分钟...
   call pnpm install --prefer-frozen-lockfile
@@ -115,7 +121,7 @@ if not exist "node_modules" (
 )
 
 echo.
-echo [4/6] 检查启动命令...
+echo [4/7] 检查启动命令...
 if not exist "node_modules\.bin\tsx.cmd" (
   echo 未检测到本地启动命令 node_modules\.bin\tsx.cmd。
   echo 依赖可能没有安装完整，或 node_modules 不是在这台电脑上生成的。
@@ -143,7 +149,7 @@ if not exist "node_modules\.bin\tsx.cmd" (
 )
 
 echo.
-echo [5/6] 释放 %PORT% 端口...
+echo [5/7] 释放 %PORT% 端口...
 set "FOUND_PID="
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /c:":%PORT% .*LISTENING"') do (
   set "PID=%%a"
@@ -165,13 +171,58 @@ if not defined FOUND_PID (
 )
 
 echo.
-echo [6/6] 启动服务...
+echo [6/7] 检查服务器数据库隧道...
+set "DB_TUNNEL_READY="
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /c:"127.0.0.1:%DB_TUNNEL_PORT% .*LISTENING"') do set "DB_TUNNEL_READY=1"
+
+if defined DB_TUNNEL_READY (
+  echo 已检测到本地数据库端口 127.0.0.1:%DB_TUNNEL_PORT%，复用现有连接。
+) else (
+  if not exist "%SSH_EXE%" (
+    echo.
+    echo 错误：未检测到 Windows OpenSSH 客户端，无法连接服务器数据库。
+    echo 请在“可选功能”中安装 OpenSSH 客户端后重试。
+    pause
+    exit /b 1
+  )
+
+  if not exist "%DB_SSH_KEY%" (
+    echo.
+    echo 错误：未找到服务器 SSH 私钥：%DB_SSH_KEY%
+    echo 请把私钥放回该位置，或修改本脚本顶部的 DB_SSH_KEY。
+    pause
+    exit /b 1
+  )
+
+  echo 正在建立数据库隧道：127.0.0.1:%DB_TUNNEL_PORT% -^> %DB_SSH_HOST%...
+  start "peilv 数据库隧道" /min "%SSH_EXE%" -i "%DB_SSH_KEY%" -p %DB_SSH_PORT% -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -L 127.0.0.1:%DB_TUNNEL_PORT%:127.0.0.1:%DB_TUNNEL_PORT% %DB_SSH_USER%@%DB_SSH_HOST%
+
+  for /l %%i in (1,1,10) do (
+    %SystemRoot%\System32\ping.exe -n 2 127.0.0.1 >nul
+    for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /c:"127.0.0.1:%DB_TUNNEL_PORT% .*LISTENING"') do set "DB_TUNNEL_READY=1"
+    if defined DB_TUNNEL_READY goto DB_TUNNEL_CONNECTED
+  )
+
+  echo.
+  echo 错误：数据库隧道建立失败。
+  echo 服务器网络、SSH 私钥或主机指纹校验失败。
+  pause
+  exit /b 1
+)
+
+:DB_TUNNEL_CONNECTED
+echo 数据库隧道已连接：127.0.0.1:%DB_TUNNEL_PORT%
+
+echo.
+echo [7/7] 启动服务...
 echo 浏览器将在几秒后自动打开：%APP_URL%
 echo 按 Ctrl+C 可停止服务。
 echo.
 start "" cmd /c "timeout /t 5 >nul && start "" %APP_URL%"
 
 set "PORT=%PORT%"
+set "COZE_PROJECT_ENV=DEV"
+echo 数据库模式：按 .env 的 DATA_BACKEND 配置
 call node_modules\.bin\tsx.cmd watch src/server.ts
 
 echo.
