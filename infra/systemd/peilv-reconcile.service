@@ -1,0 +1,16 @@
+[Unit]
+Description=Repair Peilv T-30 automation tasks
+After=network-online.target peilv.service
+Wants=network-online.target
+Requires=peilv.service
+
+[Service]
+Type=oneshot
+User=peilv
+Group=peilv
+WorkingDirectory=/opt/peilv/current
+EnvironmentFile=/opt/peilv/shared/app.env
+ExecStart=/bin/sh /opt/peilv/current/scripts/reconcile-automation.sh
+TimeoutStartSec=340
+NoNewPrivileges=true
+PrivateTmp=true

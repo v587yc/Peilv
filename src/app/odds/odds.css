@@ -1,0 +1,1080 @@
+@layer components {
+  .odds-terminal {
+    min-height: 100dvh;
+    overflow-x: clip;
+    color: var(--foreground);
+    background:
+      radial-gradient(circle at 15% -10%, color-mix(in oklab, var(--primary) 10%, transparent), transparent 32rem),
+      var(--background);
+  }
+
+  .odds-header {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--surface-1) 94%, transparent);
+    box-shadow: 0 12px 36px rgb(0 0 0 / 22%);
+    backdrop-filter: blur(16px);
+  }
+
+  .odds-header-inner,
+  .odds-main {
+    width: min(100%, 1600px);
+    margin-inline: auto;
+    padding-inline: clamp(0.75rem, 2vw, 1.5rem);
+  }
+
+  .odds-header-inner {
+    padding-block: 0.75rem 0.625rem;
+  }
+
+  .odds-main {
+    padding-block: 1rem 2rem;
+  }
+
+  .odds-kicker {
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+    font-weight: 650;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .odds-title {
+    color: var(--foreground);
+    font-size: clamp(1.125rem, 2vw, 1.375rem);
+    font-weight: 680;
+    letter-spacing: -0.02em;
+  }
+
+  .odds-tabs {
+    display: flex;
+    width: fit-content;
+    max-width: 100%;
+    align-items: center;
+    gap: 0.25rem;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) + 2px);
+    background: var(--surface-2);
+    padding: 0.25rem;
+    scrollbar-width: none;
+  }
+
+  .odds-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .odds-tab {
+    position: relative;
+    display: inline-flex;
+    min-height: 2.25rem;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: var(--radius);
+    padding-inline: 0.75rem;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    font-weight: 600;
+    transition: color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .odds-tab:hover {
+    color: var(--foreground);
+    background: color-mix(in oklab, var(--accent) 65%, transparent);
+  }
+
+  .odds-tab[data-state='active'] {
+    color: var(--primary-foreground);
+    background: var(--primary);
+    box-shadow: 0 6px 16px color-mix(in oklab, var(--primary) 28%, transparent);
+  }
+
+  .odds-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding-top: 0.625rem;
+  }
+
+  .odds-toolbar-group {
+    display: flex;
+    min-height: 2.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: color-mix(in oklab, var(--surface-2) 82%, transparent);
+    padding: 0.25rem;
+  }
+
+  .odds-toolbar button,
+  .odds-toolbar [role='button'] {
+    min-height: 2.25rem;
+  }
+
+  .odds-statusbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem;
+    padding-top: 0.625rem;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+  }
+
+  .odds-status-chip {
+    display: inline-flex;
+    min-height: 1.75rem;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+    padding-inline: 0.625rem;
+    white-space: nowrap;
+  }
+
+  .odds-table-wrap {
+    position: relative;
+    max-width: 100%;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) + 2px);
+    background: var(--surface-1);
+    box-shadow: 0 10px 30px rgb(0 0 0 / 14%);
+    scrollbar-color: var(--surface-3) transparent;
+  }
+
+  .odds-table-wrap table {
+    min-width: 980px;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .odds-table-wrap thead {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .odds-table-wrap thead tr {
+    color: var(--muted-foreground) !important;
+    background: var(--surface-3) !important;
+  }
+
+  .odds-table-wrap th {
+    height: 2.25rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground) !important;
+    font-size: 0.6875rem;
+    font-weight: 650;
+    letter-spacing: 0.025em;
+    white-space: nowrap;
+  }
+
+  .odds-table-wrap tbody > tr > td {
+    min-height: 2.25rem;
+    border-bottom-color: color-mix(in oklab, var(--border) 72%, transparent) !important;
+  }
+
+  .odds-table-wrap tbody > tr {
+    transition: background-color 150ms ease;
+  }
+
+  .odds-table-wrap tbody > tr:hover {
+    background: color-mix(in oklab, var(--primary) 7%, var(--surface-1)) !important;
+  }
+
+  .odds-table-wrap button {
+    min-width: 2rem;
+    min-height: 2rem;
+  }
+
+  .odds-table-wrap button:focus-visible,
+  .odds-toolbar button:focus-visible,
+  .odds-tab:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .odds-metric-card {
+    border: 1px solid var(--border) !important;
+    border-radius: calc(var(--radius) + 2px) !important;
+    background: var(--surface-2) !important;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  }
+
+  .odds-popover,
+  .odds-dialog {
+    max-width: calc(100vw - 1.5rem);
+    border-color: var(--border) !important;
+    color: var(--popover-foreground) !important;
+    background: var(--popover) !important;
+    box-shadow: 0 24px 64px rgb(0 0 0 / 42%) !important;
+  }
+
+  .odds-dialog {
+    width: min(calc(100vw - 1.5rem), var(--odds-dialog-width, 32rem));
+    max-height: min(86dvh, 52rem);
+    overflow-y: auto;
+  }
+
+  .odds-terminal .text-gray-100,
+  .odds-terminal .text-gray-200,
+  .odds-terminal .text-white {
+    color: var(--foreground) !important;
+  }
+
+  .odds-terminal .text-gray-300,
+  .odds-terminal .text-gray-400 {
+    color: color-mix(in oklab, var(--foreground) 78%, var(--muted-foreground)) !important;
+  }
+
+  .odds-terminal .text-gray-500,
+  .odds-terminal .text-gray-600 {
+    color: var(--muted-foreground) !important;
+  }
+
+  .odds-terminal .border-gray-700,
+  .odds-terminal .border-gray-800 {
+    border-color: var(--border) !important;
+  }
+
+  .odds-terminal .bg-gray-800,
+  .odds-terminal .bg-gray-800\/50,
+  .odds-terminal .bg-gray-800\/30,
+  .odds-terminal .bg-gray-900\/50,
+  .odds-terminal .bg-gray-900\/30,
+  .odds-terminal .bg-\[\#141828\] {
+    background-color: var(--surface-2) !important;
+  }
+
+  .odds-terminal .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ai-analysis-panel {
+    width: min(100%, calc(100vw - 2.5rem));
+    overflow: hidden;
+    border: 1px solid color-mix(in oklab, var(--primary) 22%, var(--border));
+    border-radius: calc(var(--radius) + 2px);
+    color: var(--foreground);
+    background:
+      linear-gradient(135deg, color-mix(in oklab, var(--primary) 7%, transparent), transparent 38%),
+      var(--surface-2);
+    box-shadow: inset 3px 0 0 color-mix(in oklab, var(--primary) 62%, transparent);
+  }
+
+  .ai-analysis-panel__toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.875rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .ai-analysis-panel__eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+  }
+
+  .ai-analysis-panel__meta-strip {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__meta-strip span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
+  }
+
+  .ai-analysis-panel__meta-strip strong {
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ai-analysis-panel__decision-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    border-top: 1px solid var(--border);
+    padding: 0.625rem 0.75rem;
+  }
+
+  .ai-analysis-panel__decision-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: color-mix(in oklab, var(--surface-1) 82%, transparent);
+    padding: 0.625rem;
+  }
+
+  .ai-analysis-panel__decision-card > svg {
+    margin-top: 0.2rem;
+  }
+
+  .ai-analysis-panel__decision-content {
+    display: grid;
+    grid-template-columns: minmax(7.5rem, 0.9fr) minmax(10rem, 1.4fr);
+    min-width: 0;
+    align-items: stretch;
+  }
+
+  .ai-analysis-panel__decision-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    align-items: center;
+    padding-right: 0.625rem;
+  }
+
+  .ai-analysis-panel__decision-fields > div,
+  .ai-analysis-panel__decision-advice {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .ai-analysis-panel__decision-fields span,
+  .ai-analysis-panel__decision-advice span,
+  .ai-analysis-panel__strategy span,
+  .ai-analysis-panel__market-verification span {
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+    font-weight: 600;
+  }
+
+  .ai-analysis-panel__decision-fields strong {
+    font-size: 0.875rem;
+  }
+
+  .ai-analysis-panel__decision-advice {
+    justify-content: center;
+    border-left: 1px solid var(--border);
+    padding-left: 0.625rem;
+  }
+
+  .ai-analysis-panel__decision-advice strong {
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .ai-analysis-panel--home {
+    color: oklch(0.76 0.14 40) !important;
+  }
+
+  .ai-analysis-panel--away {
+    color: oklch(0.76 0.13 160) !important;
+  }
+
+  .ai-analysis-panel--neutral {
+    color: var(--muted-foreground) !important;
+  }
+
+  .ai-analysis-panel__strategy,
+  .ai-analysis-panel__evidence,
+  .ai-analysis-panel__details,
+  .ai-analysis-panel__chat {
+    border-top: 1px solid var(--border);
+  }
+
+  .ai-analysis-panel__strategy > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .ai-analysis-panel__strategy strong {
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .ai-analysis-panel__strategy {
+    display: grid;
+    grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1.4fr);
+    gap: 1rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .ai-analysis-panel__strategy p,
+  .ai-analysis-panel__details p,
+  .ai-analysis-panel__message p {
+    margin: 0;
+    color: color-mix(in oklab, var(--foreground) 78%, var(--muted-foreground));
+    font-size: 0.75rem;
+    line-height: 1.65;
+  }
+
+  .ai-analysis-panel__evidence {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 0.5rem 0.75rem;
+  }
+
+  .ai-analysis-panel__evidence-item {
+    min-width: 0;
+    border-left: 2px solid var(--border);
+    padding-left: 0.625rem;
+  }
+
+  .ai-analysis-panel__evidence-item span,
+  .ai-analysis-panel__indicator-list span {
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__evidence-item strong {
+    display: block;
+    margin-block: 0.2rem;
+    font-size: 0.75rem;
+  }
+
+  .ai-analysis-panel__evidence-item small {
+    display: block;
+    margin-bottom: 0.2rem;
+    color: color-mix(in oklab, var(--foreground) 74%, var(--muted-foreground));
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__evidence-item p {
+    margin: 0;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+    line-height: 1.55;
+  }
+
+  .ai-analysis-panel__insights {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    border-top: 1px solid var(--border);
+    padding: 0.625rem 0.75rem;
+    background: color-mix(in oklab, var(--surface-1) 55%, transparent);
+  }
+
+  .ai-analysis-panel__insights > div {
+    min-width: 0;
+    border-left: 2px solid color-mix(in oklab, var(--primary) 32%, var(--border));
+    padding-left: 0.75rem;
+  }
+
+  .ai-analysis-panel__insights > div:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .ai-analysis-panel__insights h4 {
+    margin: 0 0 0.375rem;
+    color: var(--foreground);
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+
+  .ai-analysis-panel__insights p {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: color-mix(in oklab, var(--foreground) 80%, var(--muted-foreground));
+    font-size: 0.75rem;
+    line-height: 1.65;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .ai-analysis-panel__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.375rem;
+  }
+
+  .ai-analysis-panel__actions button,
+  .ai-analysis-panel__composer button,
+  .ai-analysis-panel__market-verification button {
+    display: inline-flex;
+    min-height: 2.25rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--muted-foreground);
+    background: var(--surface-1);
+    padding-inline: 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    transition: color 150ms ease, border-color 150ms ease, background-color 150ms ease;
+  }
+
+  .ai-analysis-panel__actions button:hover,
+  .ai-analysis-panel__market-verification button:hover {
+    border-color: color-mix(in oklab, var(--primary) 45%, var(--border));
+    color: var(--foreground);
+    background: var(--surface-3);
+  }
+
+  .ai-analysis-panel__details,
+  .ai-analysis-panel__chat {
+    display: grid;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: color-mix(in oklab, var(--surface-1) 76%, transparent);
+  }
+
+  .ai-analysis-panel__details h4 {
+    margin: 0 0 0.5rem;
+    color: var(--foreground);
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+
+  .ai-analysis-panel__indicator-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .ai-analysis-panel__indicator-list > div {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.625rem;
+  }
+
+  .ai-analysis-panel__indicator-list p {
+    grid-column: 1 / -1;
+  }
+
+  .ai-analysis-panel__patterns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+  }
+
+  .ai-analysis-panel__patterns span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    background: var(--surface-2);
+    padding: 0.3rem 0.625rem;
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__patterns strong {
+    color: var(--warning);
+  }
+
+  .ai-analysis-panel__messages {
+    display: grid;
+    max-height: 15rem;
+    gap: 0.5rem;
+    overflow-y: auto;
+  }
+
+  .ai-analysis-panel__message {
+    max-width: 82%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    padding: 0.625rem 0.75rem;
+  }
+
+  .ai-analysis-panel__message--user {
+    margin-left: auto;
+    border-color: color-mix(in oklab, var(--primary) 34%, var(--border));
+    background: color-mix(in oklab, var(--primary) 10%, var(--surface-2));
+  }
+
+  .ai-analysis-panel__message span,
+  .ai-analysis-panel__empty {
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__composer {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .ai-analysis-panel__composer input {
+    min-width: 0;
+    min-height: 2.5rem;
+    flex: 1;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    color: var(--foreground);
+    background: var(--surface-2);
+    padding-inline: 0.75rem;
+    font-size: 0.75rem;
+    outline: none;
+  }
+
+  .ai-analysis-panel__composer input:focus {
+    border-color: var(--ring);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 24%, transparent);
+  }
+
+  .ai-analysis-panel__composer button {
+    color: var(--primary-foreground);
+    background: var(--primary);
+  }
+
+  .ai-analysis-panel__composer button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .ai-analysis-panel__probability,
+  .ai-analysis-panel__probability-empty,
+  .ai-analysis-panel__recommendation,
+  .ai-analysis-panel__market-verification {
+    grid-column: 2;
+  }
+
+  .ai-analysis-panel__probability {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.5rem;
+  }
+
+  .ai-analysis-panel__probability-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__probability-head strong {
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ai-analysis-panel__probability > small,
+  .ai-analysis-panel__candidate-list small {
+    color: var(--muted-foreground);
+    font-size: 0.65rem;
+  }
+
+  .ai-analysis-panel__probability-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.25rem;
+  }
+
+  .ai-analysis-panel__probability-grid span {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.1rem;
+    border: 1px solid var(--border);
+    border-radius: 0.25rem;
+    color: var(--muted-foreground);
+    background: var(--surface-2);
+    padding: 0.3rem;
+    font-size: 0.625rem;
+  }
+
+  .ai-analysis-panel__probability-grid strong {
+    color: var(--foreground);
+    font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ai-analysis-panel__probability-empty,
+  .ai-analysis-panel__recommendation {
+    margin: 0.45rem 0 0;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__recommendation {
+    color: color-mix(in oklab, var(--foreground) 78%, var(--muted-foreground));
+  }
+
+  .ai-analysis-panel__market-verification {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.5rem;
+  }
+
+  .ai-analysis-panel__market-verification > div:first-child {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .ai-analysis-panel__market-verification > div:last-child {
+    display: flex;
+    gap: 0.375rem;
+  }
+
+  .ai-analysis-panel__market-verification span {
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__market-verification strong {
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__market-verification button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .ai-analysis-panel__probability-detail {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem 1rem;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__probability-detail strong {
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ai-analysis-panel__candidate-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .ai-analysis-panel__candidate-list > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.2rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.625rem;
+  }
+
+  .ai-analysis-panel__candidate-list span {
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  .ai-analysis-panel__candidate-list strong {
+    color: var(--foreground);
+    font-size: 0.75rem;
+  }
+
+  .ai-analysis-panel__verify-positive {
+    color: var(--success) !important;
+  }
+
+  .ai-analysis-panel__verify-negative {
+    color: oklch(0.75 0.15 25) !important;
+  }
+
+  .match-status-badge {
+    display: inline-flex;
+    min-height: 1.25rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    border: 1px solid transparent;
+    border-radius: 0.25rem;
+    padding-inline: 0.375rem;
+    font-size: 0.6875rem;
+    font-weight: 650;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .match-status-badge__icon {
+    position: relative;
+    display: inline-flex;
+    width: 0.75rem;
+    height: 0.75rem;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .match-status-badge__icon svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  .match-status-badge--scheduled {
+    border-color: color-mix(in oklab, var(--muted-foreground) 28%, transparent);
+    color: oklch(0.76 0.035 255);
+    background: oklch(0.28 0.025 255 / 42%);
+  }
+
+  .match-status-badge--live {
+    border-color: oklch(0.7 0.14 160 / 38%);
+    color: oklch(0.78 0.15 160);
+    background: oklch(0.28 0.08 160 / 50%);
+  }
+
+  .match-status-badge--live .match-status-badge__icon::before {
+    position: absolute;
+    inset: -0.2rem;
+    border: 1px solid currentColor;
+    border-radius: 50%;
+    content: '';
+    animation: match-status-pulse 2s ease-out infinite;
+  }
+
+  .match-status-badge--halftime {
+    border-color: oklch(0.76 0.15 76 / 38%);
+    color: oklch(0.82 0.15 76);
+    background: oklch(0.3 0.08 76 / 50%);
+  }
+
+  .match-status-badge--finished {
+    border-color: color-mix(in oklab, var(--border) 80%, transparent);
+    color: oklch(0.62 0.025 255);
+    background: oklch(0.2 0.02 255 / 72%);
+  }
+
+  .match-status-badge--unknown {
+    border-color: color-mix(in oklab, var(--border) 72%, transparent);
+    color: var(--muted-foreground);
+    background: color-mix(in oklab, var(--surface-3) 58%, transparent);
+  }
+
+  .match-row--live {
+    background: color-mix(in oklab, var(--success) 5%, var(--surface-1)) !important;
+  }
+
+  .match-row--halftime {
+    background: color-mix(in oklab, var(--warning) 4%, var(--surface-1)) !important;
+  }
+
+  .match-row--finished {
+    background: color-mix(in oklab, var(--muted-foreground) 3%, var(--surface-1)) !important;
+  }
+
+  .match-row--unknown {
+    background: color-mix(in oklab, var(--surface-3) 26%, var(--surface-1)) !important;
+  }
+
+  .match-situation {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  .match-situation__data {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+  }
+
+  .match-score {
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .match-situation__data small {
+    color: var(--muted-foreground);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.625rem;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .match-group-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    border-left: 2px solid var(--border);
+    padding-left: 0.625rem;
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    font-weight: 650;
+  }
+
+  .match-group-title strong {
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+  }
+
+  @keyframes match-status-pulse {
+    0% {
+      opacity: 0.65;
+      transform: scale(0.72);
+    }
+    70%,
+    100% {
+      opacity: 0;
+      transform: scale(1.35);
+    }
+  }
+}
+
+@media (max-width: 1023px) {
+  .odds-header {
+    position: relative;
+  }
+
+  .odds-tab,
+  .odds-toolbar button,
+  .odds-toolbar [role='button'],
+  .odds-toolbar input,
+  .ai-analysis-panel__actions button,
+  .ai-analysis-panel__composer button,
+  .ai-analysis-panel__market-verification button {
+    min-height: 2.75rem;
+  }
+
+  .ai-analysis-panel__decision-content {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-analysis-panel__decision-advice {
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+    padding-top: 0.5rem;
+    padding-left: 0;
+  }
+
+  .ai-analysis-panel__evidence {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .odds-header {
+    position: relative;
+  }
+
+  .odds-header-inner {
+    padding-block: 0.75rem;
+  }
+
+  .odds-main {
+    padding-top: 0.75rem;
+  }
+
+  .odds-toolbar {
+    align-items: stretch;
+  }
+
+  .odds-toolbar-group {
+    width: 100%;
+  }
+
+  .odds-toolbar button,
+  .odds-toolbar [role='button'],
+  .odds-toolbar input,
+  .odds-tab {
+    min-height: 2.75rem;
+  }
+
+  .odds-tabs {
+    width: 100%;
+  }
+
+  .ai-analysis-panel__decision-grid,
+  .ai-analysis-panel__strategy,
+  .ai-analysis-panel__evidence,
+  .ai-analysis-panel__insights,
+  .ai-analysis-panel__indicator-list {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-analysis-panel__toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-analysis-panel__meta-strip,
+  .ai-analysis-panel__actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .ai-analysis-panel__decision-grid,
+  .ai-analysis-panel__strategy,
+  .ai-analysis-panel__evidence,
+  .ai-analysis-panel__insights,
+  .ai-analysis-panel__details,
+  .ai-analysis-panel__chat {
+    padding-inline: 0.75rem;
+  }
+
+  .ai-analysis-panel__market-verification {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ai-analysis-panel__market-verification > div:last-child,
+  .ai-analysis-panel__actions {
+    flex-wrap: wrap;
+  }
+
+  .ai-analysis-panel__market-verification button {
+    flex: 1;
+  }
+
+  .ai-analysis-panel__probability-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .ai-analysis-panel__candidate-list {
+    grid-template-columns: 1fr;
+  }
+
+  .odds-table-wrap::after {
+    position: sticky;
+    right: 0;
+    display: block;
+    width: 2rem;
+    height: 1px;
+    margin-top: -1px;
+    margin-left: auto;
+    content: '';
+    box-shadow: -12px 0 20px color-mix(in oklab, var(--background) 72%, transparent);
+  }
+}

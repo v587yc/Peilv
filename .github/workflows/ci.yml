@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.0.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run unit tests
+        run: pnpm exec vitest run
+      - name: Check types
+        run: pnpm ts-check
+      - name: Lint
+        run: pnpm lint
+      - name: Build
+        run: pnpm build
+      - name: Check server bundle
+        run: node --check dist/server.js
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run end-to-end tests
+        run: pnpm test:e2e
+      - name: Create and verify release artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          release_id="$(date -u +%Y%m%dT%H%M%SZ)"
+          bash scripts/create-release.sh "$release_id"
+          bash scripts/verify-release.sh \
+            "release-artifacts/peilv-$release_id.tar.gz" \
+            "release-artifacts/peilv-$release_id.tar.gz.sha256"
+      - name: Upload release artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: peilv-${{ github.sha }}
+          path: |
+            release-artifacts/*.tar.gz
+            release-artifacts/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ github.run_id }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 3

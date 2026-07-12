@@ -1,0 +1,4 @@
+Defaults:peilv-audit env_reset,use_pty
+Defaults:peilv-deploy env_reset,use_pty
+peilv-audit ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control preflight *
+peilv-deploy ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control deploy *

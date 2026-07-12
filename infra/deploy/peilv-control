@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+caller="${SUDO_USER:-}"
+command_name="${1:-}"
+
+case "$caller:$command_name:$#" in
+  peilv-audit:preflight:3)
+    exec /usr/local/libexec/peilv/production-preflight.sh "$2" "$3"
+    ;;
+  peilv-deploy:deploy:3)
+    exec /usr/local/libexec/peilv/deploy-production.sh "$2" "$3"
+    ;;
+  *)
+    printf 'Command is not permitted\n' >&2
+    exit 126
+    ;;
+esac

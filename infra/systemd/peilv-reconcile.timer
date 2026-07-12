@@ -1,0 +1,11 @@
+[Unit]
+Description=Repair Peilv T-30 automation tasks every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
+AccuracySec=1s
+Unit=peilv-reconcile.service
+
+[Install]
+WantedBy=timers.target

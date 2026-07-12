@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["tsx", "src/server.ts"],
+      "port": 5001,
+      "env": { "PORT": "5001" },
+      "autoPort": false
+    }
+  ]
+}
