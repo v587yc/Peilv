@@ -2,15 +2,24 @@
 set -Eeuo pipefail
 umask 027
 
-release_id="${1:?Usage: deploy-production.sh <release-id> <sha256>}"
-expected_sha="${2:?Usage: deploy-production.sh <release-id> <sha256>}"
+usage='Usage: deploy-production.sh <release-id> <sha256> <expected-current-release-id> <request-id>'
+release_id="${1:?$usage}"
+expected_sha="${2:?$usage}"
+expected_current_release_id="${3:?$usage}"
+request_id="${4:?$usage}"
 
-if [[ ! "$release_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+if [[ ! "$release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] ||
+   { [[ ! "$expected_current_release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] &&
+     [[ "$expected_current_release_id" != "20260712T192535Z" ]]; }; then
   printf 'Invalid release ID\n' >&2
   exit 1
 fi
 if [[ ! "$expected_sha" =~ ^[0-9a-f]{64}$ ]]; then
   printf 'Invalid SHA-256\n' >&2
+  exit 1
+fi
+if [[ ! "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+  printf 'Invalid request ID\n' >&2
   exit 1
 fi
 
@@ -26,6 +35,11 @@ checksum="$archive.sha256"
 release_dir="$base/releases/$release_id"
 backup="$base/backups/peilv-before-$release_id.dump"
 old_release="$(readlink -f "$base/current")"
+old_release_id="${old_release##*/}"
+if [[ "$old_release_id" != "$expected_current_release_id" ]]; then
+  printf 'Current release changed since approval\n' >&2
+  exit 1
+fi
 candidate_unit="peilv-candidate-$release_id.service"
 timers_stopped=0
 app_stopped=0
@@ -276,6 +290,21 @@ systemctl start peilv-dispatch.timer
 completed=1
 
 rm -f "$archive" "$checksum" || printf 'Warning: incoming artifact cleanup failed\n' >&2
+RESULT_PATH="/tmp/deployment-$request_id.json" RELEASE_ID="$release_id" PREVIOUS_RELEASE="$old_release_id" BACKUP="$backup" BACKUP_SHA="$backup_sha" APPLIED="$(printf '%s\n' "${applied[@]}")" REQUEST_ID="$request_id" node <<'NODE'
+const migrations = (process.env.APPLIED || "").split("\n").filter(Boolean);
+const result = {
+  schemaVersion: 1,
+  status: "succeeded",
+  requestId: process.env.REQUEST_ID,
+  releaseId: process.env.RELEASE_ID,
+  previousReleaseId: process.env.PREVIOUS_RELEASE,
+  backupPath: process.env.BACKUP,
+  backupSha256: process.env.BACKUP_SHA,
+  appliedMigrations: migrations,
+  completedAt: new Date().toISOString(),
+};
+require("node:fs").writeFileSync(process.env.RESULT_PATH, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o644 });
+NODE
 printf 'Deployment completed\n'
 printf 'Release: %s\n' "$release_dir"
 printf 'Previous release: %s\n' "$old_release"

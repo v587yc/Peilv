@@ -1,60 +1,138 @@
 name: Production preflight
+run-name: Preflight ${{ inputs.release_id }} · ${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Exact successful main CI run ID
+        required: true
+        type: string
+      source_run_attempt:
+        description: Exact CI run attempt
+        required: true
+        type: string
+      source_artifact_id:
+        description: Exact immutable candidate artifact ID
+        required: true
+        type: string
+      commit_sha:
+        description: Exact candidate commit SHA
+        required: true
+        type: string
+      release_id:
+        description: Release ID derived from run, attempt, and commit
+        required: true
+        type: string
+      request_id:
+        description: Control-plane request UUID
+        required: true
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: peilv-production-preflight
   cancel-in-progress: false
 
 jobs:
-  build-and-preflight:
+  inspect-production:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    outputs:
-      release_id: ${{ steps.release.outputs.release_id }}
-      release_sha: ${{ steps.release.outputs.release_sha }}
-      commit_sha: ${{ steps.commit.outputs.commit_sha }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Validate fixed candidate identity
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_ID" == "r${SOURCE_RUN_ID}-a${SOURCE_RUN_ATTEMPT}-${COMMIT_SHA:0:12}" ]]
+          [[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          run_json="$(gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID")"
+          RUN_JSON="$run_json" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" COMMIT_SHA="$COMMIT_SHA" node - <<'NODE'
+          const run = JSON.parse(process.env.RUN_JSON);
+          const expected = {
+            attempt: Number(process.env.SOURCE_RUN_ATTEMPT),
+            sha: process.env.COMMIT_SHA,
+          };
+          if (run.event !== "push" || run.head_branch !== "main" || run.status !== "completed" || run.conclusion !== "success") {
+            throw new Error("Source run is not a successful main push");
+          }
+          if (run.run_attempt !== expected.attempt || run.head_sha !== expected.sha) {
+            throw new Error("Source run identity changed");
+          }
+          NODE
+          artifact_json="$(gh api "repos/$GH_REPO/actions/artifacts/$SOURCE_ARTIFACT_ID")"
+          ARTIFACT_JSON="$artifact_json" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" COMMIT_SHA="$COMMIT_SHA" node - <<'NODE'
+          const artifact = JSON.parse(process.env.ARTIFACT_JSON);
+          const expectedName = `peilv-candidate-${process.env.SOURCE_RUN_ID}-${process.env.SOURCE_RUN_ATTEMPT}`;
+          if (artifact.expired || artifact.name !== expectedName || artifact.workflow_run?.id !== Number(process.env.SOURCE_RUN_ID) || artifact.workflow_run?.head_sha !== process.env.COMMIT_SHA) {
+            throw new Error("Candidate artifact identity changed or expired");
+          }
+          NODE
+      - name: Download exact candidate artifact
+        uses: actions/download-artifact@v4
         with:
-          ref: main
-      - id: commit
+          artifact-ids: ${{ inputs.source_artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
+          path: release-artifacts
+          github-token: ${{ github.token }}
+      - name: Cross-check archive and manifests
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
         run: |
-          git fetch origin main --depth=1
-          commit_sha="$(git rev-parse HEAD)"
-          [[ "$commit_sha" == "$(git rev-parse origin/main)" ]]
-          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Enable pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.0.0 --activate
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Verify and build
-        run: |
-          pnpm exec vitest run
-          pnpm ts-check
-          pnpm lint
-          pnpm build
-          node --check dist/server.js
-      - id: release
-        name: Create release
-        run: |
-          release_id="$(date -u +%Y%m%dT%H%M%SZ)"
-          bash scripts/create-release.sh "$release_id"
-          archive="release-artifacts/peilv-$release_id.tar.gz"
+          set -Eeuo pipefail
+          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
           checksum="$archive.sha256"
-          bash scripts/verify-release.sh "$archive" "$checksum"
-          release_sha="$(sed -n '1{s/ .*//;p;}' "$checksum")"
-          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
-          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          external="release-artifacts/release-manifest-$RELEASE_ID.json"
+          [[ -f "$archive" && -f "$checksum" && -f "$external" ]]
+          archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
+          [[ "$(awk 'NR == 1 {print $1}' "$checksum")" == "$archive_sha" ]]
+          [[ "$(awk 'NR == 1 {print $2}' "$checksum")" == "peilv-$RELEASE_ID.tar.gz" || "$(awk 'NR == 1 {print $2}' "$checksum")" == "*peilv-$RELEASE_ID.tar.gz" ]]
+          rm -rf verified-release
+          mkdir verified-release
+          tar -xzf "$archive" -C verified-release ./release-manifest.json ./migrations/manifest.json
+          EXTERNAL_MANIFEST="$external" INTERNAL_MANIFEST="verified-release/release-manifest.json" MIGRATION_MANIFEST="verified-release/migrations/manifest.json" ARCHIVE_SHA="$archive_sha" RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" REPOSITORY="$REPOSITORY" REPOSITORY_ID="$REPOSITORY_ID" node - <<'NODE'
+          const fs = require("node:fs");
+          const external = JSON.parse(fs.readFileSync(process.env.EXTERNAL_MANIFEST, "utf8"));
+          const internal = JSON.parse(fs.readFileSync(process.env.INTERNAL_MANIFEST, "utf8"));
+          const migrations = JSON.parse(fs.readFileSync(process.env.MIGRATION_MANIFEST, "utf8"));
+          const expected = {
+            releaseId: process.env.RELEASE_ID,
+            commitSha: process.env.COMMIT_SHA,
+            sourceRunId: Number(process.env.SOURCE_RUN_ID),
+            sourceRunAttempt: Number(process.env.SOURCE_RUN_ATTEMPT),
+            repository: process.env.REPOSITORY,
+            repositoryId: Number(process.env.REPOSITORY_ID),
+          };
+          for (const [key, value] of Object.entries(expected)) {
+            if (external[key] !== value || internal[key] !== value) throw new Error(`Manifest ${key} mismatch`);
+          }
+          if (external.archiveSha256 !== process.env.ARCHIVE_SHA || internal.archiveSha256 !== null) throw new Error("Archive checksum binding mismatch");
+          if (external.archiveFile !== `peilv-${expected.releaseId}.tar.gz` || internal.archiveFile !== external.archiveFile) throw new Error("Archive filename binding mismatch");
+          if (JSON.stringify(external.migrations) !== JSON.stringify(internal.migrations) || JSON.stringify(internal.migrations) !== JSON.stringify(migrations.migrations)) throw new Error("Migration manifest mismatch");
+          if (!Array.isArray(migrations.migrations) || migrations.migrations.length === 0) throw new Error("Migration manifest is empty");
+          NODE
+          echo "ARCHIVE_SHA=$archive_sha" >> "$GITHUB_ENV"
+          migrations="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.migrations.map(x => `${x.file}=${x.version}`).join(","))' "$external")"
+          echo "MIGRATIONS=$migrations" >> "$GITHUB_ENV"
       - name: Configure read-only SSH
         env:
           SSH_KEY: ${{ secrets.PROD_AUDIT_SSH_KEY }}
@@ -66,33 +144,25 @@ jobs:
           chmod 0600 ~/.ssh/audit_key ~/.ssh/known_hosts
       - name: Inspect production without changes
         env:
-          RELEASE_ID: ${{ steps.release.outputs.release_id }}
-          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_PORT: ${{ secrets.PROD_PORT }}
           PROD_USER: ${{ secrets.PROD_AUDIT_USER }}
         run: |
           set -Eeuo pipefail
-          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
-          [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$RELEASE_SHA" ]]
-          migrations=''
-          while IFS= read -r member; do
-            normalized_member="${member#./}"
-            [[ "$normalized_member" == migrations/*.sql ]] || continue
-            name="${normalized_member##*/}"
-            version="$(tar -xOzf "$archive" "$member" | sed -n '/INSERT INTO schema_migrations(version, description)/,/ON CONFLICT/p' | sed -nE "0,/^[[:space:]]*'([^']+)'[[:space:]]*,?[[:space:]]*$/s//\\1/p" | head -n 1)"
-            migrations="${migrations:+$migrations,}$name=$version"
-          done < <(tar -tzf "$archive")
           ssh -i ~/.ssh/audit_key -p "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
-            bash -s -- "$RELEASE_ID" "$migrations" <<'REMOTE' | tee preflight.md
+            bash -s -- "$RELEASE_ID" "$COMMIT_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_ARTIFACT_ID" "$ARCHIVE_SHA" "$REQUEST_ID" "$MIGRATIONS" <<'REMOTE' > preflight-result.json
           set -Eeuo pipefail
-          release_id="$1"
-          migrations="$2"
           for _ in {1..90}; do
             status=0
-            output="$(sudo -n /usr/local/sbin/peilv-control preflight "$release_id" "$migrations" 2>&1)" || status=$?
+            output="$(sudo -n /usr/local/sbin/peilv-control preflight "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" 2>&1)" || status=$?
             if (( status == 0 )); then
               printf '%s\n' "$output"
               exit 0
@@ -107,25 +177,34 @@ jobs:
           printf 'Timed out waiting for peilv systemd jobs to finish\n' >&2
           exit 1
           REMOTE
-          [[ -s preflight.md ]]
+          node -e 'const fs=require("node:fs"); const r=JSON.parse(fs.readFileSync("preflight-result.json","utf8")); if (r.schemaVersion !== 1 || !["passed","blocked"].includes(r.status)) process.exit(1);'
+          status="$(node -p 'require("./preflight-result.json").status')"
+          node <<'NODE' > preflight.md
+          const fs = require("node:fs");
+          const r = JSON.parse(fs.readFileSync("preflight-result.json", "utf8"));
+          const line = value => value.length ? value.map(x => `\`${x}\``).join(", ") : "none";
+          console.log("## Production preflight\n");
+          console.log(`- Status: **${r.status}**`);
+          console.log(`- Release: \`${r.candidate.releaseId}\``);
+          console.log(`- Commit: \`${r.candidate.commitSha}\``);
+          console.log(`- Source: run \`${r.candidate.sourceRunId}\`, attempt \`${r.candidate.sourceRunAttempt}\`, artifact \`${r.candidate.sourceArtifactId}\``);
+          console.log(`- Current release: \`${r.currentRelease}\``);
+          console.log(`- Pending migrations: ${line(r.migrations.pending)}`);
+          console.log(`- Unknown database migrations: ${line(r.migrations.unknown)}`);
+          console.log(`- Blockers: ${line(r.blockers)}`);
+          NODE
           cat preflight.md >> "$GITHUB_STEP_SUMMARY"
-          {
-            printf '\n## If you approve this preflight\n\n'
-            printf -- '- Run workflow: `Deploy approved production`\n'
-            printf -- '- Use release ID: `%s`\n' "$RELEASE_ID"
-            printf -- '- Use release SHA-256: `%s`\n' "$RELEASE_SHA"
-            printf -- '- Commit: `%s`\n' '${{ steps.commit.outputs.commit_sha }}'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+          if [[ "$status" == blocked ]]; then
+            printf 'Production preflight completed with blockers\n' >&2
+            exit 2
+          fi
+      - name: Upload structured preflight result
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: production-${{ steps.release.outputs.release_id }}
+          name: preflight-result-${{ inputs.request_id }}
           path: |
-            release-artifacts/peilv-${{ steps.release.outputs.release_id }}.tar.gz
-            release-artifacts/peilv-${{ steps.release.outputs.release_id }}.tar.gz.sha256
+            preflight-result.json
+            preflight.md
           if-no-files-found: error
-          retention-days: 14
-      - uses: actions/upload-artifact@v4
-        with:
-          name: preflight-${{ steps.release.outputs.release_id }}
-          path: preflight.md
-          retention-days: 14
+          retention-days: 30

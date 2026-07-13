@@ -64,6 +64,8 @@ required=(
   scripts/reconcile-automation.sh
   infra/local-data/compose.yml
   infra/local-data/nginx/default.conf
+  migrations/manifest.json
+  release-manifest.json
 )
 
 members="$(normalize_members)"
@@ -80,6 +82,48 @@ if ! grep -Eq '^migrations/[^/]+\.sql$' <<<"$members"; then
 fi
 
 tar -xzf "$archive" -C "$extract_dir" --no-same-owner --no-same-permissions
+
+ARCHIVE_PATH="$archive" EXPECTED_SHA="$expected_sha" EXTRACT_DIR="$extract_dir" node <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = process.env.EXTRACT_DIR;
+const release = JSON.parse(fs.readFileSync(path.join(root, "release-manifest.json"), "utf8"));
+const migrations = JSON.parse(fs.readFileSync(path.join(root, "migrations", "manifest.json"), "utf8"));
+const fail = message => { throw new Error(message); };
+const releasePattern = /^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$/;
+const shaPattern = /^[0-9a-f]{64}$/;
+const commitPattern = /^[0-9a-f]{40}$/;
+if (release.schemaVersion !== 1 || migrations.schemaVersion !== 1) fail("Unsupported manifest schema");
+if (!Number.isSafeInteger(release.repositoryId) || release.repositoryId <= 0) fail("Invalid repository ID");
+if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(release.repository)) fail("Invalid repository");
+if (!commitPattern.test(release.commitSha) || !releasePattern.test(release.releaseId)) fail("Invalid release provenance");
+if (release.releaseId !== `r${release.sourceRunId}-a${release.sourceRunAttempt}-${release.commitSha.slice(0, 12)}`) fail("Release provenance mismatch");
+if (release.archiveFile !== path.basename(process.env.ARCHIVE_PATH)) fail("Archive filename mismatch");
+if (release.archiveSha256 !== null) fail("Embedded archive checksum must be null");
+if (!Array.isArray(release.migrations) || !Array.isArray(migrations.migrations)) fail("Invalid migrations manifest");
+if (JSON.stringify(release.migrations) !== JSON.stringify(migrations.migrations)) fail("Migration manifests differ");
+const sqlFiles = fs.readdirSync(path.join(root, "migrations")).filter(name => name.endsWith(".sql")).sort();
+const declaredFiles = migrations.migrations.map(value => value.file).sort();
+if (JSON.stringify(sqlFiles) !== JSON.stringify(declaredFiles)) fail("Migration file set mismatch");
+const files = new Set();
+const versions = new Set();
+for (const migration of migrations.migrations) {
+  if (!/^[0-9]{4}_[a-z0-9_]+\.sql$/.test(migration.file)) fail("Invalid migration filename");
+  if (!/^[0-9]{4}_[a-z0-9_]+$/.test(migration.version)) fail("Invalid migration version");
+  if (!shaPattern.test(migration.sha256) || typeof migration.codeRollbackSafe !== "boolean") fail("Invalid migration metadata");
+  if (files.has(migration.file) || versions.has(migration.version)) fail("Duplicate migration metadata");
+  files.add(migration.file);
+  versions.add(migration.version);
+  const content = fs.readFileSync(path.join(root, "migrations", migration.file));
+  const actual = crypto.createHash("sha256").update(content).digest("hex");
+  if (actual !== migration.sha256) fail(`Migration checksum mismatch: ${migration.file}`);
+  const text = content.toString("utf8");
+  if (!text.includes(`'${migration.version}'`)) fail(`Migration registration mismatch: ${migration.file}`);
+}
+if (!shaPattern.test(process.env.EXPECTED_SHA)) fail("Invalid expected archive checksum");
+NODE
 
 while IFS= read -r migration; do
   name="$(basename "$migration")"

@@ -2,11 +2,12 @@ import { getSupabaseClient } from "@/storage/database/supabase-client";
 
 export interface AuditLogEntry {
   actorId?: string | null;
-  actorType: "admin" | "internal" | "system";
+  actorType: "admin" | "internal" | "system" | "deployment-admin";
   action: string;
   objectType: string;
   objectId?: string | null;
   requestId?: string | null;
+  idempotencyKey?: string | null;
   oldValue?: unknown;
   newValue?: unknown;
   metadata?: Record<string, unknown>;
@@ -36,6 +37,7 @@ export async function writeAuditLog(entry: AuditLogEntry): Promise<boolean> {
       object_type: entry.objectType,
       object_id: entry.objectId || null,
       request_id: entry.requestId || null,
+      idempotency_key: entry.idempotencyKey || null,
       old_value: entry.oldValue === undefined ? null : sanitize(entry.oldValue),
       new_value: entry.newValue === undefined ? null : sanitize(entry.newValue),
       metadata: sanitize(entry.metadata || {}),

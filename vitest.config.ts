@@ -9,6 +9,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    exclude: ["**/node_modules/**", "**/.git/**", "**/.claude/worktrees/**"],
     coverage: {
       provider: "v8",
       include: [

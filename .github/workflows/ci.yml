@@ -42,9 +42,16 @@ jobs:
         run: pnpm test:e2e
       - name: Create and verify release artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          release_id="$(date -u +%Y%m%dT%H%M%SZ)"
-          bash scripts/create-release.sh "$release_id"
+          release_id="r${RUN_ID}-a${RUN_ATTEMPT}-${COMMIT_SHA:0:12}"
+          bash scripts/create-release.sh \
+            "$release_id" "$COMMIT_SHA" "$REPOSITORY_ID" "$REPOSITORY" "$RUN_ID" "$RUN_ATTEMPT"
           bash scripts/verify-release.sh \
             "release-artifacts/peilv-$release_id.tar.gz" \
             "release-artifacts/peilv-$release_id.tar.gz.sha256"
@@ -52,12 +59,13 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: peilv-${{ github.sha }}
+          name: peilv-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             release-artifacts/*.tar.gz
             release-artifacts/*.tar.gz.sha256
+            release-artifacts/release-manifest-*.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
       - name: Upload Playwright diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

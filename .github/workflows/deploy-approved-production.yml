@@ -1,14 +1,39 @@
 name: Deploy approved production
+run-name: Deploy ${{ inputs.release_id }} · ${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      release_id:
-        description: Release ID from the Production preflight summary
+      source_run_id:
+        description: Exact successful main CI run ID
         required: true
         type: string
-      release_sha:
-        description: SHA-256 from the Production preflight summary
+      source_run_attempt:
+        description: Exact CI run attempt
+        required: true
+        type: string
+      source_artifact_id:
+        description: Exact candidate artifact ID
+        required: true
+        type: string
+      preflight_run_id:
+        description: Exact successful preflight run ID
+        required: true
+        type: string
+      preflight_artifact_id:
+        description: Exact structured preflight artifact ID
+        required: true
+        type: string
+      commit_sha:
+        description: Exact candidate commit SHA
+        required: true
+        type: string
+      release_id:
+        description: Exact candidate release ID
+        required: true
+        type: string
+      request_id:
+        description: Control-plane request UUID
         required: true
         type: string
 
@@ -24,41 +49,82 @@ jobs:
   deploy-production:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: production
     steps:
-      - name: Validate input format
+      - name: Validate immutable identities
         env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+          PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          PREFLIGHT_ARTIFACT_ID: ${{ inputs.preflight_artifact_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
-          RELEASE_SHA: ${{ inputs.release_sha }}
+          REQUEST_ID: ${{ inputs.request_id }}
         run: |
-          [[ "$RELEASE_ID" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
-          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{64}$ ]]
-      - uses: actions/download-artifact@v4
+          set -Eeuo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PREFLIGHT_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PREFLIGHT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_ID" == "r${SOURCE_RUN_ID}-a${SOURCE_RUN_ATTEMPT}-${COMMIT_SHA:0:12}" ]]
+          [[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+      - name: Download exact candidate
+        uses: actions/download-artifact@v4
         with:
-          name: production-${{ inputs.release_id }}
+          artifact-ids: ${{ inputs.source_artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
           path: release-artifacts
-          run-id: ${{ github.run_id }}
-        continue-on-error: true
-      - name: Download artifact from latest preflight if needed
+          github-token: ${{ github.token }}
+      - name: Download exact preflight result
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.preflight_artifact_id }}
+          run-id: ${{ inputs.preflight_run_id }}
+          path: preflight-artifacts
+          github-token: ${{ github.token }}
+      - name: Cross-check candidate and preflight
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
         run: |
-          if [[ -f "release-artifacts/peilv-$RELEASE_ID.tar.gz" ]]; then
-            exit 0
-          fi
-          rm -rf release-artifacts
-          mkdir -p release-artifacts
-          run_id="$(gh run list --workflow production-preflight.yml --branch main --status success --limit 20 --json databaseId --jq '.[].databaseId' | while read -r id; do
-            if gh run download "$id" -n "production-$RELEASE_ID" -D release-artifacts >/dev/null 2>&1; then
-              echo "$id"
-              break
-            fi
-          done)"
-          if [[ -z "$run_id" ]]; then
-            printf 'Could not find preflight artifact for release %s\n' "$RELEASE_ID" >&2
-            exit 1
-          fi
+          set -Eeuo pipefail
+          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
+          checksum="$archive.sha256"
+          external="release-artifacts/release-manifest-$RELEASE_ID.json"
+          result="preflight-artifacts/preflight-result.json"
+          [[ -f "$archive" && -f "$checksum" && -f "$external" && -f "$result" ]]
+          actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
+          [[ "$(awk 'NR == 1 {print $1}' "$checksum")" == "$actual_sha" ]]
+          readarray -t result_values < <(EXTERNAL="$external" RESULT="$result" RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" SOURCE_ARTIFACT_ID="$SOURCE_ARTIFACT_ID" ACTUAL_SHA="$actual_sha" node - <<'NODE'
+          const fs = require("node:fs");
+          const manifest = JSON.parse(fs.readFileSync(process.env.EXTERNAL, "utf8"));
+          const result = JSON.parse(fs.readFileSync(process.env.RESULT, "utf8"));
+          const expected = {
+            releaseId: process.env.RELEASE_ID,
+            commitSha: process.env.COMMIT_SHA,
+            sourceRunId: Number(process.env.SOURCE_RUN_ID),
+            sourceRunAttempt: Number(process.env.SOURCE_RUN_ATTEMPT),
+            sourceArtifactId: Number(process.env.SOURCE_ARTIFACT_ID),
+            archiveSha256: process.env.ACTUAL_SHA,
+          };
+          if (manifest.releaseId !== expected.releaseId || manifest.commitSha !== expected.commitSha || manifest.sourceRunId !== expected.sourceRunId || manifest.sourceRunAttempt !== expected.sourceRunAttempt || manifest.archiveSha256 !== expected.archiveSha256) throw new Error("Candidate manifest mismatch");
+          if (result.schemaVersion !== 1 || result.status !== "passed" || result.blockers?.length) throw new Error("Preflight did not pass");
+          for (const [key, value] of Object.entries(expected)) if (result.candidate?.[key] !== value) throw new Error(`Preflight ${key} mismatch`);
+          if (!/^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$/.test(result.currentRelease || "")) throw new Error("Expected current release is invalid");
+          if (Date.parse(result.validUntil) <= Date.now()) throw new Error("Preflight expired");
+          console.log(result.candidate.archiveSha256);
+          console.log(result.currentRelease);
+          NODE
+          )
+          [[ "${#result_values[@]}" -eq 2 ]]
+          echo "ARCHIVE_SHA=${result_values[0]}" >> "$GITHUB_ENV"
+          echo "EXPECTED_CURRENT=${result_values[1]}" >> "$GITHUB_ENV"
       - name: Configure deployment SSH
         env:
           SSH_KEY: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
@@ -71,7 +137,7 @@ jobs:
       - name: Upload and deploy approved release
         env:
           RELEASE_ID: ${{ inputs.release_id }}
-          RELEASE_SHA: ${{ inputs.release_sha }}
+          REQUEST_ID: ${{ inputs.request_id }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_PORT: ${{ secrets.PROD_PORT }}
           PROD_USER: ${{ secrets.PROD_DEPLOY_USER }}
@@ -79,15 +145,28 @@ jobs:
           set -Eeuo pipefail
           archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
           checksum="$archive.sha256"
-          [[ -f "$archive" && -f "$checksum" ]]
-          [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$RELEASE_SHA" ]]
           scp -i ~/.ssh/deploy_key -P "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$archive" "$checksum" "$PROD_USER@$PROD_HOST:/opt/peilv/incoming/"
           ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
-            "sudo /usr/local/sbin/peilv-control deploy '$RELEASE_ID' '$RELEASE_SHA'" \
-            | tee deployment-result.txt
-          [[ -s deployment-result.txt ]]
-          cat deployment-result.txt >> "$GITHUB_STEP_SUMMARY"
+            "sudo -n /usr/local/sbin/peilv-control deploy '$RELEASE_ID' '$ARCHIVE_SHA' '$EXPECTED_CURRENT' '$REQUEST_ID'" \
+            | tee deployment-summary.txt
+          scp -i ~/.ssh/deploy_key -P "$PROD_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$PROD_USER@$PROD_HOST:/tmp/deployment-$REQUEST_ID.json" deployment-result.json
+          ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$PROD_USER@$PROD_HOST" "rm -f '/tmp/deployment-$REQUEST_ID.json'"
+          node -e 'const r=require("./deployment-result.json"); if (r.schemaVersion !== 1 || r.status !== "succeeded" || r.releaseId !== process.env.RELEASE_ID || r.requestId !== process.env.REQUEST_ID) process.exit(1);'
+          cat deployment-summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload structured deployment result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-result-${{ inputs.request_id }}
+          path: |
+            deployment-result.json
+            deployment-summary.txt
+          if-no-files-found: error
+          retention-days: 30

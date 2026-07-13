@@ -1,5 +1,6 @@
 import { NextFetchEvent, NextRequest, NextResponse } from "next/server";
 import { authorizeAdminRequest, isSameOriginMutation } from "@/lib/admin-auth";
+import { authorizeDeploymentRequest, getTrustedDeploymentOrigin, isSameOriginDeploymentMutation, verifyDeploymentCsrfToken } from "@/lib/deployment-auth";
 import { getApiProtection, type AuditTrigger } from "@/lib/api-protection";
 import { writeAuditLog } from "@/lib/audit-log";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
@@ -76,7 +77,33 @@ async function auditTrigger(
 }
 
 export function proxy(request: NextRequest, event: NextFetchEvent): NextResponse {
-  const protection = getApiProtection(request.nextUrl.pathname, request.method);
+  const pathname = request.nextUrl.pathname;
+  const isDeploymentApi = pathname === "/api/deployments" || pathname.startsWith("/api/deployments/");
+  const isDeploymentPage = pathname === "/deployments" || pathname.startsWith("/deployments/");
+
+  if (isDeploymentApi || isDeploymentPage) {
+    const actor = authorizeDeploymentRequest(request);
+    if (!actor) {
+      if (isDeploymentApi) return jsonError("需要部署控制台登录", 401);
+      const login = new URL("/deployment-login", getTrustedDeploymentOrigin(request));
+      return NextResponse.redirect(login);
+    }
+    if (isDeploymentApi && !isSameOriginDeploymentMutation(request)) return jsonError("跨站请求校验失败", 403);
+    if (isDeploymentApi && !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())) {
+      const action = pathname.split("/").filter(Boolean).at(-1) || "unknown";
+      if (!verifyDeploymentCsrfToken(actor, action, request.headers.get("x-csrf-token"))) {
+        return jsonError("CSRF 校验失败", 403);
+      }
+    }
+    const headers = new Headers(request.headers);
+    headers.set("x-request-id", request.headers.get("x-request-id") || crypto.randomUUID());
+    headers.set("x-authenticated-actor-id", actor.actorId);
+    headers.set("x-authenticated-actor-type", actor.actorType);
+    headers.set("x-authenticated-deployment-username", actor.username);
+    return NextResponse.next({ request: { headers } });
+  }
+
+  const protection = getApiProtection(pathname, request.method);
   if (!protection.protected) return NextResponse.next();
 
   const authorization = authorizeAdminRequest(request);
@@ -100,5 +127,5 @@ export function proxy(request: NextRequest, event: NextFetchEvent): NextResponse
 }
 
 export const config = {
-  matcher: "/api/:path*",
+  matcher: ["/api/:path*", "/deployments/:path*"],
 };

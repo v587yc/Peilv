@@ -2,10 +2,21 @@
 set -Eeuo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-release_id="${1:-$(date -u +%Y%m%dT%H%M%SZ)}"
+release_id="${1:?Usage: create-release.sh <release-id> <commit-sha> <repository-id> <repository> <run-id> <run-attempt>}"
+commit_sha="${2:?Usage: create-release.sh <release-id> <commit-sha> <repository-id> <repository> <run-id> <run-attempt>}"
+repository_id="${3:?Usage: create-release.sh <release-id> <commit-sha> <repository-id> <repository> <run-id> <run-attempt>}"
+repository="${4:?Usage: create-release.sh <release-id> <commit-sha> <repository-id> <repository> <run-id> <run-attempt>}"
+source_run_id="${5:?Usage: create-release.sh <release-id> <commit-sha> <repository-id> <repository> <run-id> <run-attempt>}"
+source_run_attempt="${6:?Usage: create-release.sh <release-id> <commit-sha> <repository-id> <repository> <run-id> <run-attempt>}"
 
-if [[ ! "$release_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
-  printf 'Invalid release ID: %s\n' "$release_id" >&2
+if [[ ! "$release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] ||
+   [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]] ||
+   [[ "$release_id" != "r${source_run_id}-a${source_run_attempt}-${commit_sha:0:12}" ]] ||
+   [[ ! "$repository_id" =~ ^[1-9][0-9]*$ ]] ||
+   [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+   [[ ! "$source_run_id" =~ ^[1-9][0-9]*$ ]] ||
+   [[ ! "$source_run_attempt" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'Invalid release provenance\n' >&2
   exit 1
 fi
 
@@ -22,6 +33,7 @@ required=(
   scripts/reconcile-automation.sh
   infra/local-data/compose.yml
   infra/local-data/nginx/default.conf
+  migrations/manifest.json
 )
 
 for path in "${required[@]}"; do
@@ -66,6 +78,42 @@ cp infra/local-data/compose.yml "$stage_dir/infra/local-data/compose.yml"
 cp infra/local-data/nginx/default.conf "$stage_dir/infra/local-data/nginx/default.conf"
 cp infra/local-data/sql/*.sql "$stage_dir/infra/local-data/sql/"
 
+RELEASE_STAGE_DIR="$stage_dir" \
+RELEASE_ID="$release_id" \
+COMMIT_SHA="$commit_sha" \
+REPOSITORY_ID="$repository_id" \
+REPOSITORY="$repository" \
+SOURCE_RUN_ID="$source_run_id" \
+SOURCE_RUN_ATTEMPT="$source_run_attempt" \
+node <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const stageDir = process.env.RELEASE_STAGE_DIR;
+const migrationManifest = JSON.parse(fs.readFileSync(path.join(stageDir, "migrations", "manifest.json"), "utf8"));
+for (const migration of migrationManifest.migrations) {
+  const content = fs.readFileSync(path.join(stageDir, "migrations", migration.file));
+  const actual = crypto.createHash("sha256").update(content).digest("hex");
+  if (actual !== migration.sha256) throw new Error(`Migration checksum mismatch: ${migration.file}`);
+}
+const manifest = {
+  schemaVersion: 1,
+  repositoryId: Number(process.env.REPOSITORY_ID),
+  repository: process.env.REPOSITORY,
+  commitSha: process.env.COMMIT_SHA,
+  releaseId: process.env.RELEASE_ID,
+  sourceRunId: Number(process.env.SOURCE_RUN_ID),
+  sourceRunAttempt: Number(process.env.SOURCE_RUN_ATTEMPT),
+  buildId: fs.readFileSync(path.join(stageDir, ".next", "BUILD_ID"), "utf8").trim(),
+  archiveFile: `peilv-${process.env.RELEASE_ID}.tar.gz`,
+  archiveSha256: null,
+  createdAt: new Date(0).toISOString(),
+  migrations: migrationManifest.migrations,
+};
+fs.writeFileSync(path.join(stageDir, "release-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+NODE
+
 tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
   -czf "$archive" -C "$stage_dir" .
 
@@ -74,5 +122,15 @@ tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
   sha256sum "$(basename "$archive")" > "$(basename "$checksum")"
 )
 
+archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
+RELEASE_MANIFEST="$stage_dir/release-manifest.json" ARCHIVE_SHA="$archive_sha" node <<'NODE'
+const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(process.env.RELEASE_MANIFEST, "utf8"));
+manifest.archiveSha256 = process.env.ARCHIVE_SHA;
+fs.writeFileSync(`${process.env.RELEASE_MANIFEST}.external`, `${JSON.stringify(manifest, null, 2)}\n`);
+NODE
+cp "$stage_dir/release-manifest.json.external" "$output_dir/release-manifest-$release_id.json"
+
 printf '%s\n' "$archive"
 printf '%s\n' "$checksum"
+printf '%s\n' "$output_dir/release-manifest-$release_id.json"

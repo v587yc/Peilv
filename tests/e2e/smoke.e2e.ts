@@ -2,6 +2,19 @@ import { expect, test } from "@playwright/test";
 
 const internalSecret = "playwright-internal-secret";
 
+test("未登录部署控制台会进入独立账号密码登录页", async ({ page, request }) => {
+  await page.goto("/deployments");
+  await expect(page).toHaveURL(/\/deployment-login$/);
+  await expect(page.getByText("版本管理与部署控制台", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("管理员账号")).toBeVisible();
+  await expect(page.getByLabel("管理员密码")).toHaveAttribute("type", "password");
+  await expect(page.getByRole("button", { name: "安全登录" })).toBeDisabled();
+
+  const response = await request.get("/api/deployments/overview");
+  expect(response.status()).toBe(401);
+  await expect(response.json()).resolves.toMatchObject({ success: false, error: "需要部署控制台登录" });
+});
+
 test("登录页展示管理员令牌表单", async ({ page }) => {
   await page.goto("/login");
 

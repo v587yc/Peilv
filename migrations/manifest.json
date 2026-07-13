@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "migrations": [
+    {
+      "file": "0001_production_baseline.sql",
+      "version": "0001_production_baseline",
+      "sha256": "8dfa4d6f1d828d127deb35855d23df286be0f4b889e605928807c16ef54d0ee8",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0002_match_odds_freshness.sql",
+      "version": "0002_match_odds_freshness",
+      "sha256": "c24a1a422cfe4bece77752aee4fb4fc90d9221cb0a40307187a1a4b4076f08af",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0003_prediction_analyzed_at.sql",
+      "version": "0003_prediction_analyzed_at",
+      "sha256": "c5562bf8d2943d40c462267bad61a79bb6f99a07fe7eaf32de27d4ca13e85d16",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0004_prediction_verification_columns.sql",
+      "version": "0004_prediction_verification_columns",
+      "sha256": "24bdf145a69f0a5d783eefb0b5618df37f3f61a1588fa039ef5b49622f2d3f7d",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0005_match_t30_analysis.sql",
+      "version": "0005_match_t30_analysis",
+      "sha256": "e5ccb6e94c2044ebcba898c6aa834a20fedd2ef9f17d1313fced83bc7a8bc344",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0006_market_settlement_evidence.sql",
+      "version": "0006_market_settlement_evidence",
+      "sha256": "e1a6dd809e318d632df4ec29751d6a68f0d475f85ac796e39cf0b96567b8c519",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0007_weighted_learning_samples.sql",
+      "version": "0007_weighted_learning_samples",
+      "sha256": "aff8a665a9c8726591dc745d887c1201c28b816c0bf5d3d4220055c39282e429",
+      "codeRollbackSafe": true
+    }
+  ]
+}
