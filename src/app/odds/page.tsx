@@ -49,22 +49,156 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AIAnalysisResultPanel } from "./_components/ai-analysis-result-panel";
 import { MatchSituation, MatchStatusBadge, getMatchRowClass, getMatchStatus, type MatchStatusKind } from "./_components/match-status";
-import { canApplyDatabaseOdds, mergeAiCompanyOdds } from "@/lib/odds-client-merge";
-import type { AnalysisProbabilityOutput } from "@/lib/probability";
+import type {
+  AnalysisResultData,
+  CompanyOddsData,
+  CompanyOddsItem,
+  CrownStoredOdds,
+  DataMatchRow,
+  LeagueData,
+  MatchData,
+  MatchNotes,
+  PinnedMatchInfo,
+  ReportData,
+} from "@/features/odds/contracts";
+import {
+  DEFAULT_COMPANY_IDS,
+  DEFAULT_FOCUSED_LEAGUES,
+} from "@/features/odds/constants";
+import {
+  buildPurchaseAdvice,
+  computePredictionComparison,
+  getCompanyLatestOdds,
+  getMatchLatestOdds,
+} from "@/features/odds/analysis-view-model";
+import {
+  computeCrown12VsLiveDiff,
+  computeHandicapComparison,
+  computeTotalComparison,
+  getHandicapTrendLabel,
+  lineTextToNumber,
+  parseHandicapNote,
+  parseTotalNote,
+} from "@/features/odds/odds-note-parser";
+import {
+  getLeagueInitial,
+  isLeagueSelected,
+  matchLeague,
+} from "@/features/odds/league-matching";
+import {
+  automationStatusText,
+  previousBeijingDateKey,
+} from "@/features/odds/automation-view-model";
+import { useOddsRefresh } from "@/features/odds/hooks/use-odds-refresh";
+import { useAutomationStatus } from "@/features/odds/hooks/use-automation-status";
+import { useOddsWorkstation } from "@/features/odds/hooks/use-odds-workstation";
+import {
+  createOddsFetchCoordinator,
+  createOddsRefreshQueue,
+  createSerializedExecutor,
+  runOddsFetchBatch,
+  type OddsFetchSourceResult,
+} from "@/features/odds/odds-fetch-orchestrator";
+import {
+  applyMatchDetailScore,
+  fetchMatchOddsSource,
+  persistMatchOdds,
+  type MatchDetailScore,
+  type MatchOddsData,
+} from "@/features/odds/match-odds-client";
+import {
+  countSupplementalTargets,
+  fetchSupplementalOdds,
+  persistSupplementalOdds,
+  runSupplementalBatch,
+  runSupplementalOddsUpdate,
+  selectSupplementalTargets,
+  type SupplementalFetchType,
+} from "@/features/odds/supplemental-odds-client";
+import { createAutomaticOddsFetchLifecycle } from "@/features/odds/automatic-odds-fetch";
+import {
+  fetchAnalysisList,
+  fetchEvolutionStats,
+  requestAnalysis,
+  requestAnalysisChat,
+  requestLearning,
+  requestManualVerification,
+  requestVerification,
+  type AnalysisChatMessage,
+} from "@/features/odds/analysis-client";
+import {
+  appendAssistantMessage,
+  appendUserMessage,
+  createBatchAnalysisController,
+  prepareAnalysisRequest,
+  runAnalysisBatch,
+  runAnalysisCommand,
+  runVerificationLearning,
+  type AnalysisBatchController,
+} from "@/features/odds/analysis-orchestrator";
+import {
+  buildOddsExportRows,
+  exportOddsWorkbook,
+  fetchReport,
+  fetchReportDates,
+  fetchReportTrend,
+  filterReportByLeagues,
+  generateReport as requestGeneratedReport,
+  runReportCommand,
+} from "@/features/odds/reporting";
+import {
+  createDebouncedLeagueSelectionSaver,
+  fetchFocusedLeagues,
+  loadLeagueSelections as fetchLeagueSelections,
+  saveFocusedLeagues as persistFocusedLeagues,
+} from "@/features/odds/league-settings";
+import {
+  createOddsAlerts,
+  shouldPlayThresholdAlert,
+  type AlertConfig,
+  type AlertItem,
+  type OddsSnapshot,
+} from "@/features/odds/alerts";
+import {
+  formatHandicapLine,
+  normalizeMatchDateKey,
+  normalizeOpenTime,
+  parsePredictions,
+} from "@/features/odds/workstation-domain";
+import {
+  createGenerationDatabaseLoadController,
+  dateKeysInRange,
+  fetchDatabaseOddsDate,
+  fetchDatabaseOddsRange,
+  projectDatabaseOddsApplication,
+  type DatabaseOddsMeta,
+} from "@/features/odds/database-odds-workflow";
+import {
+  buildOddsComparisonSummary,
+  projectOtherMatches,
+  projectScheduledMatches,
+  type WorkstationOtherMatchFilter,
+} from "@/features/odds/workstation-projections";
+import {
+  aggregateScheduleRange,
+  countHotMatches,
+  createLatestScheduleLoadController,
+  createScheduleLoadPlan,
+  fetchSchedule,
+  runIncrementalOddsFetch,
+  selectIncrementalOddsTargets,
+  type ScheduleAggregate,
+  type ScheduleLoadPlan,
+} from "@/features/odds/schedule-orchestrator";
 import type { SettlementSummary, PredictionMarket } from "@/lib/verification";
-import type { MarketVerification } from "@/lib/verification/market-service";
 import {
   ODDS_STALE_AFTER_MS,
-  canApplyDatabaseObservation,
-  enqueueRefreshItem,
-  isLatestRefreshResponse,
   isOddsStale,
-  type RefreshQueueItem,
   type SourceTimestamp,
 } from "@/lib/odds-refresh";
 
 // --- Types ---
-type OtherMatchFilter = "all" | Exclude<MatchStatusKind, "scheduled">;
+type OtherMatchFilter = WorkstationOtherMatchFilter;
 
 const OTHER_MATCH_FILTERS: Array<{ key: OtherMatchFilter; label: string; description: string }> = [
   { key: "all", label: "全部", description: "全部其他赛况" },
@@ -81,288 +215,10 @@ const OTHER_MATCH_STATUS_PRIORITY: Record<Exclude<MatchStatusKind, "scheduled">,
   finished: 3,
 };
 
-interface MatchData {
-  id: string;
-  league: string;
-  leagueColor: string;
-  time: string;
-  homeTeam: string;
-  awayTeam: string;
-  homeRank: string;
-  awayRank: string;
-  state: string;
-  handicap: string;
-  handicapRaw: number;
-  homeOdds: string;
-  awayOdds: string;
-  totalLine: string;
-  totalLineRaw: number;
-  overOdds: string;
-  underOdds: string;
-  initialHandicap: string;
-  initialTotalLine: string;
-  sclassId: string;
-  matchDate: string;
-  orderIndex: number;
-  isHot?: boolean; // A[i][62] == "1" = hot match
-  homeScore?: string; // 全场主队比分
-  awayScore?: string; // 全场客队比分
-  halfHomeScore?: string; // 半场主队比分
-  halfAwayScore?: string; // 半场客队比分
-}
 
-interface LeagueData {
-  id: string;
-  name: string;
-  color: string;
-  count: number;
-  isHot?: boolean; // B[j][10] != "0" = important/hot league from website data
-}
-
-interface AlertConfig {
-  matchId: string;
-  handicapUp: string;
-  handicapDown: string;
-  totalLineUp: string;
-  totalLineDown: string;
-  homeOddsUp: string;
-  homeOddsDown: string;
-  awayOddsUp: string;
-  awayOddsDown: string;
-  overOddsUp: string;
-  overOddsDown: string;
-  underOddsUp: string;
-  underOddsDown: string;
-}
-
-interface AlertItem {
-  id: string;
-  message: string;
-  time: number;
-}
-
-interface OddsSnapshot {
-  handicapRaw: number;
-  totalLineRaw: number;
-  homeOdds: string;
-  awayOdds: string;
-  overOdds: string;
-  underOdds: string;
-}
-
-interface MatchNotes {
-  handicapNote: string;
-  totalNote: string;
-  handicapAmount?: string;
-  totalAmount?: string;
-  handicapSettled?: boolean;
-  totalSettled?: boolean;
-}
-
-interface PinnedMatchInfo {
-  id: string;
-  league: string;
-  leagueColor: string;
-  time: string;
-  homeTeam: string;
-  awayTeam: string;
-  handicap: string;
-  homeOdds: string;
-  awayOdds: string;
-  totalLine: string;
-  overOdds: string;
-  underOdds: string;
-}
-
-interface PredictionData {
-  match_time: string;
-  league: string;
-  home: string;
-  away: string;
-  crown_handicap: string;
-  yinghe_handicap: string;
-  who_open_later: string;
-  strategy: string;
-  prediction: string;
-  accuracy: string;
-  confidence_level: string;
-  action: string;
-}
-
-interface ReportRowData {
-  matchId: string;
-  league: string;
-  time: string;
-  homeTeam: string;
-  awayTeam: string;
-  state: string;
-  homeScore: string;
-  awayScore: string;
-  // 亚盘
-  crownHandicap?: string;
-  initHandicap: string;
-  liveHandicap: string;
-  handicapChange: string;
-  isReceiving: boolean;
-  result?: "+" | "-" | null;
-  handicapResult?: "+" | "-" | null;
-  // 水位方向(核心验证)
-  waterDirection: string;         // 预测: 主降水/客降水/不变
-  actualWaterDirection: string;   // 实际: 主降水/客降水/不变
-  waterResult?: "+" | "-" | null;        // + = 错, - = 对
-  prediction: string;
-  action: string;
-  accuracy: string;
-  confidence_level: string;
-  confidenceLevel?: string;
-  // 大小球
-  initTotal: string;
-  liveTotal: string;
-  totalChange: string;
-  totalResult?: "+" | "-" | null;
-  totalPrediction: string;
-  totalAction: string;
-  // 验证
-  verified: boolean;
-  manualIsCorrect?: boolean | null;
-  verification?: {
-    handicap: MarketVerification;
-    total: MarketVerification;
-  };
-  handicapOutcome?: string;
-  totalOutcome?: string;
-  waterTolerance?: boolean;
-}
-
-interface ParsedCrownHandicap {
-  homeOdds: number;
-  awayOdds: number;
-  handicapValue: number;
-}
-
-// --- Company odds types ---
-interface CompanyOddsItem {
-  companyId: string;       // e.g. "1" = Crown, "3" = Yinghe, "8" = 18bet, "12" = Pingbo
-  companyName: string;     // e.g. "皇冠", "盈禾", "18博", "平博"
-  openTime: string;        // e.g. "04-13 21:06"
-  // Full-time handicap (初盘)
-  ftHandicapHome: string;  // e.g. "0.92"
-  ftHandicapLine: string;  // e.g. "-0.5"
-  ftHandicapAway: string;  // e.g. "0.92"
-  // Full-time handicap live (即时)
-  ftHandicapHomeLive: string;
-  ftHandicapLineLive: string;
-  ftHandicapAwayLive: string;
-  // Euro odds (初盘)
-  euroHome: string;        // e.g. "1.25"
-  euroDraw: string;        // e.g. "4.90"
-  euroAway: string;        // e.g. "8.80"
-  // Euro odds live (即时)
-  euroHomeLive: string;
-  euroDrawLive: string;
-  euroAwayLive: string;
-  // Euro-to-Asian handicap (初盘, converted from euro)
-  euroAsianHome: string;   // e.g. "1.00"
-  euroAsianLine: string;   // e.g. "-0.5"
-  euroAsianAway: string;   // e.g. "1.00"
-  // Full-time total (初盘)
-  ftTotalOver: string;     // e.g. "0.89"
-  ftTotalLine: string;     // e.g. "2.75"
-  ftTotalUnder: string;    // e.g. "0.83"
-  // Full-time total live (即时)
-  ftTotalOverLive: string;
-  ftTotalLineLive: string;
-  ftTotalUnderLive: string;
-  // Half-time (reserved for future)
-  htHandicapHome?: string;
-  htHandicapLine?: string;
-  htHandicapAway?: string;
-  htTotalOver?: string;
-  htTotalLine?: string;
-  htTotalUnder?: string;
-}
-
-interface CompanyOddsData {
-  matchId: string;
-  openTime: string;        // Crown's opening time, shown at match level
-  companies: CompanyOddsItem[];
-}
-
-interface CrownStoredOdds {
-  handicapHome?: string | null;
-  handicapLine?: string | null;
-  handicapAway?: string | null;
-  totalOver?: string | null;
-  totalLine?: string | null;
-  totalUnder?: string | null;
-  euroHome?: string | null;
-  euroDraw?: string | null;
-  euroAway?: string | null;
-  handicapObservedAt?: string | null;
-  totalObservedAt?: string | null;
-  euroObservedAt?: string | null;
-  source?: "3in1" | "legacy-fallback" | string;
-}
-
-// Pre-computed row data for Data Tab rendering (avoids recalculation in render)
-interface DataMatchRow {
-  match: MatchData;
-  isFetched: boolean;
-  isFetching: boolean;
-  openTime: string;
-  companies: CompanyOddsItem[];
-  crownFinal: { handicapHome?: string | null; handicapLine?: string | null; handicapAway?: string | null; totalOver?: string | null; totalLine?: string | null; totalUnder?: string | null } | undefined;
-  crown12: { handicapHome?: string | null; handicapLine?: string | null; handicapAway?: string | null; totalOver?: string | null; totalLine?: string | null; totalUnder?: string | null } | undefined;
-}
-
-interface LatestOddsDisplay {
-  handicapHome: string;
-  handicapLine: string;
-  handicapAway: string;
-  totalOver: string;
-  totalLine: string;
-  totalUnder: string;
-  source: string;
-  isCrownLatest: boolean;
-  handicapObservedAt?: string;
-  totalObservedAt?: string;
-}
 
 // AI analysis result data (from /api/analysis)
-interface AnalysisResultData {
-  matchId: string;
-  homeTeam: string;
-  awayTeam: string;
-  league: string;
-  matchTime: string;
-  matchDate?: string;
-  analyzedAt?: string | null;
-  indicators: { name: string; value: string; signal: string; weight: number; reasoning: string }[];
-  newsSummary: string;
-  handicapTrend: string;       // 保留作参考(升盘/降盘/不变)
-  waterDirection: string;      // 核心预测: 主降水/客降水/不变
-  prediction: string;
-  totalTrend: string;
-  totalPrediction: string;
-  totalAction: string;
-  confidenceLevel: string;
-  accuracy: string;
-  strategy: string;
-  action: string;
-  reasoning: string;
-  isCorrect?: boolean | null;
-  manualIsCorrect?: boolean | null;
-  verification?: {
-    handicap: MarketVerification;
-    total: MarketVerification;
-  };
-  probability?: AnalysisProbabilityOutput | null;
-  settlementEvidence?: Record<string, unknown>;
-  // PredictionData compatible fields
-  crown_handicap: string;
-  yinghe_handicap: string;
-  who_open_later: string;
-}
+
 
 function formatAnalysisTime(value?: string | null): string {
   if (!value) return "未知（历史数据）";
@@ -372,613 +228,7 @@ function formatAnalysisTime(value?: string | null): string {
     : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-interface AutomationTaskStepStatusData {
-  stepKey: string;
-  status: "pending" | "running" | "retrying" | "completed" | "failed";
-  lastError: string | null;
-}
-
-interface AutomationTaskStatusData {
-  id: string;
-  taskType: "odds-fetch" | "crown-snapshot" | "analysis" | "verify-learn-report";
-  status: "pending" | "running" | "retrying" | "completed" | "failed";
-  currentStep: string | null;
-  lastError: string | null;
-  updatedAt: string;
-  steps?: AutomationTaskStepStatusData[];
-}
-
-// Default company IDs
-const DEFAULT_COMPANY_IDS = ["3", "35", "42", "47", "8"]; // 皇冠(Crow*), 盈禾(盈*), 18博(18*), 平博(平*), 36bet(36*)
-
-// 用户关注联赛白名单：从DB动态加载（user_focused_leagues表）
-// 今日赛程保留全部联赛；历史/未来赛程严格按此列表过滤
-// 不在此列表的联赛：不显示、不抓取赔率、不做AI分析
-// 初始为空Set，页面mount时从API加载；如加载失败则用DEFAULT_FOCUSED_LEAGUES兜底
-const DEFAULT_FOCUSED_LEAGUES = new Set([
-  "英超","英冠","英甲","苏超","西甲","西乙","意甲","意乙","德甲","德乙",
-  "法甲","法乙","葡超","葡甲","荷甲","荷乙","比甲","瑞典超","瑞典甲","挪威超",
-  "挪威甲","丹麦超","芬兰超","冰岛超","爱尔兰超","威尔士超","波兰超","捷甲","罗马甲","匈甲",
-  "奥甲","瑞士超","希腊超","土超","以超","俄超","乌超","日职","日乙","日联杯",
-  "天皇杯","韩职","韩乙","澳超","美职业","美乙","墨超","墨甲","阿甲","巴甲",
-  "巴乙","智利甲","哥伦甲","秘鲁甲","中超","亚冠","欧冠","欧罗巴","欧协联","世亚预",
-  "世欧预","世南美预","国际赛"
-]);
-
-// API response types for odds data
-interface ApiCompanyOdds {
-  companyId: string;
-  companyName: string;
-  openTime: string;
-  ftHandicapHome: string;
-  ftHandicapLine: string;
-  ftHandicapAway: string;
-  ftHandicapHomeLive: string;
-  ftHandicapLineLive: string;
-  ftHandicapAwayLive: string;
-  euroHome: string;
-  euroDraw: string;
-  euroAway: string;
-  euroHomeLive: string;
-  euroDrawLive: string;
-  euroAwayLive: string;
-  euroAsianHome: string;
-  euroAsianLine: string;
-  euroAsianAway: string;
-  ftTotalOver: string;
-  ftTotalLine: string;
-  ftTotalUnder: string;
-  ftTotalOverLive: string;
-  ftTotalLineLive: string;
-  ftTotalUnderLive: string;
-}
-
-interface ApiMatchDetailScore {
-  id: string;
-  state: string;
-  time: string;
-  matchDate: string;
-  homeTeam: string;
-  awayTeam: string;
-  homeScore: string;
-  awayScore: string;
-  halfHomeScore: string;
-  halfAwayScore: string;
-  league: string;
-  source?: string;
-  observedAt?: string;
-}
-
-interface ApiMatchOddsResponse {
-  matchId: string;
-  openTime: string;
-  companies: ApiCompanyOdds[];
-}
-
-interface ApiOpenTimeEntry {
-  companyId: string;
-  openTime: string;
-}
-
-interface OddsSourceMeta {
-  source: string | null;
-  sourceObservedAt: SourceTimestamp;
-  writeToken?: string | null;
-}
-
-interface OddsRefreshJob {
-  matchId: string;
-  generation: number;
-  automatic: boolean;
-  resolvers: Array<(success: boolean) => void>;
-}
-
-// Pinyin initial mapping for Chinese characters (first letter grouping)
-// We'll use a simple approach: compute from league name at runtime
-function getLeagueInitial(name: string): string {
-  // Common Chinese league name to pinyin first letter mapping
-  const pinyinMap: Record<string, string> = {
-    "阿": "A", "埃": "A", "爱": "A", "安": "A", "澳": "A",
-    "巴": "B", "比": "B", "冰": "B", "波": "B", "玻": "B",
-    "朝": "C", "哥": "G", "丹": "D", "德": "D",
-    "俄": "E", "芬": "F", "法": "F", "荷": "H", "韩": "H",
-    "黑": "H", "洪": "H", "加": "J", "捷": "J", "柬": "J",
-    "卡": "K", "喀": "K", "科": "K", "克": "K", "肯": "K",
-    "拉": "L", "罗": "L", "黎": "L", "立": "L", "卢": "L",
-    "墨": "M", "马": "M", "缅": "M", "摩": "M", "美": "M",
-    "挪": "N", "南": "N", "尼": "N", "宁": "N",
-    "欧": "O",
-    "葡": "P", "秘": "P",
-    "日": "R", "瑞": "S", "塞": "S", "沙": "S", "斯": "S", "叙": "S",
-    "土": "T", "泰": "T", "突": "T",
-    "乌": "W", "委": "W", "维": "W",
-    "西": "X", "希": "X", "匈": "X",
-    "亚": "Y", "伊": "Y", "印": "Y", "英": "Y", "意": "Y", "越": "Y",
-    "中": "Z", "智": "Z",
-  };
-  const firstChar = name.charAt(0);
-  if (pinyinMap[firstChar]) return pinyinMap[firstChar];
-  if (/[A-Z]/.test(firstChar)) return firstChar.toUpperCase();
-  if (/[a-z]/.test(firstChar)) return firstChar.toUpperCase();
-  return "#";
-}
-
-// Chinese handicap text → numeric value
-const HANDICAP_MAP: Record<string, number> = {
-  "平手": 0, "0": 0,
-  "平手/半球": 0.25, "0/0.5": 0.25,
-  "半球": 0.5, "0.5": 0.5,
-  "半球/一球": 0.75, "0.5/1": 0.75,
-  "一球": 1, "1": 1,
-  "一球/球半": 1.25, "1/1.5": 1.25,
-  "球半": 1.5, "1.5": 1.5,
-  "球半/两球": 1.75, "1.5/2": 1.75,
-  "两球": 2, "2": 2,
-  "两球/两球半": 2.25, "2/2.5": 2.25,
-  "两球半": 2.5, "2.5": 2.5,
-  "两球半/三球": 2.75, "2.5/3": 2.75,
-  "三球": 3, "3": 3,
-};
-
-function parseCrownHandicap(str: string): ParsedCrownHandicap | null {
-  if (!str) return null;
-  const trimmed = str.trim();
-  const match = trimmed.match(/^([\d.]+)\s+(受让)?(.+?)\s+([\d.]+)$/);
-  if (!match) return null;
-  const homeOdds = parseFloat(match[1]);
-  const isReceiving = !!match[2];
-  const handicapText = match[3].trim();
-  const awayOdds = parseFloat(match[4]);
-  let handicapValue = HANDICAP_MAP[handicapText];
-  if (handicapValue === undefined) {
-    handicapValue = parseFloat(handicapText);
-    if (isNaN(handicapValue)) return null;
-  }
-  if (isReceiving) handicapValue = -handicapValue;
-  return { homeOdds, awayOdds, handicapValue };
-}
-
-interface PredictionComparison {
-  oddsDiff: number | null;
-  handicapChange: "升" | "降" | null;
-  predictedSide: "home" | "away";
-  action: string;
-}
-
-function oddsValue(...values: Array<string | null | undefined>): string {
-  for (const value of values) {
-    const normalized = typeof value === "string" ? value.trim() : "";
-    if (normalized) return normalized;
-  }
-  return "";
-}
-
-function getCompanyLatestOdds(company: CompanyOddsItem) {
-  return {
-    handicapHome: oddsValue(company.ftHandicapHomeLive, company.ftHandicapHome),
-    handicapLine: oddsValue(company.ftHandicapLineLive, company.ftHandicapLine),
-    handicapAway: oddsValue(company.ftHandicapAwayLive, company.ftHandicapAway),
-    totalOver: oddsValue(company.ftTotalOverLive, company.ftTotalOver),
-    totalLine: oddsValue(company.ftTotalLineLive, company.ftTotalLine),
-    totalUnder: oddsValue(company.ftTotalUnderLive, company.ftTotalUnder),
-    hasLive: Boolean(company.ftHandicapLineLive || company.ftTotalLineLive),
-  };
-}
-
-function getMatchLatestOdds(match: MatchData, crownCompany?: CompanyOddsItem): LatestOddsDisplay {
-  if (crownCompany) {
-    const latest = getCompanyLatestOdds(crownCompany);
-    if (latest.handicapLine || latest.totalLine) {
-      return {
-        handicapHome: oddsValue(latest.handicapHome, match.homeOdds),
-        handicapLine: oddsValue(latest.handicapLine, match.handicap),
-        handicapAway: oddsValue(latest.handicapAway, match.awayOdds),
-        totalOver: oddsValue(latest.totalOver, match.overOdds),
-        totalLine: oddsValue(latest.totalLine, match.totalLine),
-        totalUnder: oddsValue(latest.totalUnder, match.underOdds),
-        source: latest.hasLive ? "旧页即时" : "旧页初盘",
-        isCrownLatest: true,
-      };
-    }
-  }
-
-  return {
-    handicapHome: match.homeOdds,
-    handicapLine: match.handicap,
-    handicapAway: match.awayOdds,
-    totalOver: match.overOdds,
-    totalLine: match.totalLine,
-    totalUnder: match.underOdds,
-    source: "即时",
-    isCrownLatest: false,
-  };
-}
-
-function buildPurchaseAdvice(analysis: AnalysisResultData, odds: LatestOddsDisplay): { handicap: string; total: string; title: string } {
-  const handicapOdds = analysis.prediction === "主"
-    ? odds.handicapHome
-    : analysis.prediction === "客"
-      ? odds.handicapAway
-      : "";
-  const handicap = analysis.prediction === "主" || analysis.prediction === "客"
-    ? `建议买${analysis.prediction}${odds.handicapLine ? `（${odds.handicapLine}${handicapOdds ? ` @ ${handicapOdds}` : ""}）` : ""}`
-    : "建议观望";
-
-  const totalOdds = analysis.totalPrediction === "大"
-    ? odds.totalOver
-    : analysis.totalPrediction === "小"
-      ? odds.totalUnder
-      : "";
-  const total = analysis.totalPrediction === "大" || analysis.totalPrediction === "小"
-    ? `大小球买${analysis.totalPrediction}${odds.totalLine ? `（${odds.totalLine}${totalOdds ? ` @ ${totalOdds}` : ""}）` : ""}`
-    : "大小球观望";
-
-  return {
-    handicap,
-    total,
-    title: `${handicap}；${total}；信心${analysis.confidenceLevel} ${analysis.accuracy}`,
-  };
-}
-
-function computePredictionComparison(
-  pred: PredictionData,
-  liveHomeOdds: string,
-  liveAwayOdds: string,
-  liveHandicapRaw: number
-): PredictionComparison | null {
-  // Try crown_handicap first (old format: "0.85 半球 1.01"), then fallback to handicap + home_odds/away_odds
-  let crown = parseCrownHandicap(pred.crown_handicap);
-  if (!crown) {
-    // New format: handicap is text like "半球", home_odds/away_odds are separate fields
-    const predAny = pred as unknown as Record<string, unknown>;
-    const handicapText = pred.crown_handicap || predAny.handicap as string || "";
-    const homeOdds = predAny.home_odds as number || 0;
-    const awayOdds = predAny.away_odds as number || 0;
-
-    if (!handicapText || (!homeOdds && !awayOdds)) return null;
-
-    let handicapValue = HANDICAP_MAP[handicapText];
-    if (handicapValue === undefined) {
-      handicapValue = parseFloat(handicapText);
-      if (isNaN(handicapValue)) return null;
-    }
-
-    // Detect "受让" prefix in handicap text
-    const isReceiving = /受让/.test(handicapText);
-    if (isReceiving) handicapValue = -handicapValue;
-
-    crown = { homeOdds, awayOdds, handicapValue };
-  }
-
-  const predText = pred.prediction || "";
-  const predictedSide: "home" | "away" = predText.includes("主") ? "home" : "away";
-
-  let oddsDiff: number | null = null;
-  const liveHome = parseFloat(liveHomeOdds);
-  const liveAway = parseFloat(liveAwayOdds);
-  if (predictedSide === "home" && !isNaN(liveHome) && crown.homeOdds) {
-    oddsDiff = parseFloat((liveHome - crown.homeOdds).toFixed(2));
-  } else if (predictedSide === "away" && !isNaN(liveAway) && crown.awayOdds) {
-    oddsDiff = parseFloat((liveAway - crown.awayOdds).toFixed(2));
-  }
-
-  let handicapChange: "升" | "降" | null = null;
-  if (!isNaN(liveHandicapRaw)) {
-    const diff = parseFloat((liveHandicapRaw - crown.handicapValue).toFixed(2));
-    if (diff !== 0) {
-      if (crown.handicapValue < 0) {
-        handicapChange = diff < 0 ? "升" : "降";
-      } else {
-        handicapChange = diff > 0 ? "升" : "降";
-      }
-    }
-  }
-
-  return { oddsDiff, handicapChange, predictedSide, action: pred.action || (pred as unknown as Record<string, unknown>).action as string || "" };
-}
-
-function parsePredictions(json: string): Map<string, PredictionData> {
-  const map = new Map<string, PredictionData>();
-  if (!json) return map;
-  try {
-    const parsed = JSON.parse(json);
-    let arr: PredictionData[];
-    if (Array.isArray(parsed)) {
-      arr = parsed;
-    } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.matches)) {
-      arr = parsed.matches;
-    } else if (parsed && typeof parsed === "object" && parsed.home && parsed.away) {
-      arr = [parsed as PredictionData];
-    } else {
-      return map;
-    }
-    for (const item of arr) {
-      if (item.home && item.away) {
-        const key = `${item.home}_${item.away}`;
-        map.set(key, item);
-      }
-    }
-  } catch {
-    // ignore invalid JSON
-  }
-  return map;
-}
-
-const LS_PINNED_IDS_KEY = "odds_monitor_pinned_ids";
-const LS_PINNED_INFO_KEY = "odds_monitor_pinned_info";
-const LS_NOTES_KEY = "odds_monitor_notes";
-
-// --- Odds comparison logic ---
-// Note format: "盘口 主赔/客赔 方向" e.g. "0/0.5 0.83/1.05 客" or "受0.5/1 1.11/0.78 主"
-// When side is selected, compare that side's predicted odds vs current odds
-// diff = predicted odds - current odds (positive = odds dropped = good for bettor)
-
-interface OddsComparison {
-  predictedOdds: number;   // the odds value from the note for selected side
-  currentOdds: number;     // current real-time odds for OPPOSITE side
-  sumTotal: number;        // predictedOdds + currentOdds (note selected + live opposite)
-  diff: number;            // sumTotal - baseTotal (positive = over-value)
-}
-
-// Extract home/away odds pair from note text (format: "盘口 主赔/客赔 方向")
-function extractOddsPairFromNote(note: string): { homeOdds: number; awayOdds: number } | null {
-  if (!note) return null;
-  // Find pattern like "0.83/1.05" or "1.11/0.78" (two decimal numbers separated by /)
-  const match = note.match(/(\d+\.\d+)\s*\/\s*(\d+\.\d+)/);
-  if (match) {
-    const homeOdds = parseFloat(match[1]);
-    const awayOdds = parseFloat(match[2]);
-    if (!isNaN(homeOdds) && !isNaN(awayOdds)) {
-      return { homeOdds, awayOdds };
-    }
-  }
-  return null;
-}
-
-// Detect which side the note refers to from keywords
-// Returns: "home" if note has 主/受让, "away" if note has 客/让, null if indeterminate
-function detectHandicapSide(note: string): "home" | "away" | null {
-  if (/主|受让|受/.test(note) && !/客/.test(note)) return "home";
-  if (/客|让球|让$|^[让]/.test(note) && !/主/.test(note)) return "away";
-  return null;
-}
-
-// Detect which side the total note refers to
-// Returns: "over" if note has 大, "under" if note has 小, null if indeterminate
-function detectTotalSide(note: string): "over" | "under" | null {
-  if (/大/.test(note) && !/小/.test(note)) return "over";
-  if (/小/.test(note) && !/大/.test(note)) return "under";
-  return null;
-}
-
-// Extract the line/handicap value from the note (everything before the odds pair)
-// Note format: "盘口 主赔/客赔 方向", e.g. "0/0.5 0.83/1.05 客", "受0.5 1.11/0.78 主"
-function extractLineFromNote(note: string): string {
-  if (!note) return "";
-  // Find the odds pair pattern (two decimal numbers with /)
-  const oddsMatch = note.match(/(\d+\.\d+)\s*\/\s*(\d+\.\d+)/);
-  if (!oddsMatch) return "";
-  // Everything before the odds pair is the line value
-  const beforeOdds = note.substring(0, oddsMatch.index).trim();
-  // Remove any trailing spaces or separators
-  return beforeOdds.replace(/\s+$/, "");
-}
-
-// 升降盘判定：基于让球方优势方向（盘口绝对值变化）
-// 升盘 = 让球方优势扩大（盘口绝对值增大），降盘 = 让球方优势缩小（盘口绝对值减小）
-// 让球(正数): diff>0=升盘, diff<0=降盘
-// 受让(负数): diff<0=升盘(绝对值增大), diff>0=降盘(绝对值减小)
-// 例: 让0.5(+0.5)→让0.75(+0.75): diff=+0.25 → 升盘 ✓
-//     受0.5(-0.5)→受0.25(-0.25): diff=+0.25 → 降盘(受让减少=让球方优势缩小) ✓
-//     受0/0.5(-0.25)→受0.5(-0.5): diff=-0.25 → 升盘(受让增多=让球方优势扩大) ✓
-function getHandicapTrendLabel(initLine: number, liveLine: number): "升" | "降" | null {
-  const diff = liveLine - initLine;
-  if (Math.abs(diff) < 0.01) return null;
-  // 受让盘(负数): 绝对值增大=升盘, 让球盘(正数): 值增大=升盘
-  // 统一: 当initLine和diff同号时=升盘, 异号时=降盘
-  // 让球: diff>0(initLine>0) → 同号 → 升; diff<0 → 异号 → 降
-  // 受让: diff<0(initLine<0) → 同号 → 升; diff>0 → 异号 → 降
-  if (initLine >= 0) {
-    return diff > 0 ? "升" : "降";
-  } else {
-    return diff < 0 ? "升" : "降";
-  }
-}
-
-// Compute diff between crown12 (opening) odds and live odds
-// lineChange = liveLine - initLine (raw numeric diff, sign depends on 让/受 direction)
-function computeCrown12VsLiveDiff(
-  crown12: { handicapHome?: string | null; handicapLine?: string | null; handicapAway?: string | null },
-  liveHomeOdds: string,
-  liveAwayOdds: string,
-  liveHandicapRaw: number
-): { homeDiff: number; awayDiff: number; lineChange: number } | null {
-  if (!crown12?.handicapHome || !crown12?.handicapAway || !crown12?.handicapLine) return null;
-  const c12Home = parseFloat(crown12.handicapHome);
-  const c12Away = parseFloat(crown12.handicapAway);
-  const liveHome = parseFloat(liveHomeOdds);
-  const liveAway = parseFloat(liveAwayOdds);
-  if (isNaN(c12Home) || isNaN(c12Away) || isNaN(liveHome) || isNaN(liveAway)) return null;
-  // Convert crown12 line to number
-  const c12Line = lineTextToNumber(crown12.handicapLine);
-  if (c12Line === null) return null;
-  // 升降盘: 用原始值比较 — live > c12 = 升盘（盘口向主队方向移动）
-  const lineChange = parseFloat((liveHandicapRaw - c12Line).toFixed(2));
-  return {
-    homeDiff: parseFloat((liveHome - c12Home).toFixed(2)),
-    awayDiff: parseFloat((liveAway - c12Away).toFixed(2)),
-    lineChange,
-  };
-}
-
-// Convert Chinese/mixed handicap line text to number (for diff calculation)
-function lineTextToNumber(text: string): number | null {
-  if (!text) return null;
-  const t = text.trim();
-  // 让=正, 受=负; diff>0=升盘(主队方向)
-  const num = parseFloat(t);
-  if (!isNaN(num)) return num; // pure number = 让球 = 正数
-  const isReceiving = t.startsWith("受") || t.startsWith("*");
-  const body = isReceiving ? t.slice(1) : t;
-  // After stripping prefix, try numeric parse first (e.g. "受0.5" → body="0.5")
-  const bodyNum = parseFloat(body);
-  if (!isNaN(bodyNum)) return isReceiving ? -bodyNum : bodyNum;
-  const partMap: Record<string, number> = { "零": 0, "平": 0, "半": 0.5, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6 };
-  const chineseMap: Record<string, number> = { "平手": 0, "半球": 0.5, "一球": 1, "一球半": 1.5, "两球": 2, "两球半": 2.5, "三球": 3, "三球半": 3.5, "四球": 4, "四球半": 4.5 };
-  const parts = body.split("/");
-  if (parts.length === 2) {
-    const low = chineseMap[parts[0]] ?? parseFloat(parts[0]);
-    const high = chineseMap[parts[1]] ?? parseFloat(parts[1]);
-    if (!isNaN(low) && !isNaN(high)) {
-      const result = (low + high) / 2;
-      return isReceiving ? -result : result;
-    }
-    // Fallback: character-by-character
-    const vals = parts.map(p => {
-      let val = 0;
-      for (const ch of p) {
-        if (partMap[ch] !== undefined) val += partMap[ch];
-      }
-      return val;
-    });
-    const fallbackResult = (vals[0] + vals[1]) / 2;
-    return isReceiving ? -fallbackResult : fallbackResult;
-  }
-  // Single part: try Chinese word map first, then character-by-character
-  if (chineseMap[body] !== undefined) return isReceiving ? -chineseMap[body] : chineseMap[body];
-  let val = 0;
-  for (const ch of body) {
-    if (partMap[ch] !== undefined) val += partMap[ch];
-  }
-  return isReceiving ? -val : val; // 受让=负数，让球=正数
-}
-
-// Parse handicap note into aligned parts: line, homeOdds, awayOdds, side label
-function parseHandicapNote(note: string): { line: string; homeOdds: string; awayOdds: string; side: string } | null {
-  if (!note) return null;
-  const oddsPair = extractOddsPairFromNote(note);
-  if (!oddsPair) return null;
-  const side = detectHandicapSide(note) === "home" ? "主" : detectHandicapSide(note) === "away" ? "客" : "";
-  const line = extractLineFromNote(note);
-  return {
-    line,
-    homeOdds: oddsPair.homeOdds.toFixed(2),
-    awayOdds: oddsPair.awayOdds.toFixed(2),
-    side,
-  };
-}
-
-// Parse total note into aligned parts
-function parseTotalNote(note: string): { line: string; overOdds: string; underOdds: string; side: string } | null {
-  if (!note) return null;
-  const oddsPair = extractOddsPairFromNote(note);
-  if (!oddsPair) return null;
-  const side = detectTotalSide(note) === "over" ? "大" : detectTotalSide(note) === "under" ? "小" : "";
-  const line = extractLineFromNote(note);
-  return {
-    line,
-    overOdds: oddsPair.homeOdds.toFixed(2),
-    underOdds: oddsPair.awayOdds.toFixed(2),
-    side,
-  };
-}
-
-// Compute handicap odds comparison
-// Note format: "盘口 主赔/客赔 方向"
-// When side is "主", compare predicted home odds vs current home odds
-// When side is "客", compare predicted away odds vs current away odds
-// diff = predicted - current (positive = odds dropped = good)
-function computeHandicapComparison(
-  noteText: string,
-  homeOdds: string,
-  awayOdds: string,
-  baseTotal: number = 1.90
-): OddsComparison | null {
-  const oddsPair = extractOddsPairFromNote(noteText);
-  if (oddsPair === null) return null;
-  const home = parseFloat(homeOdds);
-  const away = parseFloat(awayOdds);
-  if (isNaN(home) || isNaN(away)) return null;
-
-  const side = detectHandicapSide(noteText);
-  if (side === "home") {
-    // Selected home: noteHomeOdds + liveAwayOdds vs baseTotal
-    const sumTotal = oddsPair.homeOdds + away;
-    return {
-      predictedOdds: oddsPair.homeOdds,
-      currentOdds: away,
-      sumTotal,
-      diff: sumTotal - baseTotal,
-    };
-  } else if (side === "away") {
-    // Selected away: noteAwayOdds + liveHomeOdds vs baseTotal
-    const sumTotal = oddsPair.awayOdds + home;
-    return {
-      predictedOdds: oddsPair.awayOdds,
-      currentOdds: home,
-      sumTotal,
-      diff: sumTotal - baseTotal,
-    };
-  }
-  return null;
-}
-
-// Compute total line odds comparison
-// Note format: "盘口 大赔/小赔 方向"
-// When side is "大", compare noteOverOdds + liveUnderOdds vs baseTotal
-// When side is "小", compare noteUnderOdds + liveOverOdds vs baseTotal
-function computeTotalComparison(
-  noteText: string,
-  overOdds: string,
-  underOdds: string,
-  baseTotal: number = 1.90
-): OddsComparison | null {
-  const oddsPair = extractOddsPairFromNote(noteText);
-  if (oddsPair === null) return null;
-  const over = parseFloat(overOdds);
-  const under = parseFloat(underOdds);
-  if (isNaN(over) || isNaN(under)) return null;
-
-  const side = detectTotalSide(noteText);
-  if (side === "over") {
-    const sumTotal = oddsPair.homeOdds + under;
-    return {
-      predictedOdds: oddsPair.homeOdds,
-      currentOdds: under,
-      sumTotal,
-      diff: sumTotal - baseTotal,
-    };
-  } else if (side === "under") {
-    const sumTotal = oddsPair.awayOdds + over;
-    return {
-      predictedOdds: oddsPair.awayOdds,
-      currentOdds: over,
-      sumTotal,
-      diff: sumTotal - baseTotal,
-    };
-  }
-  return null;
-}
-
-function loadFromLS<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveToLS(key: string, value: unknown): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // ignore
-  }
-}
+type OddsSourceMeta = DatabaseOddsMeta & { sourceObservedAt: SourceTimestamp };
 
 // --- Sound utility ---
 function playAlertSound() {
@@ -1002,119 +252,6 @@ function playAlertSound() {
 }
 
 // --- Main Component ---
-// Normalize open time format for correct sorting (e.g. "4-6 17:19" → "04-06 17:19")
-// Must be defined outside component to avoid hoisting issues with useMemo
-/**
- * Check if a league name matches any league in the selected set.
- * Uses "core name" matching: strip common suffixes to get the base league name,
- * then compare. Suffixes are stripped in two passes:
- *   1. Qualifier suffixes: 冠/降/升/附/春/秋/杯/级/保 (赛制后缀)
- *   2. League-level suffixes: 超/甲/联 + trailing digits like 2 (联赛级别)
- * Also strips: U数字, 女...
- */
-function getLeagueCoreName(name: string, stripLevel = false): string {
-  let core = name
-    .replace(/U\d+$/g, '')       // Remove U19, U21 etc
-    .replace(/女.+$/g, '')       // Remove 女... suffix
-    .replace(/(冠|降|升|附|春|秋|杯|级|保)$/g, '')  // Remove qualifier suffix
-    .replace(/(冠|降|升|附|春|秋|杯|级|保)$/g, ''); // Repeat for double qualifiers
-  if (stripLevel) {
-    core = core.replace(/(超|甲|联|乙|丙|丁|\d+)$/g, '');  // Remove league-level suffix + trailing digits
-  }
-  return core;
-}
-
-function isLeagueSelected(leagueName: string, selectedLeagues: Set<string>): boolean {
-  if (selectedLeagues.has(leagueName)) return true;
-  const leagueWithLevel = getLeagueCoreName(leagueName, false);
-  const leagueNoLevel = getLeagueCoreName(leagueName, true);
-  for (const sel of selectedLeagues) {
-    if (sel === "__NONE__") continue;
-    if (sel === leagueName) return true;
-    const selWithLevel = getLeagueCoreName(sel, false);
-    const selNoLevel = getLeagueCoreName(sel, true);
-    // Pass 1: match with level suffix kept (more precise)
-    // e.g. "丹麦甲升" core="丹麦甲" matches "丹麦甲降" core="丹麦甲"
-    if (selWithLevel === leagueWithLevel && selWithLevel.length > 0) return true;
-    // Pass 2: match with level suffix stripped (cross-level matching)
-    // e.g. "巴林超" core="巴林" matches "巴林甲" core="巴林"
-    // e.g. "韩K联" core="韩K" matches "韩K2" core="韩K"
-    if (selNoLevel === leagueNoLevel && selNoLevel.length >= 1) return true;
-  }
-  return false;
-}
-
-function normalizeOpenTime(t: string): string {
-  if (!t) return "zzz";
-  const m = t.match(/^(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})$/);
-  if (!m) return t;
-  return `${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")} ${m[3].padStart(2, "0")}:${m[4]}`;
-}
-
-// Convert abbreviated handicap line format to full format (same as crown12/新数据 format)
-// e.g. "*平/半" → "受让平手/半球", "*半/一" → "受让半球/一球", "一球" → "一球"
-function formatHandicapLine(line: string): string {
-  if (!line) return line;
-  const isReceive = line.startsWith("*");
-  let val = isReceive ? line.slice(1) : line;
-
-  // Expand single-char parts in split lines (e.g. "平/半" → "平手/半球")
-  if (val.includes("/")) {
-    const parts = val.split("/");
-    val = parts.map(p => {
-      if (p === "平") return "平手";
-      if (p === "半") return "半球";
-      if (p === "一") return "一球";
-      if (p === "两") return "两球";
-      return p; // "球半", "两球半", etc. stay as-is
-    }).join("/");
-  }
-
-  return isReceive ? `受让${val}` : val;
-}
-
-// Get pinyin initials for Chinese characters (first letter of each char)
-// e.g. "英超" → "yc", "西甲" → "xj", "意甲" → "yj"
-// Uses a compact lookup table covering common league name characters
-const _PI: Record<string, string> = {"阿":"a","埃":"a","爱":"a","安":"a","奥":"a","澳":"a","巴":"b","白":"b","保":"b","北":"b","贝":"b","比":"b","玻":"b","勃":"b","布":"b","采":"b","成":"c","赤":"c","楚":"c","川":"c","春":"c","超":"c","达":"d","大":"d","丹":"d","德":"d","丁":"d","东":"d","典":"d","岛":"d","地":"d","度":"d","俄":"e","恩":"e","尔":"e","厄":"e","法":"f","芬":"f","佛":"f","弗":"f","伐":"f","菲":"f","附":"f","非":"f","冈":"g","哥":"g","格":"g","瓜":"g","冠":"g","广":"g","国":"g","港":"g","干":"g","戈":"g","哈":"h","海":"h","荷":"h","赫":"h","黑":"h","洪":"h","后":"h","华":"h","黄":"h","惠":"h","霍":"h","韩":"h","及":"j","吉":"j","加":"j","甲":"j","贾":"j","柬":"j","捷":"j","金":"j","京":"j","精":"j","九":"j","俱":"j","降":"j","锦":"j","季":"j","卡":"k","开":"k","科":"k","克":"k","库":"k","昆":"k","拉":"l","莱":"l","兰":"l","勒":"l","雷":"l","里":"l","利":"l","联":"l","立":"l","伦":"l","罗":"l","洛":"l","鲁":"l","腊":"l","律":"l","马":"m","麦":"m","曼":"m","梅":"m","美":"m","孟":"m","秘":"m","摩":"m","墨":"m","木":"m","南":"n","内":"n","尼":"n","宁":"n","纽":"n","挪":"n","拿":"n","欧":"o","帕":"p","皮":"p","平":"p","葡":"p","普":"p","浦":"p","奇":"q","齐":"q","青":"q","清":"q","秋":"q","区":"q","全":"q","然":"r","人":"r","日":"r","荣":"r","瑞":"r","壬":"r","萨":"s","塞":"s","沙":"s","山":"s","上":"s","升":"s","圣":"s","士":"s","斯":"s","苏":"s","索":"s","塔":"t","泰":"t","特":"t","天":"t","突":"t","土":"t","托":"t","台":"t","陶":"t","瓦":"w","维":"w","沃":"w","乌":"w","武":"w","委":"w","威":"w","西":"x","希":"x","香":"x","协":"x","新":"x","匈":"x","亚":"y","延":"y","伊":"y","以":"y","意":"y","印":"y","英":"y","营":"y","约":"y","越":"y","云":"y","业":"y","乙":"y","余":"y","议":"y","泽":"z","占":"z","智":"z","中":"z","总":"z","职":"z","足":"z","女":"n","戊":"w"};
-
-function getPinyinInitials(text: string): string {
-  let result = "";
-  for (const char of text) {
-    const initial = _PI[char];
-    if (initial) {
-      result += initial;
-    } else if (/[a-zA-Z]/.test(char)) {
-      result += char.toLowerCase();
-    }
-  }
-  return result;
-}
-
-function isAutomationCompensationAvailable(now = new Date()): boolean {
-  const beijing = new Date(now.getTime() + 8 * 60 * 60 * 1000);
-  const hour = beijing.getUTCHours();
-  const minute = beijing.getUTCMinutes();
-  return hour > 12 || (hour === 12 && minute >= 2);
-}
-
-function previousBeijingDateKey(now = new Date()): string {
-  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-  const beijingYesterday = new Date(utcMs + 8 * 60 * 60000);
-  beijingYesterday.setDate(beijingYesterday.getDate() - 1);
-  return beijingYesterday.toISOString().slice(0, 10).replace(/-/g, "");
-}
-
-function normalizeMatchDateKey(value: string | undefined | null, fallbackYear = new Date().getFullYear()): string {
-  if (!value) return "";
-  if (/^\d{8}$/.test(value)) return value;
-  const iso = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (iso) return `${iso[1]}${iso[2].padStart(2, "0")}${iso[3].padStart(2, "0")}`;
-  const cn = value.match(/(\d{1,2})月(\d{1,2})日/);
-  if (cn) return `${fallbackYear}${cn[1].padStart(2, "0")}${cn[2].padStart(2, "0")}`;
-  return value.replace(/-/g, "");
-}
-
 async function syncHistoricalScores(dateKey: string): Promise<{ persistedResults: number; status: string }> {
   const response = await fetch(`/api/schedule?date=${dateKey}&mode=history`);
   const json = await response.json();
@@ -1125,48 +262,6 @@ async function syncHistoricalScores(dateKey: string): Promise<{ persistedResults
     persistedResults: Number(json.data?.ingestion?.persistence?.persistedResults || json.data?.ingestion?.cached?.finishedResultCount || 0),
     status: String(json.data?.ingestion?.status || "unknown"),
   };
-}
-
-function automationTaskLabel(type: AutomationTaskStatusData["taskType"]): string {
-  return {
-    "odds-fetch": "赔率抓取",
-    "crown-snapshot": "皇冠快照",
-    analysis: "AI分析",
-    "verify-learn-report": "验证学习报表",
-  }[type];
-}
-
-function automationStatusText(tasks: AutomationTaskStatusData[]): string {
-  if (tasks.length === 0) {
-    return isAutomationCompensationAvailable() ? "服务端任务未创建" : "服务端任务待北京时间12:02后执行";
-  }
-
-  const completed = tasks.filter(task => task.status === "completed").length;
-  const running = tasks.filter(task => task.status === "running" || task.status === "retrying").length;
-  const failed = tasks.find(task => task.status === "failed");
-  if (failed) {
-    const stepError = failed.steps?.find(step => step.status === "failed" && step.lastError)?.lastError;
-    const reason = failed.lastError || stepError || "未知错误";
-    return `服务端任务 ${completed}/${tasks.length} 完成，${automationTaskLabel(failed.taskType)}失败：${reason}`;
-  }
-  if (running > 0) return `服务端任务 ${completed}/${tasks.length} 完成，${running} 个执行中/重试中`;
-  return `服务端任务 ${completed}/${tasks.length} 完成`;
-}
-
-// Match league name against search text (Chinese name contains + pinyin initials)
-function matchLeague(leagueName: string, searchText: string): boolean {
-  if (!searchText) return false;
-  const lower = searchText.toLowerCase().trim();
-  if (!lower) return false;
-
-  // Direct Chinese name match (contains)
-  if (leagueName.toLowerCase().includes(lower)) return true;
-
-  // Pinyin initials match (e.g. "yc" matches "英超")
-  const pinyin = getPinyinInitials(leagueName);
-  if (pinyin.includes(lower)) return true;
-
-  return false;
 }
 
 export default function OddsMonitorPage() {
@@ -1185,9 +280,7 @@ export default function OddsMonitorPage() {
   const [lastRefresh, setLastRefresh] = useState<number>(0);
   const [matchDate, setMatchDate] = useState("");
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
-  const [alertConfigs, setAlertConfigs] = useState<Map<string, AlertConfig>>(
-    new Map()
-  );
+  const [alertConfigs, setAlertConfigs] = useState<Map<string, AlertConfig>>(new Map());
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [oddsSnapshots, setOddsSnapshots] = useState<Map<string, OddsSnapshot>>(
     new Map()
@@ -1225,11 +318,9 @@ export default function OddsMonitorPage() {
   const oddsGenerationRef = useRef(0);
   const oddsSourceMetaRef = useRef<Map<string, OddsSourceMeta>>(new Map());
   const latestOddsRequestRef = useRef<Map<string, number>>(new Map());
-  const oddsRefreshQueueRef = useRef<RefreshQueueItem<OddsRefreshJob>[]>([]);
-  const oddsRefreshWorkerRunningRef = useRef(false);
-  const oddsSourceTaskTailRef = useRef<Promise<void>>(Promise.resolve());
-  const oddsSingleFlightRef = useRef<Map<string, Promise<boolean>>>(new Map());
-  const oddsRefreshCoreRef = useRef<(matchId: string, generation: number) => Promise<boolean>>(async () => false);
+  const oddsRefreshQueueRef = useRef<ReturnType<typeof createOddsRefreshQueue> | null>(null);
+  const oddsCoordinatorRef = useRef<ReturnType<typeof createOddsFetchCoordinator> | null>(null);
+  const oddsRefreshCoreRef = useRef<(matchId: string, generation: number, signal?: AbortSignal) => Promise<boolean>>(async () => false);
   const detailedScheduleRef = useRef<() => void>(() => {});
   const [oddsQueueStatus, setOddsQueueStatus] = useState({ queued: 0, inFlight: 0, lastSuccessAt: 0 });
   const [oddsStatusNow, setOddsStatusNow] = useState(Date.now());
@@ -1237,63 +328,21 @@ export default function OddsMonitorPage() {
     dbCompanyOddsMapRef.current = dbCompanyOddsMap;
   }, [dbCompanyOddsMap]);
 
+  const oddsSourceSerializationRef = useRef(createSerializedExecutor());
   const runSerializedOddsSourceTask = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
-    const run = oddsSourceTaskTailRef.current.then(task, task);
-    oddsSourceTaskTailRef.current = run.then(() => undefined, () => undefined);
-    return run;
+    return oddsSourceSerializationRef.current(task);
   }, []);
 
-  const runOddsRefreshWorker = useCallback(async () => {
-    if (oddsRefreshWorkerRunningRef.current) return;
-    oddsRefreshWorkerRunningRef.current = true;
-    try {
-      while (oddsRefreshQueueRef.current.length > 0) {
-        const queued = oddsRefreshQueueRef.current.shift()!;
-        setOddsQueueStatus(previous => ({ ...previous, queued: oddsRefreshQueueRef.current.length, inFlight: 1 }));
-        const { matchId, generation, resolvers } = queued.value;
-        let flight = oddsSingleFlightRef.current.get(matchId);
-        if (!flight) {
-          flight = runSerializedOddsSourceTask(() => oddsRefreshCoreRef.current(matchId, generation)).finally(() => {
-            oddsSingleFlightRef.current.delete(matchId);
-          });
-          oddsSingleFlightRef.current.set(matchId, flight);
-        }
-        const success = await flight;
-        resolvers.forEach(resolve => resolve(success));
-        if (success && generation === oddsGenerationRef.current) {
-          setOddsQueueStatus(previous => ({ ...previous, lastSuccessAt: Date.now() }));
-        }
-        if (oddsRefreshQueueRef.current.length > 0) {
-          await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
-        }
-      }
-    } finally {
-      oddsRefreshWorkerRunningRef.current = false;
-      setOddsQueueStatus(previous => ({ ...previous, queued: oddsRefreshQueueRef.current.length, inFlight: 0 }));
-    }
-  }, [runSerializedOddsSourceTask]);
-
-  const enqueueOddsRefresh = useCallback((matchId: string, priority = 0, automatic = false): Promise<boolean> => {
-    const generation = oddsGenerationRef.current;
-    const existingFlight = oddsSingleFlightRef.current.get(matchId);
-    if (existingFlight) return existingFlight;
-    return new Promise<boolean>(resolve => {
-      const existingQueued = oddsRefreshQueueRef.current.find(item => item.key === matchId);
-      const value: OddsRefreshJob = existingQueued
-        ? { ...existingQueued.value, automatic: existingQueued.value.automatic && automatic, resolvers: [...existingQueued.value.resolvers, resolve] }
-        : { matchId, generation, automatic, resolvers: [resolve] };
-      const nextQueue = enqueueRefreshItem(oddsRefreshQueueRef.current, {
-        key: matchId,
-        priority,
-        value,
-      });
-      const retained = nextQueue.slice(0, 200);
-      nextQueue.slice(200).forEach(item => item.value.resolvers.forEach(droppedResolve => droppedResolve(false)));
-      oddsRefreshQueueRef.current = retained;
-      setOddsQueueStatus(previous => ({ ...previous, queued: oddsRefreshQueueRef.current.length }));
-      void runOddsRefreshWorker();
+  if (!oddsRefreshQueueRef.current) {
+    oddsRefreshQueueRef.current = createOddsRefreshQueue({
+      run: (matchId, generation) => runSerializedOddsSourceTask(() => oddsRefreshCoreRef.current(matchId, generation)),
+      onStatus: setOddsQueueStatus,
     });
-  }, [runOddsRefreshWorker]);
+  }
+
+  const enqueueOddsRefresh = useCallback((matchId: string, priority = 0): Promise<boolean> => {
+    return oddsRefreshQueueRef.current!.enqueue(matchId, priority, oddsGenerationRef.current);
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => setOddsStatusNow(Date.now()), 1000);
@@ -1311,6 +360,8 @@ export default function OddsMonitorPage() {
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleError, setScheduleError] = useState("");
   const [scheduleHotMatchCount, setScheduleHotMatchCount] = useState(0);
+  const scheduleLoadControllerRef = useRef<ReturnType<typeof createLatestScheduleLoadController<ScheduleAggregate>> | null>(null);
+  const databaseLoadControllerRef = useRef(createGenerationDatabaseLoadController());
   const [dataLeagueFilterOpen, setDataLeagueFilterOpen] = useState(false);
   const [dataSelectedLeagues, setDataSelectedLeagues] = useState<Set<string>>(new Set()); // data tab: empty=all, non-empty=only selected
   const [dataCurrentPage, setDataCurrentPage] = useState(1); // pagination for Data Tab
@@ -1338,35 +389,13 @@ export default function OddsMonitorPage() {
   const [feishuSaving, setFeishuSaving] = useState(false);
   const [feishuTesting, setFeishuTesting] = useState(false);
   const [feishuTestResult, setFeishuTestResult] = useState<string | null>(null);
-  // Server-side automation status
-  const [automationTasks, setAutomationTasks] = useState<AutomationTaskStatusData[]>([]);
-  const previousAutomationStatusRef = useRef<Map<string, AutomationTaskStatusData["status"]>>(new Map());
-  const [automationCompensating, setAutomationCompensating] = useState(false);
-  const [automationMessage, setAutomationMessage] = useState("");
-  const [automationCompensationAvailable, setAutomationCompensationAvailable] = useState(() => isAutomationCompensationAvailable());
+  // Server-side automation status is owned by useAutomationStatus below.
   // All leagues ever seen (for the picker UI) - union of DB whitelist + schedule leagues
   const [allKnownLeagues, setAllKnownLeagues] = useState<string[]>([]);
 
   // Report state
   const [activeTab, setActiveTab] = useState<"odds" | "data" | "comparison" | "report">("odds");
-  const [reportData, setReportData] = useState<{
-    date: string;
-    mode?: string;
-    latestAnalysisAt?: string | null;
-    rows: ReportRowData[];
-    summary: {
-      total: number; correct: number; wrong: number; accuracy: string;
-      totalTotal?: number; totalCorrect?: number; totalWrong?: number; totalAccuracy?: string;
-      markets?: {
-        handicap: SettlementSummary;
-        total: SettlementSummary;
-      };
-      highConf?: { total: number; correct: number; accuracy: string };
-      midConf?: { total: number; correct: number; accuracy: string };
-      lowConf?: { total: number; correct: number; accuracy: string };
-      unverified?: number;
-    };
-  } | null>(null);
+  const [reportData, setReportData] = useState<ReportData | null>(null);
   const [reportDates, setReportDates] = useState<string[]>([]);
   const [selectedReportDate, setSelectedReportDate] = useState("");
   const [reportTrend, setReportTrend] = useState<Array<{ date: string; total: number; correct: number; accuracy: number; totalCorrect: number; totalAccuracy: string }>>([]);
@@ -1374,10 +403,10 @@ export default function OddsMonitorPage() {
   const [reportExpandedCompanies, setReportExpandedCompanies] = useState<Set<string>>(new Set());
   const [reportExpandedCrown, setReportExpandedCrown] = useState<Set<string>>(new Set());
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const alertsEndRef = useRef<HTMLDivElement>(null);
   const alertConfigsRef = useRef(alertConfigs);
   const oddsSnapshotsRef = useRef(oddsSnapshots);
+  const alertObservationKeysRef = useRef(new Set<string>());
   const soundEnabledRef = useRef(soundEnabled);
   const pinnedMatchesRef = useRef(pinnedMatches);
 
@@ -1395,97 +424,57 @@ export default function OddsMonitorPage() {
     pinnedMatchesRef.current = pinnedMatches;
   }, [pinnedMatches]);
 
-  // --- Load pinned & notes from localStorage on mount ---
-  const [lsLoaded, setLsLoaded] = useState(false);
+  const { actions: workstationActions } = useOddsWorkstation<PinnedMatchInfo, MatchNotes, AlertConfig>({
+    settings: {
+      pinnedMatches,
+      pinnedMatchInfo,
+      notes,
+      setPinnedMatches,
+      setPinnedMatchInfo,
+      setNotes,
+      alertConfigs,
+      setAlertConfigs,
+      soundEnabled,
+      setSoundEnabled,
+      refreshInterval,
+      setRefreshInterval,
+    },
+  });
 
   // --- Load pasted JSON from server on mount ---
   useEffect(() => {
-    const ids = loadFromLS<string[]>(LS_PINNED_IDS_KEY, []);
-    setPinnedMatches(new Set(ids));
-    const infoArr = loadFromLS<[string, PinnedMatchInfo][]>(LS_PINNED_INFO_KEY, []);
-    setPinnedMatchInfo(new Map(infoArr));
-    const notesArr = loadFromLS<[string, MatchNotes][]>(LS_NOTES_KEY, []);
-    setNotes(new Map(notesArr));
-    setLsLoaded(true);
-
     // Load prediction JSON from server
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     setSelectedPredDate(today);
-    fetch(`/api/prediction?date=${today}`)
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.data) setSavedJson(json.data);
-      })
+    workstationActions.fetchPredictions(today)
+      .then((content) => setSavedJson(content))
       .catch(() => {});
-    fetch("/api/prediction")
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.dates) setPredictionDates(json.dates.map((d: { date_key: string }) => d.date_key));
-      })
+    workstationActions.fetchPredictionDates()
+      .then(setPredictionDates)
       .catch(() => {});
 
-    // Load user focused leagues whitelist from DB
-    fetch("/api/user-focused-leagues")
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.success && json.leagues && json.leagues.length > 0) {
-          setUserFocusedLeagues(new Set(json.leagues));
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  // --- Auto-load prediction data when selected date changes ---
+    // Load user focused leagues whitelist from DB with the established default fallback.
+    fetchFocusedLeagues(fetch, [...DEFAULT_FOCUSED_LEAGUES])
+      .then((items) => setUserFocusedLeagues(new Set(items)));
+  }, [workstationActions]);
   const loadPredictionByDate = useCallback(async (dateKey: string) => {
     if (!dateKey || dateKey.length !== 8) return;
     try {
-      const res = await fetch(`/api/prediction?date=${dateKey}`);
-      const json = await res.json();
-      if (json.data) {
-        setSavedJson(json.data);
-      } else {
-        setSavedJson("");
-      }
+      setSavedJson(await workstationActions.fetchPredictions(dateKey));
     } catch {
       // ignore
     }
-  }, []);
-
-  // --- Save pinned IDs & info to localStorage (only after initial load) ---
-  useEffect(() => {
-    if (lsLoaded) {
-      saveToLS(LS_PINNED_IDS_KEY, [...pinnedMatches]);
-    }
-  }, [pinnedMatches, lsLoaded]);
-  useEffect(() => {
-    if (lsLoaded) {
-      saveToLS(LS_PINNED_INFO_KEY, [...pinnedMatchInfo.entries()]);
-    }
-  }, [pinnedMatchInfo, lsLoaded]);
-
-  // --- Save notes to localStorage ---
-  useEffect(() => {
-    if (lsLoaded) {
-      saveToLS(LS_NOTES_KEY, [...notes.entries()]);
-    }
-  }, [notes, lsLoaded]);
+  }, [workstationActions]);
 
   // --- Save prediction JSON to server (only on explicit user action, not auto-load) ---
   const savePredictionToServer = useCallback(async (data: string, dateKey: string) => {
     try {
-      await fetch("/api/prediction", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data, date: dateKey }),
-      });
-      // Refresh date list after save
-      const res = await fetch("/api/prediction");
-      const json = await res.json();
-      if (json.dates) setPredictionDates(json.dates.map((d: { date_key: string }) => d.date_key));
+      await workstationActions.savePredictions(dateKey, data);
+      setPredictionDates(await workstationActions.fetchPredictionDates());
     } catch {
       // ignore
     }
-  }, []);
+  }, [workstationActions]);
 
   // --- Fetch URL and extract JSON ---
   const fetchUrlAndExtract = useCallback(async () => {
@@ -1493,22 +482,15 @@ export default function OddsMonitorPage() {
     setFetchLoading(true);
     setFetchError("");
     try {
-      const res = await fetch("/api/fetch-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: fetchUrlInput.trim() }),
-      });
-      const json = await res.json();
-      // Auto-detect date from URL (available in both success and error responses)
-      if (json.detectedDate && !selectedPredDate) {
-        setSelectedPredDate(json.detectedDate);
+      const result = await workstationActions.fetchRemoteText(fetchUrlInput.trim());
+      if (result.detectedDate && !selectedPredDate) {
+        setSelectedPredDate(result.detectedDate);
       }
-      if (json.success && json.extractedJson) {
-        setPastedJson(json.extractedJson);
+      if (result.extractedJson) {
+        setPastedJson(result.extractedJson);
       } else {
-        // No JSON found
-        if (json.error) {
-          setFetchError(json.error);
+        if (result.error) {
+          setFetchError(result.error);
         } else if (/coze\.cn\/s\//.test(fetchUrlInput)) {
           setFetchError("Coze分享链接的签名已过期，服务端无法直接获取。请在浏览器中打开链接，复制JSON内容后粘贴到下方。");
         } else {
@@ -1521,157 +503,111 @@ export default function OddsMonitorPage() {
     } finally {
       setFetchLoading(false);
     }
-  }, [fetchUrlInput, selectedPredDate]);
+  }, [fetchUrlInput, selectedPredDate, workstationActions]);
 
   // --- Check alerts (uses refs to avoid dependency cycles) ---
   const checkAlerts = useCallback((newMatches: MatchData[]) => {
-    const currentConfigs = alertConfigsRef.current;
-    const currentSnapshots = oddsSnapshotsRef.current;
-    const currentSound = soundEnabledRef.current;
-    const newAlerts: AlertItem[] = [];
-
-    for (const config of currentConfigs.values()) {
-      const match = newMatches.find((m) => m.id === config.matchId);
-      const snapshot = currentSnapshots.get(config.matchId);
-      if (!match || !snapshot) continue;
-
-      const handicapChange = match.handicapRaw - snapshot.handicapRaw;
-      const totalLineChange = match.totalLineRaw - snapshot.totalLineRaw;
-      const homeOddsChange =
-        parseFloat(match.homeOdds) - parseFloat(snapshot.homeOdds);
-      const awayOddsChange =
-        parseFloat(match.awayOdds) - parseFloat(snapshot.awayOdds);
-      const overOddsChange =
-        parseFloat(match.overOdds) - parseFloat(snapshot.overOdds);
-      const underOddsChange =
-        parseFloat(match.underOdds) - parseFloat(snapshot.underOdds);
-
-      const thresholds: {
-        value: number;
-        up: string;
-        down: string;
-        label: string;
-      }[] = [
-        { value: handicapChange, up: config.handicapUp, down: config.handicapDown, label: "让球" },
-        { value: totalLineChange, up: config.totalLineUp, down: config.totalLineDown, label: "大小球" },
-        { value: homeOddsChange, up: config.homeOddsUp, down: config.homeOddsDown, label: "主队赔率" },
-        { value: awayOddsChange, up: config.awayOddsUp, down: config.awayOddsDown, label: "客队赔率" },
-        { value: overOddsChange, up: config.overOddsUp, down: config.overOddsDown, label: "大球赔率" },
-        { value: underOddsChange, up: config.underOddsUp, down: config.underOddsDown, label: "小球赔率" },
-      ];
-
-      for (const t of thresholds) {
-        const upVal = parseFloat(t.up);
-        const downVal = parseFloat(t.down);
-        if (!isNaN(upVal) && upVal > 0 && t.value >= upVal) {
-          newAlerts.push({
-            id: `${config.matchId}-${t.label}-up-${Date.now()}`,
-            message: `${match.homeTeam} vs ${match.awayTeam} ${t.label} 升了 ${t.value.toFixed(2)}`,
-            time: Date.now(),
-          });
-        }
-        if (!isNaN(downVal) && downVal > 0 && t.value <= -downVal) {
-          newAlerts.push({
-            id: `${config.matchId}-${t.label}-down-${Date.now()}`,
-            message: `${match.homeTeam} vs ${match.awayTeam} ${t.label} 降了 ${Math.abs(t.value).toFixed(2)}`,
-            time: Date.now(),
-          });
-        }
-      }
-    }
-
-    if (newAlerts.length > 0) {
-      setAlerts((prev) => [...prev, ...newAlerts]);
-      if (currentSound) {
-        playAlertSound();
-      }
-    }
+    const newAlerts = createOddsAlerts({
+      configs: alertConfigsRef.current,
+      snapshots: oddsSnapshotsRef.current,
+      matches: newMatches,
+      now: Date.now(),
+      seen: alertObservationKeysRef.current,
+    });
+    if (newAlerts.length === 0) return;
+    setAlerts((previous) => [...previous, ...newAlerts]);
+    if (soundEnabledRef.current) playAlertSound();
   }, []);
 
   // --- Fetch data ---
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("/api/odds");
-      const json = await res.json();
-      if (json.success) {
-        const newMatches: MatchData[] = json.data.matches || [];
-        const newLeagues: LeagueData[] = json.data.leagues || [];
-
-        checkAlerts(newMatches);
-
-        setOddsSnapshots((prev) => {
-          const next = new Map(prev);
-          for (const m of newMatches) {
-            next.set(m.id, {
-              handicapRaw: m.handicapRaw,
-              totalLineRaw: m.totalLineRaw,
-              homeOdds: m.homeOdds,
-              awayOdds: m.awayOdds,
-              overOdds: m.overOdds,
-              underOdds: m.underOdds,
-            });
-          }
-          return next;
-        });
-
-        setMatches(newMatches);
-        setLeagues(newLeagues);
-        setHotMatchCount(json.data.hotMatchCount || 0);
-        setMatchDate(json.data.matchDate || "");
-        setLastRefresh(Date.now());
-        detailedScheduleRef.current();
-
-        // Update pinned match info for matches still in data
-        const currentPinned = pinnedMatchesRef.current;
-        setPinnedMatchInfo((prev) => {
-          const next = new Map(prev);
-          for (const m of newMatches) {
-            if (currentPinned.has(m.id)) {
-              next.set(m.id, {
-                id: m.id,
-                league: m.league,
-                leagueColor: m.leagueColor,
-                time: m.time,
-                homeTeam: m.homeTeam,
-                awayTeam: m.awayTeam,
-                handicap: m.handicap,
-                homeOdds: m.homeOdds,
-                awayOdds: m.awayOdds,
-                totalLine: m.totalLine,
-                overOdds: m.overOdds,
-                underOdds: m.underOdds,
-              });
-            }
-          }
-          return next;
-        });
-      } else {
-        setError(json.error || "获取数据失败");
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "网络错误";
-      setError(msg);
-    } finally {
-      setLoading(false);
+  const loadOddsSnapshot = useCallback(async () => {
+    const res = await fetch("/api/odds");
+    const json = await res.json();
+    if (!json.success) {
+      throw new Error(json.error || "获取数据失败");
     }
+    return {
+      matches: (json.data.matches || []) as MatchData[],
+      leagues: (json.data.leagues || []) as LeagueData[],
+      hotMatchCount: json.data.hotMatchCount || 0,
+      matchDate: json.data.matchDate || "",
+    };
+  }, []);
+
+  const applyOddsSnapshot = useCallback((snapshot: {
+    matches: MatchData[];
+    leagues: LeagueData[];
+    hotMatchCount: number;
+    matchDate: string;
+  }) => {
+    const newMatches = snapshot.matches;
+    checkAlerts(newMatches);
+
+    setOddsSnapshots((prev) => {
+      const next = new Map(prev);
+      for (const m of newMatches) {
+        next.set(m.id, {
+          handicapRaw: m.handicapRaw,
+          totalLineRaw: m.totalLineRaw,
+          homeOdds: m.homeOdds,
+          awayOdds: m.awayOdds,
+          overOdds: m.overOdds,
+          underOdds: m.underOdds,
+        });
+      }
+      return next;
+    });
+
+    setMatches(newMatches);
+    setLeagues(snapshot.leagues);
+    setHotMatchCount(snapshot.hotMatchCount);
+    setMatchDate(snapshot.matchDate);
+    setLastRefresh(Date.now());
+    detailedScheduleRef.current();
+
+    // Update pinned match info for matches still in data
+    const currentPinned = pinnedMatchesRef.current;
+    setPinnedMatchInfo((prev) => {
+      const next = new Map(prev);
+      for (const m of newMatches) {
+        if (currentPinned.has(m.id)) {
+          next.set(m.id, {
+            id: m.id,
+            league: m.league,
+            leagueColor: m.leagueColor,
+            time: m.time,
+            homeTeam: m.homeTeam,
+            awayTeam: m.awayTeam,
+            handicap: m.handicap,
+            homeOdds: m.homeOdds,
+            awayOdds: m.awayOdds,
+            totalLine: m.totalLine,
+            overOdds: m.overOdds,
+            underOdds: m.underOdds,
+          });
+        }
+      }
+      return next;
+    });
   }, [checkAlerts]);
 
   // --- Auto refresh ---
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  useEffect(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-    }
-    timerRef.current = setInterval(fetchData, refreshInterval * 1000);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [refreshInterval, fetchData]);
+  const handleRefreshError = useCallback((err: unknown) => {
+    setError(err instanceof Error ? err.message : "网络错误");
+  }, []);
+  const handleRefreshStart = useCallback(() => {
+    setLoading(true);
+    setError("");
+  }, []);
+  const handleRefreshSettled = useCallback(() => setLoading(false), []);
+  const { refresh: refreshOdds } = useOddsRefresh({
+    load: loadOddsSnapshot,
+    onData: applyOddsSnapshot,
+    onError: handleRefreshError,
+    onStart: handleRefreshStart,
+    onSettled: handleRefreshSettled,
+    intervalMs: refreshInterval * 1000,
+  });
 
   // --- Data tab: league filter computed values ---
   // Effective matches & leagues for the data tab based on schedule mode
@@ -1748,7 +684,8 @@ export default function OddsMonitorPage() {
   const [failedMatches, setFailedMatches] = useState<Map<string, string>>(new Map());
   // Track auto-fetch state
   const [autoFetchRunning, setAutoFetchRunning] = useState(false);
-  const autoFetchAbortRef = useRef(false);
+  const autoFetchAbortRef = useRef<AbortController | null>(null);
+  const automaticOddsLifecycleRef = useRef<ReturnType<typeof createAutomaticOddsFetchLifecycle> | null>(null);
   // Batch fetch progress
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; phase: string } | null>(null);
   // Supplement fetch missing counts (refreshed on demand)
@@ -1769,22 +706,21 @@ export default function OddsMonitorPage() {
     try {
       const date = currentDbDateRef.current;
       if (!date) return;
-      const res = await fetch(`/api/analysis?date=${date}&detail=1&matchId=${matchId}`);
-      const json = await res.json();
-      if (json.success && json.prediction) {
+      const prediction = await workstationActions.fetchAnalysisDetail(date, matchId);
+      if (prediction) {
         setAnalysisResults(prev => {
           const next = new Map(prev);
-          next.set(matchId, json.prediction as AnalysisResultData);
+          next.set(matchId, prediction);
           return next;
         });
       }
     } catch {
       // Non-critical
     }
-  }, [analysisResults]);
+  }, [analysisResults, workstationActions]);
   // Chat state
   const [chatOpen, setChatOpen] = useState<string | null>(null); // matchId of open chat
-  const [chatMessages, setChatMessages] = useState<Map<string, { role: "user" | "assistant"; content: string }[]>>(new Map());
+  const [chatMessages, setChatMessages] = useState<Map<string, AnalysisChatMessage[]>>(new Map());
   const [chatInput, setChatInput] = useState("");
   const [chatStreaming, setChatStreaming] = useState(false);
   // Evolution stats
@@ -1814,8 +750,9 @@ export default function OddsMonitorPage() {
 
   useEffect(() => {
     oddsGenerationRef.current += 1;
-    for (const queued of oddsRefreshQueueRef.current) queued.value.resolvers.forEach(resolve => resolve(false));
-    oddsRefreshQueueRef.current = [];
+    databaseLoadControllerRef.current.beginGeneration();
+    oddsCoordinatorRef.current?.setGeneration(oddsGenerationRef.current);
+    oddsRefreshQueueRef.current?.clear();
     latestOddsRequestRef.current = new Map();
     oddsSourceMetaRef.current = new Map();
     matchRefreshVersionRef.current = new Map();
@@ -1826,185 +763,92 @@ export default function OddsMonitorPage() {
     setOddsQueueStatus(previous => ({ ...previous, queued: 0 }));
   }, [dataScheduleMode, currentDbDate]);
 
-  // --- DB load readiness tracking ---
-  // All automated tasks must wait for DB loads to complete before running,
-  // otherwise they may duplicate work (e.g., re-analyzing matches already in DB)
-  const dbOddsLoadedRef = useRef<Set<string>>(new Set()); // dates whose odds have been loaded
-  const dbPredictionsLoadedRef = useRef<Set<string>>(new Set()); // dates whose predictions have been loaded
-
-  // Check if DB data is ready for a given date
-  const isDbLoadReady = useCallback((date: string) => {
-    return dbOddsLoadedRef.current.has(date) && dbPredictionsLoadedRef.current.has(date);
-  }, []);
+  // --- Generation-scoped DB readiness ---
+  // Automated tasks may run only after odds and predictions both settle in the
+  // active schedule generation. Older completions cannot satisfy this gate.
+  const isDbLoadReady = useCallback((date: string) => databaseLoadControllerRef.current.isReady(date), []);
 
   // --- Load odds from DB for a given date ---
+  const applyDatabaseOdds = useCallback((results: Awaited<ReturnType<typeof fetchDatabaseOddsRange>>, requestStartVersion: number, loadGeneration: number) => {
+    if (loadGeneration !== oddsGenerationRef.current) return;
+    const merged = projectDatabaseOddsApplication({
+      results,
+      currentMetadata: oddsSourceMetaRef.current,
+      requestStartVersion,
+      refreshVersions: matchRefreshVersionRef.current,
+      persistedVersions: matchPersistedVersionRef.current,
+    });
+    setDbCompanyOddsMap(previous => {
+      const next = new Map(previous);
+      for (const [matchId, oddsData] of merged.odds) {
+        next.set(matchId, oddsData);
+        oddsSourceMetaRef.current.set(matchId, merged.metadata.get(matchId) || { source: null, sourceObservedAt: null });
+      }
+      dbCompanyOddsMapRef.current = next;
+      return next;
+    });
+    setFetchedMatches(previous => new Set([...previous, ...merged.fetched]));
+    const mergeSnapshots = (previous: Map<string, CrownStoredOdds>, values: Map<string, CrownStoredOdds>) => {
+      const next = new Map(previous);
+      for (const [matchId, value] of values) next.set(matchId, value);
+      return next;
+    };
+    if (merged.crownLive.size) setCrownLiveOddsFromDb(previous => mergeSnapshots(previous, merged.crownLive));
+    if (merged.crownOpen.size) setCrown12OddsFromDb(previous => mergeSnapshots(previous, merged.crownOpen));
+    merged.readyDates.forEach(date => databaseLoadControllerRef.current.markOddsReady(date, loadGeneration));
+  }, []);
+
   const loadOddsFromDb = useCallback(async (date: string) => {
     if (!date) return;
     const requestStartVersion = oddsRefreshSequenceRef.current;
     const loadGeneration = oddsGenerationRef.current;
     try {
-      const res = await fetch(`/api/data/odds-db?date=${date}&slim=1`);
-      const json = await res.json();
-      if (json.success && json.data) {
-        const { matchIds, oddsMap, oddsMetaMap = {}, crownLiveOddsMap, crown12OddsMap } = json.data;
-        if (loadGeneration !== oddsGenerationRef.current) return;
-        const newMap = new Map<string, CompanyOddsData>();
-        const newFetched = new Set<string>();
-        for (const mid of matchIds) {
-          const oddsData = oddsMap[mid];
-          if (oddsData && canApplyDatabaseObservation(oddsMetaMap[mid]?.sourceObservedAt, oddsSourceMetaRef.current.get(mid)?.sourceObservedAt)) {
-            const parsedOddsData = oddsData as CompanyOddsData;
-            newMap.set(mid, parsedOddsData);
-            if (Array.isArray(parsedOddsData.companies) && parsedOddsData.companies.length > 0) {
-              newFetched.add(mid);
-            }
-          }
-        }
-        setDbCompanyOddsMap(prev => {
-          const next = new Map(prev);
-          for (const [matchId, oddsData] of newMap) {
-            if (canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(matchId), matchPersistedVersionRef.current.get(matchId))) {
-              next.set(matchId, oddsData);
-              oddsSourceMetaRef.current.set(matchId, {
-                source: oddsMetaMap[matchId]?.source ?? null,
-                sourceObservedAt: oddsMetaMap[matchId]?.sourceObservedAt ?? null,
-                writeToken: oddsMetaMap[matchId]?.writeToken ?? null,
-              });
-            }
-          }
-          dbCompanyOddsMapRef.current = next;
-          return next;
-        });
-        setFetchedMatches(prev => {
-          const next = new Set(prev);
-          for (const matchId of newFetched) {
-            if (canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(matchId), matchPersistedVersionRef.current.get(matchId))) {
-              next.add(matchId);
-            }
-          }
-          return next;
-        });
-        // Store crown live odds from DB
-        if (crownLiveOddsMap && Object.keys(crownLiveOddsMap).length > 0) {
-          setCrownLiveOddsFromDb(prev => {
-            const next = new Map(prev);
-            for (const [mid, data] of Object.entries(crownLiveOddsMap)) {
-              if (!canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(mid), matchPersistedVersionRef.current.get(mid))) continue;
-              next.set(mid, data as {
-                handicapHome?: string | null;
-                handicapLine?: string | null;
-                handicapAway?: string | null;
-                totalOver?: string | null;
-                totalLine?: string | null;
-                totalUnder?: string | null;
-              });
-            }
-            return next;
-          });
-        }
-        // Store crown latest odds from DB (repurposed as "新数据")
-        if (crown12OddsMap && Object.keys(crown12OddsMap).length > 0) {
-          setCrown12OddsFromDb(prev => {
-            const next = new Map(prev);
-            for (const [mid, data] of Object.entries(crown12OddsMap)) {
-              if (!canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(mid), matchPersistedVersionRef.current.get(mid))) continue;
-              next.set(mid, data as {
-                handicapHome?: string | null;
-                handicapLine?: string | null;
-                handicapAway?: string | null;
-                totalOver?: string | null;
-                totalLine?: string | null;
-                totalUnder?: string | null;
-              });
-            }
-            return next;
-          });
-        }
-        dbOddsLoadedRef.current.add(date);
-      }
-    } catch (err) {
-      console.error("[DataTab] Load from DB error:", err);
+      const result = await fetchDatabaseOddsDate(fetch, date);
+      if (result) applyDatabaseOdds([result], requestStartVersion, loadGeneration);
+    } catch (error) {
+      console.error("[DataTab] Load from DB error:", error);
     }
-  }, []);
+  }, [applyDatabaseOdds]);
 
   // Load existing AI predictions from DB for a date
   const loadPredictionsFromDb = useCallback(async (date: string) => {
     if (!date) return;
-    try {
-      const res = await fetch(`/api/analysis?date=${date}`);
-      const json = await res.json();
-      if (json.success && json.predictions) {
-        const newMap = new Map<string, AnalysisResultData>();
-        for (const [mid, pred] of Object.entries(json.predictions)) {
-          newMap.set(mid, pred as AnalysisResultData);
-        }
+    const generation = databaseLoadControllerRef.current.currentGeneration();
+    await databaseLoadControllerRef.current.loadPredictions(
+      date,
+      generation,
+      () => fetchAnalysisList(fetch, date),
+      predictions => {
+        const newMap = new Map<string, AnalysisResultData>(Object.entries(predictions));
         console.log(`[loadPredictionsFromDb] date=${date}, loaded ${newMap.size} predictions from DB`);
-        if (newMap.size > 0) {
-          // Direct set instead of merge to avoid Map clone
-          setAnalysisResults(prev => {
-            const next = new Map(prev);
-            for (const [k, v] of newMap) next.set(k, v);
-            return next;
-          });
-          // Also update ref immediately so automated tasks can use it
-          // (state update is async, but ref is synchronous)
-          analysisResultsRef.current = new Map(analysisResultsRef.current);
-          for (const [k, v] of newMap) analysisResultsRef.current.set(k, v);
-        }
-      }
-    } catch {
-      // Non-critical, don't block
-    } finally {
-      dbPredictionsLoadedRef.current.add(date);
-    }
+        if (newMap.size === 0) return;
+        setAnalysisResults(previous => {
+          const next = new Map(previous);
+          for (const [matchId, prediction] of newMap) next.set(matchId, prediction);
+          analysisResultsRef.current = next;
+          return next;
+        });
+      },
+    );
   }, []);
 
   // --- League selection persistence ---
   const prevSelectedLeaguesRef = useRef<Set<string>>(new Set());
+
+  const leagueSelectionSaverRef = useRef(createDebouncedLeagueSelectionSaver(fetch));
 
   // --- Load league selections from DB ---
   const leagueLoadingFromDbRef = useRef(false);
   const loadLeagueSelections = useCallback(async (dateKey: string, mode: string) => {
     if (!dateKey) return;
     leagueLoadingFromDbRef.current = true;
-    try {
-      // 1. Try to load specific selections for this date+mode
-      const res = await fetch(`/api/league-selections?date=${dateKey}&mode=${mode}`);
-      const json = await res.json();
-      let leagues: string[] = [];
-
-      if (json.success && json.leagues && json.leagues.length > 0) {
-        // User has customized selections for this specific date+mode
-        leagues = json.leagues as string[];
-      } else {
-        // 2. No specific selections → fall back to DEFAULT leagues
-        const defaultRes = await fetch(`/api/league-selections?date=DEFAULT&mode=default`);
-        const defaultJson = await defaultRes.json();
-        if (defaultJson.success && defaultJson.leagues && defaultJson.leagues.length > 0) {
-          leagues = defaultJson.leagues as string[];
-        }
-      }
-
-      if (leagues.length > 0) {
-        const loadedSet = new Set(leagues);
-        setDataSelectedLeagues(loadedSet);
-        // Update the prev ref so incremental fetch doesn't trigger for loaded leagues
-        prevSelectedLeaguesRef.current = loadedSet;
-      } else {
-        // No defaults either → empty (show all)
-        setDataSelectedLeagues(new Set());
-        prevSelectedLeaguesRef.current = new Set();
-      }
-    } catch {
-      // Non-critical, don't block
-    } finally {
-      // Delay clearing the flag so the state update settles before auto-save fires
-      setTimeout(() => { leagueLoadingFromDbRef.current = false; }, 100);
-    }
+    const loadedSet = await fetchLeagueSelections(fetch, dateKey, mode);
+    setDataSelectedLeagues(loadedSet);
+    prevSelectedLeaguesRef.current = loadedSet;
+    setTimeout(() => { leagueLoadingFromDbRef.current = false; }, 100);
   }, []);
 
-  // --- Save league selections to DB (with debounce) ---
-  const saveLeagueSelectionsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => leagueSelectionSaverRef.current.dispose(), []);
   // --- User focused leagues whitelist management ---
   const openFocusedLeagueDialog = useCallback(() => {
     // Build full league list: current whitelist + all leagues from schedule + all leagues from today
@@ -2022,24 +866,11 @@ export default function OddsMonitorPage() {
   const saveFocusedLeagues = useCallback(async () => {
     setFocusedLeagueSaving(true);
     try {
-      const leagueArr = Array.from(focusedLeagueEditing).sort();
-      const res = await fetch("/api/user-focused-leagues", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leagues: leagueArr }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setUserFocusedLeagues(new Set(leagueArr));
-        setFocusedLeagueDialogOpen(false);
-        // Auto-sync: dataTabMatches auto-recalculates because userFocusedLeagues changed
-        // Also trigger report reload if on report tab
-        if (activeTab === "report" && selectedReportDate) {
-          fetch(`/api/report?date=${selectedReportDate}`)
-            .then(r => r.json())
-            .then(j => { if (j.success && j.data) setReportData(JSON.parse(j.data.report_content)); })
-            .catch(() => {});
-        }
+      const leagueArr = await persistFocusedLeagues(fetch, focusedLeagueEditing);
+      setUserFocusedLeagues(new Set(leagueArr));
+      setFocusedLeagueDialogOpen(false);
+      if (activeTab === "report" && selectedReportDate) {
+        fetchReport(fetch, selectedReportDate).then(data => setReportData(data as unknown as ReportData)).catch(() => {});
       }
     } catch { /* ignore */ }
     setFocusedLeagueSaving(false);
@@ -2048,70 +879,35 @@ export default function OddsMonitorPage() {
   // Feishu settings functions
   const loadFeishuSettings = useCallback(async () => {
     try {
-      const res = await fetch("/api/settings");
-      const json = await res.json();
-      if (json.success && json.settings) {
-        setFeishuWebhookUrl(json.settings.feishu_webhook_url || "");
-      }
+      setFeishuWebhookUrl(await workstationActions.loadFeishuWebhook());
     } catch { /* ignore */ }
-  }, []);
-
+  }, [workstationActions]);
   const saveFeishuSettings = useCallback(async () => {
     setFeishuSaving(true);
     try {
-      const res = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings: { feishu_webhook_url: feishuWebhookUrl } }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setFeishuDialogOpen(false);
-      }
+      await workstationActions.saveFeishuWebhook(feishuWebhookUrl);
+      setFeishuDialogOpen(false);
     } catch { /* ignore */ }
     setFeishuSaving(false);
-  }, [feishuWebhookUrl]);
+  }, [feishuWebhookUrl, workstationActions]);
 
   const testFeishuNotification = useCallback(async () => {
     setFeishuTesting(true);
     setFeishuTestResult(null);
     try {
-      const res = await fetch("/api/feishu/notify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ msg_type: "test" }),
-      });
-      const json = await res.json();
-      setFeishuTestResult(json.success ? "✅ 发送成功！" : `❌ 发送失败: ${json.error || "未知错误"}`);
+      const result = await workstationActions.testFeishuWebhook();
+      setFeishuTestResult(result.success ? "✅ 发送成功！" : `❌ 发送失败: ${result.error || "未知错误"}`);
     } catch (err) {
       setFeishuTestResult(`❌ 请求失败: ${err instanceof Error ? err.message : "未知错误"}`);
     }
     setFeishuTesting(false);
-  }, []);
+  }, [workstationActions]);
 
   // Load feishu settings on mount
   useEffect(() => { loadFeishuSettings(); }, [loadFeishuSettings]);
 
   const saveLeagueSelections = useCallback((leagues: Set<string>, dateKey: string, mode: string) => {
-    if (!dateKey) return;
-    if (saveLeagueSelectionsTimerRef.current) {
-      clearTimeout(saveLeagueSelectionsTimerRef.current);
-    }
-    saveLeagueSelectionsTimerRef.current = setTimeout(async () => {
-      try {
-        await fetch('/api/league-selections', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            dateKey,
-            mode,
-            leagues: Array.from(leagues).filter(l => l !== "__NONE__"),
-          }),
-        });
-      } catch {
-        // Non-critical
-      }
-    }, 800); // 800ms debounce
+    leagueSelectionSaverRef.current.schedule(leagues, dateKey, mode);
   }, []);
 
   // Auto-save league selections when they change (skip during DB load)
@@ -2125,324 +921,119 @@ export default function OddsMonitorPage() {
     saveLeagueSelections(dataSelectedLeagues, dateKey, dataScheduleMode);
   }, [dataSelectedLeagues, dataScheduleMode, saveLeagueSelections]);
 
-  // Batch load DB data for a date range — fetches all dates in parallel,
-  // then merges results and does a SINGLE setState to avoid cascade re-renders
+  // Batch load DB data for a date range with a shared decoder and freshness projection.
   const loadOddsFromDbRange = useCallback(async (startDate: string, endDate: string) => {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) return;
     const requestStartVersion = oddsRefreshSequenceRef.current;
     const loadGeneration = oddsGenerationRef.current;
+    const results = await fetchDatabaseOddsRange(fetch, startDate, endDate);
+    applyDatabaseOdds(results, requestStartVersion, loadGeneration);
+  }, [applyDatabaseOdds]);
 
-    const dates: string[] = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      dates.push(d.toISOString().slice(0, 10).replace(/-/g, ""));
-    }
-
-    // Fetch all dates in parallel (with concurrency limit to avoid overwhelming browser)
-    const allResults: Array<{
-      date: string;
-      matchIds: string[];
-      oddsMap: Record<string, CompanyOddsData>;
-      oddsMetaMap: Record<string, OddsSourceMeta>;
-      crownLiveOddsMap: Record<string, Record<string, unknown>>;
-      crown12OddsMap: Record<string, Record<string, unknown>>;
-    }> = [];
-
-    const batchSize = 3; // 3 concurrent fetches
-    for (let i = 0; i < dates.length; i += batchSize) {
-      const batch = dates.slice(i, i + batchSize);
-      const results = await Promise.allSettled(
-        batch.map(async (dateStr) => {
-          const res = await fetch(`/api/data/odds-db?date=${dateStr}&slim=1`);
-          const json = await res.json();
-          if (json.success && json.data) {
-            return {
-              date: dateStr,
-              ...json.data,
-            } as {
-              date: string;
-              matchIds: string[];
-              oddsMap: Record<string, CompanyOddsData>;
-              oddsMetaMap: Record<string, OddsSourceMeta>;
-              crownLiveOddsMap: Record<string, Record<string, unknown>>;
-              crown12OddsMap: Record<string, Record<string, unknown>>;
-            };
-          }
-          return null;
-        })
-      );
-      for (const r of results) {
-        if (r.status === "fulfilled" && r.value) {
-          allResults.push(r.value);
+  // Fetch one match through the shared coordinator. It owns request identity and
+  // checks request/generation freshness before every UI write and persistence.
+  if (!oddsCoordinatorRef.current) {
+    oddsCoordinatorRef.current = createOddsFetchCoordinator({
+      fetchMatch: async (matchId, signal) => {
+        const result = await fetchMatchOddsSource(fetch, matchId, dbCompanyOddsMapRef.current.get(matchId), signal);
+        return {
+          data: result.data as MatchOddsData & Record<string, unknown>,
+          source: result.source,
+          sourceObservedAt: result.sourceObservedAt,
+          score: result.score,
+        } as OddsFetchSourceResult & { score: MatchDetailScore | null };
+      },
+      persistMatch: (request, signal) => persistMatchOdds(fetch, {
+        ...request,
+        oddsData: request.oddsData as unknown as MatchOddsData,
+      }, signal),
+      onRequestStart: (matchId, requestVersion) => {
+        latestOddsRequestRef.current.set(matchId, requestVersion);
+        matchRefreshVersionRef.current.set(matchId, requestVersion);
+      },
+      onApplyMatch: (raw, requestVersion) => {
+        const result = raw as OddsFetchSourceResult & { score?: MatchDetailScore | null };
+        if (result.score) {
+          setMatches(previous => applyMatchDetailScore(previous, result.score || null));
+          setScheduleMatches(previous => applyMatchDetailScore(previous, result.score || null));
         }
-      }
-    }
-
-    // Merge all results into single updates
-    const mergedOddsMap = new Map<string, CompanyOddsData>();
-    const mergedMetaMap = new Map<string, OddsSourceMeta>();
-    const mergedFetched = new Set<string>();
-    const mergedCrownLive = new Map<string, {
-      handicapHome?: string | null;
-      handicapLine?: string | null;
-      handicapAway?: string | null;
-      totalOver?: string | null;
-      totalLine?: string | null;
-      totalUnder?: string | null;
-    }>();
-    const mergedCrown12 = new Map<string, {
-      handicapHome?: string | null;
-      handicapLine?: string | null;
-      handicapAway?: string | null;
-      totalOver?: string | null;
-      totalLine?: string | null;
-      totalUnder?: string | null;
-    }>();
-
-    for (const result of allResults) {
-      if (loadGeneration !== oddsGenerationRef.current) return;
-      for (const mid of result.matchIds) {
-        const oddsData = result.oddsMap[mid];
-        const dbMeta = result.oddsMetaMap?.[mid];
-        if (oddsData && canApplyDatabaseObservation(dbMeta?.sourceObservedAt, oddsSourceMetaRef.current.get(mid)?.sourceObservedAt)) {
-          const parsedOddsData = oddsData as CompanyOddsData;
-          mergedOddsMap.set(mid, parsedOddsData);
-          mergedMetaMap.set(mid, dbMeta || { source: null, sourceObservedAt: null });
-          if (Array.isArray(parsedOddsData.companies) && parsedOddsData.companies.length > 0) {
-            mergedFetched.add(mid);
-          }
-        }
-      }
-      if (result.crownLiveOddsMap) {
-        for (const [mid, data] of Object.entries(result.crownLiveOddsMap)) {
-          mergedCrownLive.set(mid, data as {
-            handicapHome?: string | null;
-            handicapLine?: string | null;
-            handicapAway?: string | null;
-            totalOver?: string | null;
-            totalLine?: string | null;
-            totalUnder?: string | null;
-          });
-        }
-      }
-      if (result.crown12OddsMap) {
-        for (const [mid, data] of Object.entries(result.crown12OddsMap)) {
-          mergedCrown12.set(mid, data as {
-            handicapHome?: string | null;
-            handicapLine?: string | null;
-            handicapAway?: string | null;
-            totalOver?: string | null;
-            totalLine?: string | null;
-            totalUnder?: string | null;
-          });
-        }
-      }
-    }
-
-    // Single batch setState — React batches these automatically in React 18+
-    setDbCompanyOddsMap(prev => {
-      const next = new Map(prev);
-      for (const [matchId, oddsData] of mergedOddsMap) {
-        if (canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(matchId), matchPersistedVersionRef.current.get(matchId))) {
-          next.set(matchId, oddsData);
-          oddsSourceMetaRef.current.set(matchId, mergedMetaMap.get(matchId) || { source: null, sourceObservedAt: null });
-        }
-      }
-      dbCompanyOddsMapRef.current = next;
-      return next;
+        const entry = result.data as unknown as MatchOddsData;
+        oddsSourceMetaRef.current.set(entry.matchId, { source: result.source, sourceObservedAt: result.sourceObservedAt });
+        setDbCompanyOddsMap(() => {
+          const next = new Map(dbCompanyOddsMapRef.current);
+          next.set(entry.matchId, entry);
+          dbCompanyOddsMapRef.current = next;
+          return next;
+        });
+        setFetchedMatches(previous => new Set(previous).add(entry.matchId));
+        setFailedMatches(previous => {
+          const next = new Map(previous);
+          next.delete(entry.matchId);
+          return next;
+        });
+        latestOddsRequestRef.current.set(entry.matchId, requestVersion);
+      },
+      onPersistedMatch: (matchId, requestVersion, saved, request) => {
+        matchPersistedVersionRef.current.set(matchId, requestVersion);
+        oddsSourceMetaRef.current.set(matchId, {
+          source: request.source,
+          sourceObservedAt: saved.sourceObservedAt || request.sourceObservedAt,
+          writeToken: request.writeToken,
+        });
+      },
+      onFailure: (matchId, message) => {
+        setFailedMatches(previous => new Map(previous).set(matchId, message));
+      },
     });
-    setFetchedMatches(prev => {
-      const next = new Set(prev);
-      for (const matchId of mergedFetched) {
-        if (canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(matchId), matchPersistedVersionRef.current.get(matchId))) {
-          next.add(matchId);
-        }
-      }
-      return next;
-    });
-    if (mergedCrownLive.size > 0) {
-      setCrownLiveOddsFromDb(prev => {
-        const next = new Map(prev);
-        for (const [mid, data] of mergedCrownLive) {
-          if (canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(mid), matchPersistedVersionRef.current.get(mid))) {
-            next.set(mid, data);
-          }
-        }
-        return next;
-      });
-    }
-    if (mergedCrown12.size > 0) {
-      setCrown12OddsFromDb(prev => {
-        const next = new Map(prev);
-        for (const [mid, data] of mergedCrown12) {
-          if (canApplyDatabaseOdds(requestStartVersion, matchRefreshVersionRef.current.get(mid), matchPersistedVersionRef.current.get(mid))) {
-            next.set(mid, data);
-          }
-        }
-        return next;
-      });
-    }
-    // Only successful date responses become ready.
-    for (const result of allResults) {
-      dbOddsLoadedRef.current.add(result.date);
-    }
-  }, []);
+  }
 
-  // Fetch one match through the global serialized coordinator. Request identity is
-  // assigned before I/O so a late response cannot overwrite a newer observation.
-  const fetchSingleMatchOddsCore = useCallback(async (matchId: string, generation: number): Promise<boolean> => {
-    const requestId = ++oddsRefreshSequenceRef.current;
-    latestOddsRequestRef.current.set(matchId, requestId);
-    matchRefreshVersionRef.current.set(matchId, requestId);
-    setFetchingMatches(prev => new Set(prev).add(matchId));
+  const fetchSingleMatchOddsCore = useCallback(async (
+    matchId: string,
+    generation: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    setFetchingMatches(previous => new Set(previous).add(matchId));
     try {
-      const applyDetailScore = (score: ApiMatchDetailScore | null | undefined) => {
-        if (!score?.id) return;
-        const patch = (match: MatchData): MatchData => match.id === score.id
-          ? {
-            ...match,
-            state: score.state || match.state,
-            time: score.time || match.time,
-            matchDate: score.matchDate || match.matchDate,
-            homeScore: score.homeScore || match.homeScore,
-            awayScore: score.awayScore || match.awayScore,
-            halfHomeScore: score.halfHomeScore || match.halfHomeScore,
-            halfAwayScore: score.halfAwayScore || match.halfAwayScore,
-          }
-          : match;
-        setMatches(prev => prev.map(patch));
-        setScheduleMatches(prev => prev.map(patch));
-      };
-
-      const res = await fetch(`/api/data/match/${matchId}`);
-      const json = await res.json();
-      const responseIsLatest = isLatestRefreshResponse({
-        request: requestId,
-        latestRequest: latestOddsRequestRef.current.get(matchId) ?? -1,
-        generation,
-        latestGeneration: oddsGenerationRef.current,
-      });
-      if (responseIsLatest) applyDetailScore(json.score as ApiMatchDetailScore | null | undefined);
-      if (!res.ok || !json.success || !json.data) {
-        throw new Error(json.error || json.detail || "无赔率数据");
-      }
-      if (!responseIsLatest) return false;
-
-      const item = json.data as ApiMatchOddsResponse;
-      const source = typeof json.source === "string" && json.source ? json.source : "titan-analysis-odds";
-      const sourceObservedAt = typeof json.sourceObservedAt === "string" ? json.sourceObservedAt : new Date().toISOString();
-      const existingEntry = dbCompanyOddsMapRef.current.get(matchId);
-      const existingOpenTimes = new Map<string, string>();
-      if (existingEntry) {
-        for (const company of existingEntry.companies || []) {
-          if (company.openTime) existingOpenTimes.set(company.companyId, company.openTime);
-        }
-        if (existingEntry.openTime) existingOpenTimes.set("3", existingEntry.openTime);
-      }
-      const newEntry: CompanyOddsData = {
-        matchId: item.matchId,
-        openTime: item.openTime || existingOpenTimes.get("3") || "",
-        companies: (Array.isArray(item.companies) ? item.companies : []).map((c: ApiCompanyOdds) => ({
-          companyId: String(c.companyId), companyName: c.companyName,
-          openTime: c.openTime || existingOpenTimes.get(String(c.companyId)) || "",
-          ftHandicapHome: c.ftHandicapHome || "", ftHandicapLine: c.ftHandicapLine || "", ftHandicapAway: c.ftHandicapAway || "",
-          ftHandicapHomeLive: c.ftHandicapHomeLive || "", ftHandicapLineLive: c.ftHandicapLineLive || "", ftHandicapAwayLive: c.ftHandicapAwayLive || "",
-          euroHome: c.euroHome || "", euroDraw: c.euroDraw || "", euroAway: c.euroAway || "",
-          euroHomeLive: c.euroHomeLive || "", euroDrawLive: c.euroDrawLive || "", euroAwayLive: c.euroAwayLive || "",
-          euroAsianHome: c.euroAsianHome || "", euroAsianLine: c.euroAsianLine || "", euroAsianAway: c.euroAsianAway || "",
-          ftTotalOver: c.ftTotalOver || "", ftTotalLine: c.ftTotalLine || "", ftTotalUnder: c.ftTotalUnder || "",
-          ftTotalOverLive: c.ftTotalOverLive || "", ftTotalLineLive: c.ftTotalLineLive || "", ftTotalUnderLive: c.ftTotalUnderLive || "",
-        })),
-      };
-
-      oddsSourceMetaRef.current.set(matchId, { source, sourceObservedAt });
-      setDbCompanyOddsMap(() => {
-        const next = new Map(dbCompanyOddsMapRef.current);
-        next.set(matchId, newEntry);
-        dbCompanyOddsMapRef.current = next;
-        return next;
-      });
-      setFetchedMatches(prev => new Set(prev).add(matchId));
-      setFailedMatches(prev => { const next = new Map(prev); next.delete(matchId); return next; });
-
-      const matchData = matchesRef.current.find(m => m.id === matchId);
+      const matchData = matchesRef.current.find(match => match.id === matchId);
       let matchDateForSave = matchData?.matchDate || currentDbDateRef.current;
       const cnMatch = matchDateForSave?.match(/(\d{1,2})月(\d{1,2})日/);
       if (cnMatch) {
         const now = new Date();
         matchDateForSave = `${now.getFullYear()}${cnMatch[1].padStart(2, "0")}${cnMatch[2].padStart(2, "0")}`;
       }
-      if (!matchDateForSave) return true;
-
-      const writeToken = `${generation}:${requestId}:${matchId}:${Date.now()}`;
-      const saveRes = await fetch("/api/data/odds-db", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          matchId, matchDate: matchDateForSave, companyIds: dataCompanyIds.join(","),
-          oddsData: newEntry, source, sourceObservedAt, writeToken,
-        }),
-      });
-      const saved = await saveRes.json().catch(() => ({}));
-      const stillCurrent = isLatestRefreshResponse({
-        request: requestId,
-        latestRequest: latestOddsRequestRef.current.get(matchId) ?? -1,
-        generation,
-        latestGeneration: oddsGenerationRef.current,
-      });
-      if (saveRes.ok && saved.success && saved.applied === true && stillCurrent) {
-        matchPersistedVersionRef.current.set(matchId, requestId);
-        oddsSourceMetaRef.current.set(matchId, { source, sourceObservedAt: saved.sourceObservedAt || sourceObservedAt, writeToken });
-      }
-      return stillCurrent;
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "抓取失败";
-      setFailedMatches(prev => { const next = new Map(prev); next.set(matchId, errMsg); return next; });
-      return false;
+      if (!matchDateForSave) return false;
+      oddsCoordinatorRef.current!.setGeneration(oddsGenerationRef.current);
+      return await oddsCoordinatorRef.current!.fetchMatch(matchId, generation, {
+        matchDate: matchDateForSave,
+        companyIds: dataCompanyIds,
+      }, signal);
     } finally {
-      setFetchingMatches(prev => { const next = new Set(prev); next.delete(matchId); return next; });
+      setFetchingMatches(previous => {
+        const next = new Set(previous);
+        next.delete(matchId);
+        return next;
+      });
     }
   }, [dataCompanyIds]);
   oddsRefreshCoreRef.current = fetchSingleMatchOddsCore;
 
-  const fetchSingleMatchOdds = useCallback((matchId: string) => {
+  const fetchSingleMatchOdds = useCallback((matchId: string, signal?: AbortSignal) => {
+    if (signal) return runSerializedOddsSourceTask(() => fetchSingleMatchOddsCore(matchId, oddsGenerationRef.current, signal));
     const priority = pinnedMatchesRef.current.has(matchId) || expandedCrown.has(matchId) || expandedCompanies.has(matchId) ? 100 : 10;
-    return enqueueOddsRefresh(matchId, priority, false);
-  }, [enqueueOddsRefresh, expandedCrown, expandedCompanies]);
+    return enqueueOddsRefresh(matchId, priority);
+  }, [enqueueOddsRefresh, expandedCrown, expandedCompanies, fetchSingleMatchOddsCore, runSerializedOddsSourceTask]);
   const fetchSingleMatchOddsRef = useRef(fetchSingleMatchOdds);
   fetchSingleMatchOddsRef.current = fetchSingleMatchOdds;
 
   // Refresh missing counts for supplement fetch dropdown (must be before fetchAllVisibleOdds)
   const refreshMissingCounts = useCallback(() => {
-    const matchFilter = (m: MatchData) => {
-      if (dataSelectedLeagues.size > 0 && !isLeagueSelected(m.league, dataSelectedLeagues)) return false;
-      if (dataScheduleMode !== "history" && m.state !== "0") return false;
-      return true;
-    };
-    const visibleMatches = dataTabMatches.filter(matchFilter);
-    const oddsMissing = visibleMatches.filter(m => !fetchedMatches.has(m.id)).length;
-    const opentimesMissing = visibleMatches.filter(m => {
-      const cod = dbCompanyOddsMap.get(m.id);
-      const companies = Array.isArray(cod?.companies) ? cod.companies : [];
-      return fetchedMatches.has(m.id) && (!cod || companies.every(c => !c.openTime));
-    }).length;
-    const crownOpenMissing = visibleMatches.filter(m => {
-      return fetchedMatches.has(m.id) && !crown12OddsFromDb.has(m.id);
-    }).length;
-    // Terminal odds missing: matches that should have crownLiveOdds but don't
-    const crownFinalMissing = visibleMatches.filter(m => {
-      if (!fetchedMatches.has(m.id)) return false;
-      // History mode: all matches should have terminal odds
-      // Today mode: only in-progress/finished (state !== "0")
-      if (dataScheduleMode === "history" || (dataScheduleMode === "today" && m.state !== "0")) {
-        const companies = dbCompanyOddsMap.get(m.id)?.companies || [];
-        const crown = companies.find(company => company.companyId === "3");
-        return !(crown?.ftHandicapLineLive || crown?.ftTotalLineLive);
-      }
-      return false;
-    }).length;
-    setMissingCounts({ odds: oddsMissing, opentimes: opentimesMissing, crownOpen: crownOpenMissing, crownFinal: crownFinalMissing });
+    setMissingCounts(countSupplementalTargets({
+      matches: dataTabMatches,
+      selectedLeagues: dataSelectedLeagues,
+      scheduleMode: dataScheduleMode,
+      fetchedMatchIds: fetchedMatches,
+      oddsByMatch: dbCompanyOddsMap,
+      crownOpenByMatch: crown12OddsFromDb,
+    }));
   }, [dataTabMatches, dataSelectedLeagues, dataScheduleMode, fetchedMatches, dbCompanyOddsMap, crown12OddsFromDb]);
 
   // Reset page when filter changes
@@ -2488,14 +1079,10 @@ export default function OddsMonitorPage() {
   }, [refreshMissingCounts]);
 
   // Report data is already summarized against the server-side focused-league set.
-  const filteredReportData = useMemo(() => {
-    if (!reportData) return null;
-    if (userFocusedLeagues.size === 0) return reportData;
-    return {
-      ...reportData,
-      rows: reportData.rows.filter(row => userFocusedLeagues.has(row.league)),
-    };
-  }, [reportData, userFocusedLeagues]);
+  const filteredReportData = useMemo(
+    () => filterReportByLeagues(reportData, userFocusedLeagues) as ReportData | null,
+    [reportData, userFocusedLeagues],
+  );
 
   // Pre-compute Data Tab match rows — avoids recalculation on every render
   const dataMatchRows = useMemo(() => {
@@ -2555,7 +1142,7 @@ export default function OddsMonitorPage() {
 
   // --- Batch AI analysis for all visible matches ---
   const [batchAIProgress, setBatchAIProgress] = useState({ current: 0, total: 0, matchName: "", succeeded: 0, failed: 0 });
-  const batchAIAbortRef = useRef(false);
+  const batchAIControllerRef = useRef<AnalysisBatchController | null>(null);
 
   // Ref to track analysis results without causing re-creation of callbacks
   const analysisResultsRef = useRef(analysisResults);
@@ -2564,225 +1151,110 @@ export default function OddsMonitorPage() {
   // Internal analyze without setState - returns null only when an existing result is skipped
   const analyzeSingleMatchCore = useCallback(async (matchId: string, forceReanalyze = false): Promise<AnalysisResultData | null> => {
     if (!forceReanalyze && analysisResultsRef.current.has(matchId)) return null;
-    const match = dataTabMatches.find(m => m.id === matchId) || matches.find(m => m.id === matchId);
+    const match = dataTabMatches.find(item => item.id === matchId) || matches.find(item => item.id === matchId);
     if (!match) throw new Error("找不到该赛事");
-
-    let databaseCompanies: Record<string, unknown>[] = [];
-    try {
-      const dbRes = await fetch(`/api/data/odds-db?date=${currentDbDate}&matchId=${matchId}`);
-      const dbJson = await dbRes.json();
-      const fullOdds = dbJson.success ? dbJson.data?.oddsMap?.[matchId] : undefined;
-      databaseCompanies = Array.isArray(fullOdds?.companies)
-        ? fullOdds.companies as Record<string, unknown>[]
-        : [];
-    } catch {
-    }
-
-    const currentOddsData = dbCompanyOddsMapRef.current.get(matchId);
-    const memoryCompanies = Array.isArray(currentOddsData?.companies)
-      ? currentOddsData.companies.map(company => ({ ...company }))
-      : [];
-    let companies = mergeAiCompanyOdds(memoryCompanies, databaseCompanies);
-
-    if (companies.length === 0) {
-      try {
-        await fetchSingleMatchOddsRef.current(matchId);
-        const refreshed = dbCompanyOddsMapRef.current.get(matchId);
-        const refreshedCompanies = Array.isArray(refreshed?.companies) ? refreshed.companies : [];
-        companies = mergeAiCompanyOdds(
-          refreshedCompanies.map(company => ({ ...company })),
-          [],
-        );
-      } catch (err) {
-        console.warn("[AIAnalysis] Live odds fallback failed:", err);
-      }
-    }
-    if (companies.length === 0) throw new Error("没有可用赔率数据，请先抓取赔率");
-
-    const c12 = crown12OddsFromDb.get(matchId);
-    const crown12Handicap = c12?.handicapLine ? { home: c12.handicapHome || "", line: c12.handicapLine, away: c12.handicapAway || "" } : undefined;
-    const crown12Total = c12?.totalLine ? { over: c12.totalOver || "", line: c12.totalLine, under: c12.totalUnder || "" } : undefined;
-
-    const crownDbForMatch = dbCompanyOddsMapRef.current.get(matchId);
-    const crownCompaniesForMatch = Array.isArray(crownDbForMatch?.companies) ? crownDbForMatch.companies : [];
-    const crownCompForMatch = crownCompaniesForMatch.find(c => c.companyId === "3");
-    const crownLiveHandicap = dataScheduleMode === "future" && crownCompForMatch?.ftHandicapLineLive ? {
-      home: crownCompForMatch.ftHandicapHomeLive || "",
-      line: crownCompForMatch.ftHandicapLineLive,
-      away: crownCompForMatch.ftHandicapAwayLive || "",
-    } : undefined;
-    const crownLiveTotal = dataScheduleMode === "future" && crownCompForMatch?.ftTotalLineLive ? {
-      over: crownCompForMatch.ftTotalOverLive || "",
-      line: crownCompForMatch.ftTotalLineLive,
-      under: crownCompForMatch.ftTotalUnderLive || "",
-    } : undefined;
-
-    const res = await fetch("/api/analysis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        matchId,
-        homeTeam: match.homeTeam,
-        awayTeam: match.awayTeam,
-        league: match.league,
-        matchTime: match.time,
-        matchDate: currentDbDate,
-        scheduleMode: dataScheduleMode,
-        companies,
-        crown12Handicap,
-        crown12Total,
-        crownLiveHandicap,
-        crownLiveTotal,
-      }),
-    });
-
-    let json;
-    try {
-      json = await res.json();
-    } catch {
-      throw new Error("分析服务返回格式异常");
-    }
-    if (!res.ok || !json.success || !json.data) {
-      throw new Error(json.error || `AI分析失败（${res.status}）`);
-    }
-
-    const d = json.data;
-    return {
-      matchId,
-      homeTeam: d.homeTeam || match.homeTeam,
-      awayTeam: d.awayTeam || match.awayTeam,
-      league: d.league || match.league,
-      matchTime: d.matchTime || match.time,
+    const request = await prepareAnalysisRequest({
+      match,
       matchDate: currentDbDate,
-      analyzedAt: d.analyzedAt || null,
-      indicators: d.indicators || [],
-      newsSummary: d.newsSummary || "",
-      handicapTrend: d.llmPrediction?.handicapTrend || d.handicap_trend || d.handicapTrend || "不确定",
-      waterDirection: d.llmPrediction?.waterDirection || d.water_direction || d.waterDirection || "不变",
-      prediction: d.llmPrediction?.prediction || d.prediction || "中立",
-      totalTrend: d.llmPrediction?.totalTrend || d.total_trend || "不变",
-      totalPrediction: d.llmPrediction?.totalPrediction || d.total_prediction || "中立",
-      totalAction: d.llmPrediction?.totalAction || d.total_action || "",
-      confidenceLevel: d.llmPrediction?.confidenceLevel || d.confidence_level || "低",
-      accuracy: d.llmPrediction?.accuracy || d.accuracy || "50%",
-      strategy: d.llmPrediction?.strategy || d.strategy || "",
-      action: d.llmPrediction?.action || d.action || "",
-      reasoning: d.llmPrediction?.reasoning || "",
-      verification: d.verification,
-      probability: d.probability || null,
-      settlementEvidence: d.settlementEvidence,
-      crown_handicap: d.crown_handicap || "",
-      yinghe_handicap: d.yinghe_handicap || "",
-      who_open_later: d.who_open_later || "",
-    };
+      scheduleMode: dataScheduleMode,
+      memoryOdds: dbCompanyOddsMapRef.current.get(matchId),
+      crownOpen: crown12OddsFromDb.get(matchId),
+      loadDatabaseCompanies: async () => {
+        const result = await fetchDatabaseOddsDate(fetch, currentDbDate);
+        const companies = result?.oddsMap[matchId]?.companies;
+        return Array.isArray(companies) ? companies as unknown as Record<string, unknown>[] : [];
+      },
+      refreshLiveOdds: async () => {
+        await fetchSingleMatchOddsRef.current(matchId);
+        return dbCompanyOddsMapRef.current.get(matchId);
+      },
+      onFallbackError: error => console.warn("[AIAnalysis] Live odds fallback failed:", error),
+    });
+    return requestAnalysis(fetch, request);
   }, [dataTabMatches, matches, crown12OddsFromDb, currentDbDate, dataScheduleMode]);
 
   const analyzeSingleMatch = useCallback(async (matchId: string, forceReanalyze = false) => {
     if (analyzingMatchId) return;
     const match = dataTabMatches.find(item => item.id === matchId) || matches.find(item => item.id === matchId);
-    const toastId = toast.loading("AI 正在分析赛事", {
-      description: match ? `${match.homeTeam} vs ${match.awayTeam}` : "正在准备赔率与赛事数据",
-    });
-    setAnalyzingMatchId(matchId);
-    try {
-      const result = await analyzeSingleMatchCore(matchId, forceReanalyze);
-      if (!result) {
-        toast.info("已有最新分析结果", { id: toastId, description: "无需重复分析" });
-        return;
-      }
-      setAnalysisResults(prev => {
-        const next = new Map(prev).set(matchId, result);
+    let toastId: string | number;
+    await runAnalysisCommand({
+      matchId,
+      forceReanalyze,
+      start: id => {
+        toastId = toast.loading("AI 正在分析赛事", {
+          description: match ? `${match.homeTeam} vs ${match.awayTeam}` : "正在准备赔率与赛事数据",
+        });
+        setAnalyzingMatchId(id);
+      },
+      analyze: analyzeSingleMatchCore,
+      apply: (id, result) => setAnalysisResults(previous => {
+        const next = new Map(previous).set(id, result);
         analysisResultsRef.current = next;
         return next;
-      });
-      setAnalysisExpanded(matchId);
-      toast.success("AI 分析完成", {
+      }),
+      expand: setAnalysisExpanded,
+      skipped: () => toast.info("已有最新分析结果", { id: toastId, description: "无需重复分析" }),
+      success: result => toast.success("AI 分析完成", {
         id: toastId,
         description: `${result.homeTeam} vs ${result.awayTeam} · ${formatAnalysisTime(result.analyzedAt)}`,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "AI分析失败";
-      toast.error("AI 分析失败", {
-        id: toastId,
-        description: `${message}。可稍后重新点击 AI 分析。`,
-        duration: 8000,
-      });
-    } finally {
-      setAnalyzingMatchId(null);
-    }
+      }),
+      error: error => {
+        const message = error instanceof Error ? error.message : "AI分析失败";
+        toast.error("AI 分析失败", { id: toastId, description: `${message}。可稍后重新点击 AI 分析。`, duration: 8000 });
+      },
+      settle: () => setAnalyzingMatchId(null),
+    });
   }, [analyzeSingleMatchCore, analyzingMatchId, dataTabMatches, matches]);
 
   const batchAnalyzeAll = useCallback(async (matchList: { id: string; homeTeam: string; awayTeam: string }[], forceReanalyze = false) => {
     if (matchList.length === 0) return;
-    batchAIAbortRef.current = false;
+    const controller = createBatchAnalysisController();
+    batchAIControllerRef.current = controller;
     const batchToastId = toast.loading("批量 AI 分析进行中", {
       description: `0/${matchList.length} · 正在准备赛事数据`,
     });
     setBatchAIProgress({ current: 0, total: matchList.length, matchName: `${matchList[0].homeTeam} vs ${matchList[0].awayTeam}`, succeeded: 0, failed: 0 });
 
-    const concurrency = Math.max(1, Math.min(8, aiConcurrency));
-    const flushSize = 5;
-    let completed = 0;
-    let succeeded = 0;
-    let failed = 0;
-    let batchAccum = new Map<string, AnalysisResultData>();
-
-    const flushBatch = () => {
-      if (batchAccum.size > 0) {
-        const toFlush = batchAccum;
-        batchAccum = new Map();
+    const summary = await runAnalysisBatch({
+      items: matchList,
+      concurrency: aiConcurrency,
+      controller,
+      analyze: item => analyzeSingleMatchCore(item.id, forceReanalyze),
+      onResults: results => {
         setAnalysisResults(prev => {
           const next = new Map(prev);
-          toFlush.forEach((v, k) => next.set(k, v));
+          results.forEach((value, key) => next.set(key, value));
           analysisResultsRef.current = next;
           return next;
         });
-      }
-    };
-
-    for (let i = 0; i < matchList.length; i += concurrency) {
-      if (batchAIAbortRef.current) break;
-      const batch = matchList.slice(i, i + concurrency);
-      await Promise.allSettled(batch.map(async (m) => {
-        if (batchAIAbortRef.current) return;
-        setBatchAIProgress(prev => ({ ...prev, matchName: `${m.homeTeam} vs ${m.awayTeam}` }));
-        try {
-          const result = await analyzeSingleMatchCore(m.id, forceReanalyze);
-          if (result) {
-            succeeded++;
-            batchAccum.set(m.id, result);
-            if (batchAccum.size >= flushSize) flushBatch();
-          }
-        } catch (err) {
-          failed++;
-          console.error(`[AIAnalysis] ${m.homeTeam} vs ${m.awayTeam}:`, err);
-        } finally {
-          completed++;
-          setBatchAIProgress(prev => ({ ...prev, current: completed, matchName: `${m.homeTeam} vs ${m.awayTeam}`, succeeded, failed }));
+      },
+      onProgress: progress => {
+        setBatchAIProgress(progress);
+        if (progress.current > 0) {
           toast.loading("批量 AI 分析进行中", {
             id: batchToastId,
-            description: `${completed}/${matchList.length} · 成功 ${succeeded} · 失败 ${failed}`,
+            description: `${progress.current}/${progress.total} · 成功 ${progress.succeeded} · 失败 ${progress.failed}`,
           });
         }
-      }));
-      flushBatch();
-    }
-    flushBatch();
+      },
+      onError: (item, error) => console.error(`[AIAnalysis] ${item.homeTeam} vs ${item.awayTeam}:`, error),
+    });
 
-    if (batchAIAbortRef.current) {
-      toast.info("已停止批量 AI 分析", { id: batchToastId, description: `已处理 ${completed}/${matchList.length} · 成功 ${succeeded} · 失败 ${failed}` });
-    } else if (failed === 0) {
-      toast.success("批量 AI 分析完成", { id: batchToastId, description: `已成功分析 ${succeeded} 场赛事` });
-    } else if (succeeded > 0) {
-      toast.warning("批量 AI 分析部分完成", { id: batchToastId, description: `成功 ${succeeded} · 失败 ${failed}，失败赛事可稍后重试`, duration: 8000 });
+    if (summary.cancelled) {
+      toast.info("已停止批量 AI 分析", { id: batchToastId, description: `已处理 ${summary.completed}/${matchList.length} · 成功 ${summary.succeeded} · 失败 ${summary.failed}` });
+    } else if (summary.failed === 0) {
+      toast.success("批量 AI 分析完成", { id: batchToastId, description: `已成功分析 ${summary.succeeded} 场赛事` });
+    } else if (summary.succeeded > 0) {
+      toast.warning("批量 AI 分析部分完成", { id: batchToastId, description: `成功 ${summary.succeeded} · 失败 ${summary.failed}，失败赛事可稍后重试`, duration: 8000 });
     } else {
-      toast.error("批量 AI 分析失败", { id: batchToastId, description: `${failed} 场赛事均未完成，请检查分析服务后重试`, duration: 8000 });
+      toast.error("批量 AI 分析失败", { id: batchToastId, description: `${summary.failed} 场赛事均未完成，请检查分析服务后重试`, duration: 8000 });
     }
+    if (batchAIControllerRef.current === controller) batchAIControllerRef.current = null;
     setBatchAIProgress({ current: 0, total: 0, matchName: "", succeeded: 0, failed: 0 });
   }, [analyzeSingleMatchCore, aiConcurrency]);
 
   const stopBatchAI = useCallback(() => {
-    batchAIAbortRef.current = true;
+    batchAIControllerRef.current?.cancel();
   }, []);
 
   // --- Manual verification of prediction correctness ---
@@ -2792,15 +1264,7 @@ export default function OddsMonitorPage() {
     const marketLabel = market === "handicap" ? "让球" : "进球";
     setVerifyingMarketKey(`${matchId}:${market}`);
     try {
-      const res = await fetch("/api/analysis/verify", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ matchId, matchDate, market, isCorrect }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "服务未能保存验证结果");
-      }
+      const data = await requestManualVerification(fetch, { matchId, matchDate, market, isCorrect });
 
       setAnalysisResults(prev => {
         const next = new Map(prev);
@@ -2884,7 +1348,7 @@ export default function OddsMonitorPage() {
 
     // Add user message
     const currentMessages = chatMessages.get(matchId) || [];
-    const newMessages = [...currentMessages, { role: "user" as const, content: message.trim() }];
+    const newMessages = appendUserMessage(currentMessages, message);
     setChatMessages(prev => new Map(prev).set(matchId, newMessages));
     setChatInput("");
     setChatStreaming(true);
@@ -2896,80 +1360,30 @@ export default function OddsMonitorPage() {
       : undefined;
 
     try {
-      const res = await fetch("/api/analysis/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      setChatMessages(prev => new Map(prev).set(matchId, appendAssistantMessage(prev.get(matchId) || [], "")));
+      await requestAnalysisChat(fetch, {
+        matchId,
+        homeTeam: match.homeTeam,
+        awayTeam: match.awayTeam,
+        league: match.league,
+        matchTime: match.time,
+        messages: newMessages,
+        analysisContext,
+        liveHandicap: crownCompChat?.ftHandicapLineLive || match.handicap || "",
+        liveHomeOdds: crownCompChat?.ftHandicapHomeLive || match.homeOdds || "",
+        liveAwayOdds: crownCompChat?.ftHandicapAwayLive || match.awayOdds || "",
+      }, content => {
+        setChatMessages(prev => new Map(prev).set(
           matchId,
-          homeTeam: match.homeTeam,
-          awayTeam: match.awayTeam,
-          league: match.league,
-          matchTime: match.time,
-          messages: newMessages,
-          analysisContext,
-          liveHandicap: crownCompChat?.ftHandicapLineLive || match.handicap || "",
-          liveHomeOdds: crownCompChat?.ftHandicapHomeLive || match.homeOdds || "",
-          liveAwayOdds: crownCompChat?.ftHandicapAwayLive || match.awayOdds || "",
-        }),
+          appendAssistantMessage(prev.get(matchId) || [], content, true),
+        ));
       });
-
-      if (!res.ok || !res.body) {
-        setChatMessages(prev => {
-          const updated = new Map(prev);
-          updated.set(matchId, [...(updated.get(matchId) || []), { role: "assistant", content: "连接失败" }]);
-          return updated;
-        });
-        return;
-      }
-
-      // Stream SSE response
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let assistantContent = "";
-
-      // Add empty assistant message
-      setChatMessages(prev => {
-        const updated = new Map(prev);
-        updated.set(matchId, [...(updated.get(matchId) || []), { role: "assistant", content: "" }]);
-        return updated;
-      });
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const text = decoder.decode(value, { stream: true });
-        const lines = text.split("\n");
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") break;
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.content) {
-                assistantContent += parsed.content;
-                const contentSnapshot = assistantContent;
-                setChatMessages(prev => {
-                  const updated = new Map(prev);
-                  const msgs = updated.get(matchId) || [];
-                  msgs[msgs.length - 1] = { role: "assistant", content: contentSnapshot };
-                  updated.set(matchId, msgs);
-                  return updated;
-                });
-              }
-            } catch {
-              // Skip malformed data
-            }
-          }
-        }
-      }
-    } catch {
-      setChatMessages(prev => {
-        const updated = new Map(prev);
-        updated.set(matchId, [...(updated.get(matchId) || []), { role: "assistant", content: "请求失败" }]);
-        return updated;
-      });
+    } catch (error) {
+      const message = error instanceof Error && error.message === "连接失败" ? "连接失败" : "请求失败";
+      setChatMessages(prev => new Map(prev).set(
+        matchId,
+        appendAssistantMessage(prev.get(matchId) || [], message, true),
+      ));
     } finally {
       setChatStreaming(false);
     }
@@ -2978,21 +1392,8 @@ export default function OddsMonitorPage() {
   // --- Load evolution stats ---
   const loadEvolutionStats = useCallback(async () => {
     try {
-      const res = await fetch("/api/analysis/learn");
-      const json = await res.json();
-      if (json.success) {
-        setEvolutionStats({
-          totalPredictions: json.totalPredictions,
-          correctPredictions: json.correctPredictions,
-          overallAccuracy: json.overallAccuracy,
-          topPatterns: (json.topPatterns || []).map((p: { key: string; description: string; hitRate: string; total: number }) => ({
-            key: p.key,
-            description: p.description,
-            hitRate: p.hitRate,
-            total: p.total,
-          })),
-        });
-      }
+      const stats = await fetchEvolutionStats(fetch);
+      if (stats) setEvolutionStats(stats);
     } catch {
       // silently fail
     }
@@ -3000,24 +1401,15 @@ export default function OddsMonitorPage() {
 
   const verifyAndLearn = useCallback(async () => {
     try {
-      let synced = 0;
-      let verified = 0;
-      let correct = 0;
-      for (const dateKey of verificationDateKeys) {
-        const scoreSync = await syncHistoricalScores(dateKey);
-        synced += scoreSync.persistedResults;
-        const vr = await fetch(`/api/analysis/verify?startDate=${dateKey}&endDate=${dateKey}`);
-        const vj = await vr.json();
-        if (!vr.ok || !vj.success) throw new Error(vj.error || "自动验证失败");
-        verified += Number(vj.verified || 0);
-        correct += Number(vj.correct || 0);
-        await loadPredictionsFromDb(dateKey);
-      }
-      const [handicapLearn, totalLearn] = await Promise.all(["handicap", "total"].map(market => fetch("/api/analysis/learn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ market, league: "ALL", minSamples: 3 }) })));
-      const [handicapResult, totalResult] = await Promise.all([handicapLearn.json(), totalLearn.json()]);
-      const learnedPatterns = (handicapResult.patternsFound || 0) + (totalResult.patternsFound || 0);
-      await loadEvolutionStats();
-      toast.success("验证与学习完成", { description: `日期 ${verificationDateKeys.join(", ")} · 同步赛果 ${synced} 场 · 验证 ${verified} 场 · 命中 ${correct} 场 · 新增 ${learnedPatterns} 个模式` });
+      const summary = await runVerificationLearning({
+        dateKeys: verificationDateKeys,
+        syncScores: syncHistoricalScores,
+        verify: dateKey => requestVerification(fetch, dateKey),
+        reloadPredictions: loadPredictionsFromDb,
+        learn: market => requestLearning(fetch, market),
+        refreshStats: loadEvolutionStats,
+      });
+      toast.success("验证与学习完成", { description: `日期 ${verificationDateKeys.join(", ")} · 同步赛果 ${summary.synced} 场 · 验证 ${summary.verified} 场 · 命中 ${summary.correct} 场 · 新增 ${summary.learnedPatterns} 个模式` });
     } catch (err) {
       toast.error("验证学习失败", { description: err instanceof Error ? err.message : "网络请求失败", duration: 8000 });
     }
@@ -3031,90 +1423,54 @@ export default function OddsMonitorPage() {
   // Batch fetch for visible matches, serialized to protect the Titan source IP.
   const fetchAllVisibleOdds = useCallback(async (matchIds?: string[]) => {
     setDataLoading(true);
-    autoFetchAbortRef.current = false;
+    const controller = new AbortController();
+    autoFetchAbortRef.current?.abort();
+    autoFetchAbortRef.current = controller;
     try {
-      // Determine which matches to fetch
-      let targetMatches: MatchData[];
-      if (matchIds) {
-        targetMatches = dataTabMatches.filter(m => matchIds.includes(m.id));
-      } else {
-        targetMatches = dataTabMatches
-          .filter(m => {
-            if (dataSelectedLeagues.size > 0 && !isLeagueSelected(m.league, dataSelectedLeagues)) return false;
-            // For history mode: fetch all states; for today/future: only not-started
-            if (dataScheduleMode !== "history" && m.state !== "0") return false;
-            return true;
-          });
-      }
+      const targetMatches = matchIds
+        ? dataTabMatches.filter(m => matchIds.includes(m.id))
+        : dataTabMatches.filter(m => {
+          if (dataSelectedLeagues.size > 0 && !isLeagueSelected(m.league, dataSelectedLeagues)) return false;
+          if (dataScheduleMode !== "history" && m.state !== "0") return false;
+          return true;
+        });
 
-      if (targetMatches.length === 0) {
-        setDataLoading(false);
-        return;
+      if (targetMatches.length === 0) return;
+      console.log(`[BatchFetch] Refreshing latest odds: ${targetMatches.length} matches, concurrency=1`);
+      await runOddsFetchBatch({
+        matchIds: targetMatches.map(match => match.id),
+        signal: controller.signal,
+        phase: "刷新最新赔率",
+        delayMs: 100,
+        fetchOne: fetchSingleMatchOdds,
+        onProgress: setBatchProgress,
+      });
+      if (!controller.signal.aborted) {
+        setScheduleError("");
+        refreshMissingCounts();
       }
-
-      const concurrency = 1;
-      console.log(`[BatchFetch] Refreshing latest odds: ${targetMatches.length} matches, concurrency=${concurrency}`);
-      setBatchProgress({ done: 0, total: targetMatches.length, phase: "刷新最新赔率" });
-
-      let completed = 0;
-      for (let i = 0; i < targetMatches.length; i += concurrency) {
-        if (autoFetchAbortRef.current) break;
-        const batch = targetMatches.slice(i, i + concurrency);
-        await Promise.allSettled(batch.map(m => fetchSingleMatchOdds(m.id)));
-        completed += batch.length;
-        setBatchProgress({ done: completed, total: targetMatches.length, phase: "刷新最新赔率" });
-        if (i + concurrency < targetMatches.length) {
-          await new Promise(r => setTimeout(r, 100));
-        }
-      }
-      setScheduleError("");
-      refreshMissingCounts();
     } catch (err) {
       console.error("[DataTab] Fetch all odds error:", err);
     } finally {
-      setDataLoading(false);
-      setBatchProgress(null);
+      if (autoFetchAbortRef.current === controller) {
+        autoFetchAbortRef.current = null;
+        setDataLoading(false);
+        setBatchProgress(null);
+      }
     }
   }, [dataTabMatches, dataSelectedLeagues, dataScheduleMode, fetchSingleMatchOdds, refreshMissingCounts]);
 
   // Supplement fetch: fetch specific missing data types for already-fetched matches
-  const supplementFetch = useCallback(async (type: "opentimes" | "crownOpen" | "odds" | "crownFinal" | "revalidate") => {
+  const supplementFetch = useCallback(async (type: SupplementalFetchType) => {
     setDataLoading(true);
-    autoFetchAbortRef.current = false;
+    const controller = new AbortController();
+    autoFetchAbortRef.current?.abort();
+    autoFetchAbortRef.current = controller;
     try {
-      const matchFilter = (m: MatchData) => {
-        if (dataSelectedLeagues.size > 0 && !isLeagueSelected(m.league, dataSelectedLeagues)) return false;
-        if (dataScheduleMode !== "history" && m.state !== "0") return false;
-        return true;
-      };
-
-      let toFetch: MatchData[] = [];
-      if (type === "opentimes") {
-        toFetch = dataTabMatches.filter(matchFilter).filter(m => {
-          const cod = dbCompanyOddsMap.get(m.id);
-          const companies = Array.isArray(cod?.companies) ? cod.companies : [];
-          return fetchedMatches.has(m.id) && (!cod || companies.every(c => !c.openTime));
-        });
-      } else if (type === "crownOpen") {
-        toFetch = dataTabMatches.filter(matchFilter).filter(m => {
-          return fetchedMatches.has(m.id) && !crown12OddsFromDb.has(m.id);
-        });
-      } else if (type === "crownFinal") {
-        toFetch = dataTabMatches.filter(matchFilter).filter(m => {
-          if (!fetchedMatches.has(m.id)) return false;
-          if (dataScheduleMode === "history" || (dataScheduleMode === "today" && m.state !== "0")) {
-            const companies = dbCompanyOddsMap.get(m.id)?.companies || [];
-            const crown = companies.find(company => company.companyId === "3");
-            return !(crown?.ftHandicapLineLive || crown?.ftTotalLineLive);
-          }
-          return false;
-        });
-      } else if (type === "odds") {
-        toFetch = dataTabMatches.filter(matchFilter).filter(m => !fetchedMatches.has(m.id));
-      } else if (type === "revalidate") {
-        // 数据校验：重新抓取已有DB数据的赛事，对比并更新
-        toFetch = dataTabMatches.filter(matchFilter).filter(m => fetchedMatches.has(m.id));
-      }
+      const toFetch = selectSupplementalTargets({
+        type, matches: dataTabMatches, selectedLeagues: dataSelectedLeagues, scheduleMode: dataScheduleMode,
+        fetchedMatchIds: fetchedMatches, oddsByMatch: dbCompanyOddsMap, crownOpenByMatch: crown12OddsFromDb,
+      });
 
       if (toFetch.length === 0) {
         setDataLoading(false);
@@ -3126,129 +1482,58 @@ export default function OddsMonitorPage() {
       console.log(`[SupplementFetch] Starting: ${toFetch.length} matches, type=${type}`);
       setBatchProgress({ done: 0, total: toFetch.length, phase: phaseLabel });
 
-      // Serialize all Titan supplement requests to reduce source-IP blocking.
-      const concurrency = 1;
-      let completed = 0;
-
-      for (let i = 0; i < toFetch.length; i += concurrency) {
-        if (autoFetchAbortRef.current) break;
-        const batch = toFetch.slice(i, i + concurrency);
-
-        if (type === "odds" || type === "crownFinal" || type === "revalidate") {
-          // Both use /api/data/match/{id} (fast ~0.2s)
-          await Promise.allSettled(batch.map(m => fetchSingleMatchOdds(m.id)));
-        } else {
-          // Fetch open times + crown open data via opentimes API
-          await Promise.allSettled(batch.map(async (m) => {
-            const supplementGeneration = oddsGenerationRef.current;
-            try {
-              const cod = dbCompanyOddsMapRef.current.get(m.id);
-              const codCompanies = Array.isArray(cod?.companies) ? cod.companies : [];
-              const companies = codCompanies.length > 0 ? codCompanies.map(c => c.companyId).join(",") : dataCompanyIds.join(",");
-              const includeCrownOpen = type === "crownOpen";
-              const res = await runSerializedOddsSourceTask(() => fetch(`/api/data/match/${m.id}/opentimes?companies=${companies}&crownOpen=${includeCrownOpen}`));
-              const json = await res.json();
-              if (json.success && json.data && supplementGeneration === oddsGenerationRef.current) {
-                const latestCod = dbCompanyOddsMapRef.current.get(m.id);
-                const latestCompanies = Array.isArray(latestCod?.companies) ? latestCod.companies : [];
-                const otMap = new Map<string, string>((json.data as ApiOpenTimeEntry[]).map((e: ApiOpenTimeEntry) => [e.companyId, e.openTime]));
-                const openTimesObj: Record<string, string> = {};
-                otMap.forEach((v, k) => { openTimesObj[k] = v; });
-
-                if (latestCod) {
-                  const updatedEntry: CompanyOddsData = {
-                    ...latestCod,
-                    openTime: otMap.get("3") || latestCod.openTime,
-                    companies: latestCompanies.map(c => ({
-                      ...c,
-                      openTime: otMap.get(c.companyId) || c.openTime,
-                    })),
-                  };
-                  setDbCompanyOddsMap(() => {
-                    const next = new Map(dbCompanyOddsMapRef.current);
-                    next.set(m.id, updatedEntry);
-                    dbCompanyOddsMapRef.current = next;
-                    return next;
-                  });
-                  const matchData = matchesRef.current.find(mt => mt.id === m.id) || dataTabMatches.find(mt => mt.id === m.id);
-                  const matchDateForSave = matchData?.matchDate || currentDbDate;
-                  const patchResponse = await fetch("/api/data/odds-db", {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ matchId: m.id, matchDate: matchDateForSave, openTimesData: openTimesObj }),
-                  });
-                  if (!patchResponse.ok) {
-                    const patchError = await patchResponse.json().catch(() => ({})) as { error?: string };
-                    throw new Error(patchError.error || "开盘时间保存失败");
-                  }
-                }
-
-                // Process crown open odds if returned
-                if (supplementGeneration === oddsGenerationRef.current && json.crownOpen && (json.crownOpen.handicapLine || json.crownOpen.totalLine)) {
-                  const co = json.crownOpen as {
-                    handicapHome: string;
-                    handicapLine: string;
-                    handicapAway: string;
-                    totalOver: string;
-                    totalLine: string;
-                    totalUnder: string;
-                  };
-                  const crownOpenOdds: Record<string, unknown> = {
-                    handicapHome: co.handicapHome || null,
-                    handicapLine: co.handicapLine || null,
-                    handicapAway: co.handicapAway || null,
-                    totalOver: co.totalOver || null,
-                    totalLine: co.totalLine || null,
-                    totalUnder: co.totalUnder || null,
-                  };
-                  const matchData = matchesRef.current.find(mt => mt.id === m.id) || dataTabMatches.find(mt => mt.id === m.id);
-                  const matchDateForSave = matchData?.matchDate || currentDbDate;
-                  const patchResponse = await fetch("/api/data/odds-db", {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ matchId: m.id, matchDate: matchDateForSave, crown12Odds: crownOpenOdds }),
-                  });
-                  if (!patchResponse.ok) {
-                    const patchError = await patchResponse.json().catch(() => ({})) as { error?: string };
-                    throw new Error(patchError.error || "皇冠快照保存失败");
-                  }
-                  setCrown12OddsFromDb(prev => {
-                    const next = new Map(prev);
-                    next.set(m.id, crownOpenOdds as { handicapHome?: string; handicapLine?: string; handicapAway?: string; totalOver?: string; totalLine?: string; totalUnder?: string });
-                    return next;
-                  });
-                }
-              }
-            } catch {
-              // individual match fetch failed, continue
-            }
+      await runSupplementalBatch({
+        type,
+        targets: toFetch,
+        signal: controller.signal,
+        fetchMatch: fetchSingleMatchOdds,
+        updateSupplement: async (match, signal) => {
+          const supplementGeneration = oddsGenerationRef.current;
+          const cod = dbCompanyOddsMapRef.current.get(match.id);
+          const codCompanies = Array.isArray(cod?.companies) ? cod.companies : [];
+          const companyIds = codCompanies.length > 0 ? codCompanies.map(company => company.companyId) : dataCompanyIds;
+          return runSerializedOddsSourceTask(() => runSupplementalOddsUpdate({
+            match,
+            currentDate: currentDbDate,
+            companyIds,
+            includeCrownOpen: type === "crownOpen",
+            generation: supplementGeneration,
+            currentGeneration: () => oddsGenerationRef.current,
+            readOdds: matchId => dbCompanyOddsMapRef.current.get(matchId),
+            fetch: request => fetchSupplementalOdds(fetch, request, signal),
+            persist: request => persistSupplementalOdds(fetch, request, signal),
           }));
-        }
-
-        completed += batch.length;
-        setBatchProgress({ done: completed, total: toFetch.length, phase: phaseLabel });
-        if (i + concurrency < toFetch.length) {
-          await new Promise(r => setTimeout(r, type === "odds" || type === "crownFinal" ? 100 : 200));
-        }
-      }
+        },
+        apply: outcome => {
+          if (outcome.odds) setDbCompanyOddsMap(() => {
+            const next = new Map(dbCompanyOddsMapRef.current).set(outcome.matchId, outcome.odds!);
+            dbCompanyOddsMapRef.current = next;
+            return next;
+          });
+          if (outcome.crownOpen) setCrown12OddsFromDb(previous => new Map(previous).set(outcome.matchId, outcome.crownOpen!));
+          if (outcome.crownFinal) setCrownLiveOddsFromDb(previous => new Map(previous).set(outcome.matchId, outcome.crownFinal!));
+        },
+        progress: done => setBatchProgress({ done, total: toFetch.length, phase: phaseLabel }),
+      });
       // Refresh counts after completion
       refreshMissingCounts();
     } catch (err) {
       console.error("[SupplementFetch] Error:", err);
     } finally {
-      setDataLoading(false);
-      setBatchProgress(null);
+      if (autoFetchAbortRef.current === controller) {
+        autoFetchAbortRef.current = null;
+        setDataLoading(false);
+        setBatchProgress(null);
+      }
     }
   }, [dataTabMatches, dataSelectedLeagues, dataScheduleMode, fetchedMatches, dbCompanyOddsMap, crown12OddsFromDb, dataCompanyIds, fetchSingleMatchOdds, currentDbDate, refreshMissingCounts, runSerializedOddsSourceTask]);
 
   // Abort all ongoing fetches
   const abortFetch = useCallback(() => {
-    autoFetchAbortRef.current = true;
-    const retained: RefreshQueueItem<OddsRefreshJob>[] = [];
-    const removed = oddsRefreshQueueRef.current;
-    removed.forEach(item => item.value.resolvers.forEach(resolve => resolve(false)));
-    oddsRefreshQueueRef.current = retained;
-    setOddsQueueStatus(previous => ({ ...previous, queued: retained.length }));
+    autoFetchAbortRef.current?.abort();
+    automaticOddsLifecycleRef.current?.cancel();
+    autoFetchAbortRef.current = null;
+    oddsRefreshQueueRef.current?.clear();
     setAutoFetchRunning(false);
     setDataLoading(false);
     setBatchProgress(null);
@@ -3257,275 +1542,113 @@ export default function OddsMonitorPage() {
 
   // Export data to Excel
   const exportToExcel = useCallback(() => {
-    const filtered = dataTabMatches.filter(m => {
-      if (dataSelectedLeagues.size > 0 && !isLeagueSelected(m.league, dataSelectedLeagues)) return false;
-      return true;
+    const companyOdds = new Map<string, CompanyOddsItem[]>();
+    for (const [matchId, value] of dbCompanyOddsMap) companyOdds.set(matchId, Array.isArray(value.companies) ? value.companies : []);
+    const rows = buildOddsExportRows({
+      matches: dataTabMatches,
+      selectedLeagues: dataSelectedLeagues,
+      scheduleMode: dataScheduleMode,
+      companyIds: new Set(dataCompanyIds),
+      companyOdds,
+      crownOpenOdds: crown12OddsFromDb,
+      crownFinalOdds: crownLiveOddsFromDb,
     });
-    if (filtered.length === 0) return;
-
-    const isHistory = dataScheduleMode === "history";
-    const rows: Record<string, string | number>[] = [];
-
-    for (const match of filtered) {
-      const cod = dbCompanyOddsMap.get(match.id);
-      const codCompanies = Array.isArray(cod?.companies) ? cod.companies : [];
-      const crownFinal = (() => {
-        const crown = codCompanies.find(c => c.companyId === "3");
-        if (crown && (crown.ftHandicapLineLive || crown.ftTotalLineLive)) {
-          return {
-            handicapHome: crown.ftHandicapHomeLive,
-            handicapLine: crown.ftHandicapLineLive,
-            handicapAway: crown.ftHandicapAwayLive,
-            totalOver: crown.ftTotalOverLive,
-            totalLine: crown.ftTotalLineLive,
-            totalUnder: crown.ftTotalUnderLive,
-          };
-        }
-        const stored = crownLiveOddsFromDb.get(match.id);
-        return stored && (stored.handicapLine || stored.totalLine) ? stored : undefined;
-      })();
-      const crown12 = crown12OddsFromDb.get(match.id);
-      const companies = codCompanies
-        .filter(c => dataCompanyIds.includes(c.companyId))
-        .sort((a, b) => normalizeOpenTime(a.openTime).localeCompare(normalizeOpenTime(b.openTime)));
-
-      if (companies.length === 0) {
-        // Single row without company data
-        const row: Record<string, string | number> = {
-          "日期": match.matchDate || "",
-          "联赛": match.league,
-          "时间": match.time,
-          "状态": match.state === "0" ? "未开赛" : match.state === "1" ? "进行中" : match.state === "-1" ? "完场" : match.state,
-        };
-        if (isHistory) {
-          row["比分"] = match.homeScore && match.awayScore ? `${match.homeScore}-${match.awayScore}` : "";
-          row["半场"] = match.halfHomeScore && match.halfAwayScore ? `${match.halfHomeScore}-${match.halfAwayScore}` : "";
-        }
-        row["主队"] = match.homeTeam;
-        row["客队"] = match.awayTeam;
-        if (isHistory && crownFinal) {
-          row["终盘-亚盘主水"] = crownFinal.handicapHome || "";
-          row["终盘-亚盘盘口"] = formatHandicapLine(crownFinal.handicapLine || "");
-          row["终盘-亚盘客水"] = crownFinal.handicapAway || "";
-          row["终盘-进球大水"] = crownFinal.totalOver || "";
-          row["终盘-进球盘口"] = crownFinal.totalLine || "";
-          row["终盘-进球小水"] = crownFinal.totalUnder || "";
-        }
-        if (isHistory && crown12) {
-          row["新数据-亚盘主水"] = crown12.handicapHome || "";
-          row["新数据-亚盘盘口"] = crown12.handicapLine || "";
-          row["新数据-亚盘客水"] = crown12.handicapAway || "";
-          row["新数据-进球大水"] = crown12.totalOver || "";
-          row["新数据-进球盘口"] = crown12.totalLine || "";
-          row["新数据-进球小水"] = crown12.totalUnder || "";
-        }
-        rows.push(row);
-      } else {
-        for (const c of companies) {
-          const row: Record<string, string | number> = {
-            "日期": match.matchDate || "",
-            "联赛": match.league,
-            "时间": match.time,
-            "状态": match.state === "0" ? "未开赛" : match.state === "1" ? "进行中" : match.state === "-1" ? "完场" : match.state,
-          };
-          if (isHistory) {
-            row["比分"] = match.homeScore && match.awayScore ? `${match.homeScore}-${match.awayScore}` : "";
-            row["半场"] = match.halfHomeScore && match.halfAwayScore ? `${match.halfHomeScore}-${match.halfAwayScore}` : "";
-          }
-          row["主队"] = match.homeTeam;
-          row["客队"] = match.awayTeam;
-          if (isHistory && crownFinal) {
-            row["终盘-亚盘主水"] = crownFinal.handicapHome || "";
-            row["终盘-亚盘盘口"] = formatHandicapLine(crownFinal.handicapLine || "");
-            row["终盘-亚盘客水"] = crownFinal.handicapAway || "";
-            row["终盘-进球大水"] = crownFinal.totalOver || "";
-            row["终盘-进球盘口"] = crownFinal.totalLine || "";
-            row["终盘-进球小水"] = crownFinal.totalUnder || "";
-          }
-          if (crown12) {
-            row["新数据-亚盘主水"] = crown12.handicapHome || "";
-            row["新数据-亚盘盘口"] = crown12.handicapLine || "";
-            row["新数据-亚盘客水"] = crown12.handicapAway || "";
-            row["新数据-进球大水"] = crown12.totalOver || "";
-            row["新数据-进球盘口"] = crown12.totalLine || "";
-            row["新数据-进球小水"] = crown12.totalUnder || "";
-          }
-          row["开盘时间"] = c.openTime || "";
-          row["公司"] = c.companyName;
-          row["亚盘(初)主水"] = c.ftHandicapHome || "";
-          row["亚盘(初)盘口"] = c.ftHandicapLine || "";
-          row["亚盘(初)客水"] = c.ftHandicapAway || "";
-          row["欧转亚盘(初)主水"] = c.euroAsianHome || "";
-          row["欧转亚盘(初)盘口"] = c.euroAsianLine || "";
-          row["欧转亚盘(初)客水"] = c.euroAsianAway || "";
-          row["进球数(初)大水"] = c.ftTotalOver || "";
-          row["进球数(初)盘口"] = c.ftTotalLine || "";
-          row["进球数(初)小水"] = c.ftTotalUnder || "";
-          rows.push(row);
-        }
-      }
-    }
-
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "赔率数据");
     const dateRange = dataDateEnd ? `${dataDate.replace(/-/g, "")}-${dataDateEnd.replace(/-/g, "")}` : (currentDbDate || "data");
-    XLSX.writeFile(wb, `赔率数据_${dateRange}.xlsx`);
+    exportOddsWorkbook(rows, dateRange, {
+      write({ rows: exportRows, sheetName, filename }) {
+        const worksheet = XLSX.utils.json_to_sheet(exportRows);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+        XLSX.writeFile(workbook, filename);
+      },
+    });
   }, [dataTabMatches, dataSelectedLeagues, dataScheduleMode, dbCompanyOddsMap, crownLiveOddsFromDb, crown12OddsFromDb, dataCompanyIds, dataDate, dataDateEnd, currentDbDate]);
 
-  // Fetch schedule data for history/future modes
-  const fetchScheduleData = useCallback(async (mode: "history" | "future", date: string) => {
-    if (!date) return;
-    setScheduleLoading(true);
-    setScheduleError("");
-    try {
-      const dateStr = date.replace(/-/g, ""); // Convert YYYY-MM-DD to YYYYMMDD
-      const res = await fetch(`/api/schedule?date=${dateStr}&mode=${mode}`);
-      const json = await res.json();
-      if (json.success && json.data) {
-        setScheduleMatches(json.data.matches || []);
-        setScheduleLeagues(json.data.leagues || []);
-        // Count hot matches for this schedule
-        const hotLeagues = (json.data.leagues || []).filter((l: LeagueData) => l.isHot);
-        const hotIds = new Set(hotLeagues.map((l: LeagueData) => l.id));
-        const hotCount = (json.data.matches || []).filter((m: MatchData) => hotIds.has(m.sclassId)).length;
-        setScheduleHotMatchCount(hotCount);
-      } else {
-        setScheduleError(json.error || "获取赛程数据失败");
-        setScheduleMatches([]);
-        setScheduleLeagues([]);
-      }
-    } catch (err) {
-      console.error("[DataTab] Fetch schedule error:", err);
-      setScheduleError(err instanceof Error ? err.message : "获取赛程数据失败");
+  // Fetch schedule data; the feature layer owns decoding, aggregation and hot selection.
+  const applyScheduleData = useCallback((data: { matches: MatchData[]; leagues: LeagueData[]; hotMatchCount?: number }) => {
+    setScheduleMatches(data.matches);
+    setScheduleLeagues(data.leagues);
+    setScheduleHotMatchCount(data.hotMatchCount ?? countHotMatches(data));
+  }, []);
+
+  if (!scheduleLoadControllerRef.current) {
+    scheduleLoadControllerRef.current = createLatestScheduleLoadController<ScheduleAggregate>({
+      load: async (plan: ScheduleLoadPlan, signal, isLatest) => {
+        const request = plan.schedule;
+        if (!request) return { matches: [], leagues: [], hotMatchCount: 0 };
+        if (request.mode === "history" && request.endDate) {
+          const dates = dateKeysInRange(request.startDate, request.endDate);
+          if (dates.length === 0) throw new Error("日期范围无效");
+          return aggregateScheduleRange(
+            dates,
+            date => fetchSchedule(fetch, "history", date, signal),
+            (loaded, total) => { if (isLatest()) setScheduleError(`加载中 ${loaded}/${total} 天...`); },
+          );
+        }
+        const data = await fetchSchedule(fetch, request.mode, request.startDate, signal);
+        return { ...data, hotMatchCount: countHotMatches(data) };
+      },
+      apply: data => {
+        applyScheduleData(data);
+        setScheduleError("");
+      },
+      onError: error => {
+        console.error("[DataTab] Fetch schedule error:", error);
+        setScheduleError(error instanceof Error ? error.message : "获取赛程数据失败");
+        applyScheduleData({ matches: [], leagues: [] });
+      },
+      onStart: () => {
+        setScheduleLoading(true);
+        setScheduleError("");
+      },
+      onSettled: () => setScheduleLoading(false),
+    });
+  }
+
+  useEffect(() => () => {
+    scheduleLoadControllerRef.current?.dispose();
+    scheduleLoadControllerRef.current = null;
+  }, []);
+
+  // Effect: consume the feature-owned mode/date plan while keeping state application route-local.
+  useEffect(() => {
+    const plan = createScheduleLoadPlan({
+      mode: dataScheduleMode,
+      currentDate: currentDbDate,
+      date: dataDate,
+      endDate: dataDateEnd,
+    });
+    if (plan.schedule) {
+      scheduleLoadControllerRef.current?.run(plan);
+    } else {
+      scheduleLoadControllerRef.current?.cancel();
+      setScheduleLoading(false);
+    }
+
+    if (dataScheduleMode === "today") {
       setScheduleMatches([]);
       setScheduleLeagues([]);
-    } finally {
-      setScheduleLoading(false);
-    }
-  }, []);
-
-  // Fetch schedule data for a date range (history mode)
-  const fetchScheduleRange = useCallback(async (startDate: string, endDate: string) => {
-    if (!startDate || !endDate) return;
-    setScheduleLoading(true);
-    setScheduleError("");
-    try {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
-      if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) {
-        setScheduleError("日期范围无效");
-        setScheduleLoading(false);
-        return;
-      }
-
-      const allMatches: MatchData[] = [];
-      const leagueMap = new Map<string, LeagueData>();
-      let totalHot = 0;
-      const totalDays = Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
-      let loadedDays = 0;
-
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().slice(0, 10).replace(/-/g, "");
-        try {
-          const res = await fetch(`/api/schedule?date=${dateStr}&mode=history`);
-          const json = await res.json();
-          if (json.success && json.data) {
-            const dayMatches = json.data.matches || [];
-            const dayLeagues = json.data.leagues || [];
-            allMatches.push(...dayMatches);
-            for (const l of dayLeagues) {
-              const existing = leagueMap.get(l.name);
-              if (existing) {
-                existing.count += l.count;
-              } else {
-                leagueMap.set(l.name, l);
-              }
-            }
-            const hotLeagues = dayLeagues.filter((l: LeagueData) => l.isHot);
-            const hotIds = new Set(hotLeagues.map((l: LeagueData) => l.id));
-            totalHot += dayMatches.filter((m: MatchData) => hotIds.has(m.sclassId)).length;
-          }
-        } catch {
-          // Skip failed dates
-        }
-        loadedDays++;
-        setScheduleError(`加载中 ${loadedDays}/${totalDays} 天...`);
-      }
-
-      setScheduleMatches(allMatches);
-      setScheduleLeagues(Array.from(leagueMap.values()).sort((a, b) => b.count - a.count));
-      setScheduleHotMatchCount(totalHot);
-      setScheduleError("");
-    } catch (err) {
-      console.error("[DataTab] Fetch schedule range error:", err);
-      setScheduleError(err instanceof Error ? err.message : "获取赛程数据失败");
-    } finally {
-      setScheduleLoading(false);
-    }
-  }, []);
-
-  // Effect: fetch schedule data when mode or date changes
-  useEffect(() => {
-    if (dataScheduleMode !== "today" && dataDate) {
-      if (dataScheduleMode === "history" && dataDateEnd) {
-        // History with date range
-        fetchScheduleRange(dataDate, dataDateEnd);
-      } else if (dataScheduleMode === "history" && !dataDateEnd) {
-        // History single date (no range)
-        fetchScheduleData(dataScheduleMode, dataDate);
-      } else {
-        // Future
-        fetchScheduleData(dataScheduleMode, dataDate);
-      }
-      // Reset odds data when switching schedule
+    } else if (plan.schedule) {
       dbCompanyOddsMapRef.current = new Map();
       setDbCompanyOddsMap(new Map());
       setFetchedMatches(new Set());
       setFailedMatches(new Map());
       setAnalysisResults(new Map());
       analysisResultsRef.current = new Map();
-      setAutoFetchTriggered(""); // Reset auto-fetch trigger
-      // Load saved odds from DB for the date range
-      if (dataScheduleMode === "history" && dataDateEnd) {
-        // Batch load all dates in one go — single setState to avoid cascade re-renders
-        loadOddsFromDbRange(dataDate, dataDateEnd);
-        loadPredictionsFromDb(dataDate.replace(/-/g, ""));
-      } else {
-        const dateStr = dataDate.replace(/-/g, "");
-        loadOddsFromDb(dateStr);
-        loadPredictionsFromDb(dateStr);
-      }
-      // Load saved league selections for this date+mode
-      loadLeagueSelections(dataDate.replace(/-/g, ""), dataScheduleMode);
-    } else if (dataScheduleMode === "today") {
-      // Clear schedule data when switching back to today
-      setScheduleMatches([]);
-      setScheduleLeagues([]);
-      setAutoFetchTriggered(""); // Reset auto-fetch trigger
-      // Load today's saved odds from DB
-      if (currentDbDate) {
-        loadOddsFromDb(currentDbDate);
-        loadPredictionsFromDb(currentDbDate);
-        // Also load PREVIOUS day's odds — matches that started before noon today
-        // belong to yesterday's schedule per titan007 date rules (matchDate="04月26日" for 09:10 match on 4/27)
-        // This ensures in-progress/finished matches have their final odds available
-        const prevDate = (() => {
-          const y = parseInt(currentDbDate.substring(0, 4));
-          const m = parseInt(currentDbDate.substring(4, 6));
-          const d = parseInt(currentDbDate.substring(6, 8));
-          const dt = new Date(y, m - 1, d);
-          dt.setDate(dt.getDate() - 1);
-          return `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, "0")}${String(dt.getDate()).padStart(2, "0")}`;
-        })();
-        loadOddsFromDb(prevDate);
-        loadPredictionsFromDb(prevDate);
-        // Load saved league selections for today
-        loadLeagueSelections(currentDbDate, "today");
-      }
     }
+    setAutoFetchTriggered("");
+
+    if (plan.schedule?.endDate) {
+      loadOddsFromDbRange(plan.schedule.startDate, plan.schedule.endDate);
+    } else {
+      plan.oddsDates.forEach(loadOddsFromDb);
+    }
+    plan.predictionDates.forEach(loadPredictionsFromDb);
+    if (plan.leagueDate) loadLeagueSelections(plan.leagueDate, dataScheduleMode);
+
+    return () => scheduleLoadControllerRef.current?.cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataScheduleMode, dataDate, dataDateEnd]);
+  }, [dataScheduleMode, dataDate, dataDateEnd, currentDbDate]);
 
   // --- Auto-fetch hot matches ---
   // After data is loaded and DB odds are checked, auto-fetch hot matches that haven't been saved
@@ -3533,57 +1656,38 @@ export default function OddsMonitorPage() {
   const fetchedMatchesRef = useRef(fetchedMatches);
   useEffect(() => { fetchedMatchesRef.current = fetchedMatches; }, [fetchedMatches]);
 
+  const automaticFetchLatestRef = useRef<{
+    fetchSingleMatchOdds: (matchId: string, signal?: AbortSignal) => Promise<boolean>;
+  }>({
+    fetchSingleMatchOdds: async () => false,
+  });
+  automaticFetchLatestRef.current.fetchSingleMatchOdds = fetchSingleMatchOdds;
+
   const autoFetchHotMatches = useCallback(async () => {
     if (autoFetchRunning) return;
-
-    // Determine which matches to auto-fetch:
-    // - If user has selected specific leagues: fetch only matches in those leagues
-    // - If no league filter (all selected): fetch hot matches only
-    const currentFetched = fetchedMatchesRef.current;
-    let targetMatches: MatchData[];
-
-    if (dataSelectedLeagues.size > 0) {
-      // User has league filter: fetch matches in selected leagues only
-      targetMatches = dataTabMatches
-        .filter(m => {
-          if (dataScheduleMode !== "history" && m.state !== "0") return false;
-          if (!isLeagueSelected(m.league, dataSelectedLeagues)) return false;
-          return true;
-        })
-        .filter(m => !currentFetched.has(m.id));
-    } else {
-      // No league filter: fetch hot matches only
-      const hotLeagueNames = new Set(hotLeagues.map(l => l.name));
-      targetMatches = dataTabMatches
-        .filter(m => {
-          if (dataScheduleMode !== "history" && m.state !== "0") return false;
-          return true;
-        })
-        .filter(m => hotLeagueNames.has(m.league) || m.isHot)
-        .filter(m => !currentFetched.has(m.id));
+    if (!automaticOddsLifecycleRef.current) {
+      automaticOddsLifecycleRef.current = createAutomaticOddsFetchLifecycle({
+        fetchMatch: (matchId, signal) => automaticFetchLatestRef.current.fetchSingleMatchOdds(matchId, signal),
+      });
     }
-
-    if (targetMatches.length === 0) return;
-
+    const key = `${dataScheduleMode}-${currentDbDate}${dataDateEnd ? "-" + dataDateEnd.replace(/-/g, "") : ""}`;
     setAutoFetchRunning(true);
-    autoFetchAbortRef.current = false;
-
     try {
-      const batchSize = 1;
-      for (let i = 0; i < targetMatches.length; i += batchSize) {
-        if (autoFetchAbortRef.current) break;
-        const batch = targetMatches.slice(i, i + batchSize);
-        await Promise.allSettled(batch.map(m => fetchSingleMatchOdds(m.id)));
-        if (i + batchSize < targetMatches.length) {
-          await new Promise(r => setTimeout(r, 100));
-        }
-      }
+      await automaticOddsLifecycleRef.current.run({
+        key,
+        dbReady: isDbLoadReady(currentDbDate),
+        matches: dataTabMatches,
+        selectedLeagues: dataSelectedLeagues,
+        hotLeagues: new Set(hotLeagues.map(league => league.name)),
+        fetchedMatchIds: fetchedMatchesRef.current,
+        scheduleMode: dataScheduleMode,
+      });
     } catch (err) {
       console.error("[AutoFetch] Error:", err);
     } finally {
       setAutoFetchRunning(false);
     }
-  }, [autoFetchRunning, hotLeagues, dataTabMatches, dataScheduleMode, dataSelectedLeagues, fetchSingleMatchOdds]);
+  }, [autoFetchRunning, hotLeagues, dataTabMatches, dataScheduleMode, dataSelectedLeagues, currentDbDate, dataDateEnd, isDbLoadReady]);
 
   // Trigger auto-fetch when match data is loaded and DB check is done
   // Only auto-fetch once per mode/date change (not on every refresh)
@@ -3604,26 +1708,7 @@ export default function OddsMonitorPage() {
     autoFetchHotMatches();
   }, [dataTabMatches.length, currentDbDate, dataDateEnd, dataScheduleMode, autoFetchTriggered, autoFetchRunning, isDbLoadReady, autoFetchHotMatches]);
 
-  // Also load DB odds on initial mount when matchDate becomes available
-  useEffect(() => {
-    if (currentDbDate && dataScheduleMode === "today") {
-      loadOddsFromDb(currentDbDate);
-      loadPredictionsFromDb(currentDbDate);
-      loadLeagueSelections(currentDbDate, "today");
-      // Also load previous day — in-progress/finished matches belong to previous day's schedule
-      const prevDate = (() => {
-        const y = parseInt(currentDbDate.substring(0, 4));
-        const m = parseInt(currentDbDate.substring(4, 6));
-        const d = parseInt(currentDbDate.substring(6, 8));
-        const dt = new Date(y, m - 1, d);
-        dt.setDate(dt.getDate() - 1);
-        return `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, "0")}${String(dt.getDate()).padStart(2, "0")}`;
-      })();
-      loadOddsFromDb(prevDate);
-      loadPredictionsFromDb(prevDate);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDbDate]);
+  // The schedule-plan effect owns initial and mode/date DB loads.
 
   // --- Incremental auto-fetch: when user adds leagues, auto-fetch new unfetched matches ---
   useEffect(() => {
@@ -3637,127 +1722,60 @@ export default function OddsMonitorPage() {
       return;
     }
 
-    // Find newly added leagues (leagues that are in current but not in previous)
-    const prev = prevSelectedLeaguesRef.current;
-    const newLeagues = new Set<string>();
-    for (const league of dataSelectedLeagues) {
-      if (!prev.has(league)) newLeagues.add(league);
-    }
+    const newMatches = selectIncrementalOddsTargets({
+      matches: dataTabMatches,
+      previousLeagues: prevSelectedLeaguesRef.current,
+      selectedLeagues: dataSelectedLeagues,
+      fetchedMatchIds: fetchedMatchesRef.current,
+      scheduleMode: dataScheduleMode,
+    });
     prevSelectedLeaguesRef.current = new Set(dataSelectedLeagues);
-
-    if (newLeagues.size === 0) return;
-
-    // Find unfetched matches in the newly added leagues
-    const currentFetched = fetchedMatchesRef.current;
-    const newMatches = dataTabMatches
-      .filter(m => {
-        if (dataScheduleMode !== "history" && m.state !== "0") return false;
-        return true;
-      })
-      .filter(m => newLeagues.has(m.league))
-      .filter(m => !currentFetched.has(m.id));
 
     if (newMatches.length === 0) return;
 
-    // Auto-fetch the new matches
-    const fetchNewMatches = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
       setDataLoading(true);
-      const batchSize = 1;
       try {
-        for (let i = 0; i < newMatches.length; i += batchSize) {
-          const batch = newMatches.slice(i, i + batchSize);
-          await Promise.allSettled(batch.map(m => fetchSingleMatchOdds(m.id)));
-          if (i + batchSize < newMatches.length) {
-            await new Promise(r => setTimeout(r, 100));
-          }
-        }
+        await runIncrementalOddsFetch({
+          matches: newMatches,
+          signal: controller.signal,
+          fetchMatch: matchId => fetchSingleMatchOdds(matchId),
+        });
       } catch (err) {
         console.error("[IncrementalFetch] Error:", err);
       } finally {
-        setDataLoading(false);
+        if (!controller.signal.aborted) setDataLoading(false);
       }
+    }, 800);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
     };
-
-    // Delay to avoid fetching while user is still selecting
-    const timer = setTimeout(fetchNewMatches, 800);
-    return () => clearTimeout(timer);
   }, [dataSelectedLeagues, dataScheduleMode, autoFetchRunning, dataLoading, dataTabMatches, fetchSingleMatchOdds]);
 
-  useEffect(() => {
-    const updateAvailability = () => setAutomationCompensationAvailable(isAutomationCompensationAvailable());
-    updateAvailability();
-    const timer = setInterval(updateAvailability, 30000);
-    return () => clearInterval(timer);
-  }, []);
-
   // --- Server automation status and manual compensation ---
-  const loadAutomationStatus = useCallback(async (dateKey: string) => {
-    if (!dateKey) return;
-    try {
-      const response = await fetch(`/api/automation/status?date=${dateKey}`);
-      const json = await response.json();
-      if (json.success && Array.isArray(json.tasks)) {
-        const next = json.tasks as AutomationTaskStatusData[];
-        setAutomationTasks((previous) => {
-          const unchanged = previous.length === next.length && previous.every((task, index) => (
-            task.id === next[index]?.id
-            && task.status === next[index]?.status
-            && task.currentStep === next[index]?.currentStep
-            && task.lastError === next[index]?.lastError
-            && task.updatedAt === next[index]?.updatedAt
-          ));
-          return unchanged ? previous : next;
-        });
-      }
-    } catch {
-      // Status is informational and must not block the monitor.
-    }
-  }, []);
-
-  useEffect(() => {
+  const handleAutomationCompleted = useCallback(async () => {
+    if (currentDbDate) await loadOddsFromDb(currentDbDate);
+  }, [currentDbDate, loadOddsFromDb]);
+  const handleAutomationCompensated = useCallback(async () => {
     if (!currentDbDate) return;
-    loadAutomationStatus(currentDbDate);
-    const timer = setInterval(() => loadAutomationStatus(currentDbDate), 30000);
-    return () => clearInterval(timer);
-  }, [currentDbDate, loadAutomationStatus]);
-
-  useEffect(() => {
-    const previous = previousAutomationStatusRef.current;
-    const completedNow = automationTasks.some(task => task.status === "completed" && previous.get(task.id) !== "completed");
-    previousAutomationStatusRef.current = new Map(automationTasks.map(task => [task.id, task.status]));
-    if (completedNow && currentDbDate) void loadOddsFromDb(currentDbDate);
-  }, [automationTasks, currentDbDate, loadOddsFromDb]);
-
-  const compensateAutomation = useCallback(async () => {
-    if (automationCompensating) return;
-    if (!automationCompensationAvailable) {
-      setAutomationMessage("北京时间12:02后才可执行当日补偿；未到时间前属于待执行，不是失败");
-      return;
-    }
-    setAutomationCompensating(true);
-    setAutomationMessage("");
-    try {
-      const response = await fetch("/api/automation/compensate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ maxTasks: 1 }),
-      });
-      const json = await response.json();
-      if (!response.ok || !json.success) throw new Error(json.error || "补偿失败");
-      setAutomationMessage(`已提交 ${json.ensured?.length || 0} 个幂等补偿任务`);
-      if (currentDbDate) {
-        await Promise.all([
-          loadAutomationStatus(currentDbDate),
-          loadOddsFromDb(currentDbDate),
-          loadPredictionsFromDb(currentDbDate),
-        ]);
-      }
-    } catch (error) {
-      setAutomationMessage(error instanceof Error ? error.message : "补偿失败");
-    } finally {
-      setAutomationCompensating(false);
-    }
-  }, [automationCompensating, automationCompensationAvailable, currentDbDate, loadAutomationStatus, loadOddsFromDb, loadPredictionsFromDb]);
+    await Promise.all([
+      loadOddsFromDb(currentDbDate),
+      loadPredictionsFromDb(currentDbDate),
+    ]);
+  }, [currentDbDate, loadOddsFromDb, loadPredictionsFromDb]);
+  const {
+    tasks: automationTasks,
+    compensating: automationCompensating,
+    message: automationMessage,
+    compensationAvailable: automationCompensationAvailable,
+    compensate: compensateAutomation,
+  } = useAutomationStatus({
+    dateKey: currentDbDate,
+    onCompleted: handleAutomationCompleted,
+    onCompensated: handleAutomationCompensated,
+  });
 
   // --- Auto dismiss old alerts ---
   useEffect(() => {
@@ -3895,49 +1913,35 @@ export default function OddsMonitorPage() {
   // --- Report functions ---
   const loadReportDates = useCallback(async () => {
     try {
-      const res = await fetch("/api/report");
-      const json = await res.json();
-      if (!res.ok || !json.success || !Array.isArray(json.dates)) {
-        throw new Error(json.error || "加载报表日期失败");
-      }
-      setReportDates(json.dates.map((d: { report_date: string }) => d.report_date));
+      setReportDates(await fetchReportDates(fetch));
     } catch (err) {
       toast.error("加载报表日期失败", { description: err instanceof Error ? err.message : "网络请求失败" });
     }
   }, []);
 
   const generateReport = async () => {
-    setReportLoading(true);
-    try {
-      const res = await fetch(`/api/report?predDate=${selectedPredDate}&mode=ai`, { method: "POST" });
-      const json = await res.json();
-      if (!res.ok || !json.success || !json.report) {
-        throw new Error(json.error || "生成AI报表失败");
-      }
-      setReportData(json.report);
-      setSelectedReportDate(json.report.date);
-      toast.success("AI报表生成成功", {
-        description: `最后分析：${formatAnalysisTime(json.report.latestAnalysisAt)}`,
-      });
-      await loadReportDates();
-      await loadReportTrend();
-    } catch (err) {
-      toast.error("生成AI报表失败", { description: err instanceof Error ? err.message : "网络请求失败" });
-    } finally {
-      setReportLoading(false);
-    }
+    await runReportCommand({
+      generate: () => requestGeneratedReport(fetch, selectedPredDate),
+      apply: report => {
+        setReportData(report as unknown as ReportData);
+        setSelectedReportDate(report.date);
+      },
+      refreshDates: loadReportDates,
+      refreshTrend: loadReportTrend,
+      start: () => setReportLoading(true),
+      success: report => toast.success("AI报表生成成功", {
+        description: `最后分析：${formatAnalysisTime(report.latestAnalysisAt as string | null | undefined)}`,
+      }),
+      error: error => toast.error("生成AI报表失败", { description: error instanceof Error ? error.message : "网络请求失败" }),
+      settle: () => setReportLoading(false),
+    });
   };
 
   const loadReport = async (date: string) => {
     if (!date) return;
     setReportLoading(true);
     try {
-      const res = await fetch(`/api/report?date=${date}`);
-      const json = await res.json();
-      if (!res.ok || !json.success || !json.data?.report_content) {
-        throw new Error(json.error || "加载AI报表失败");
-      }
-      setReportData(JSON.parse(json.data.report_content));
+      setReportData(await fetchReport(fetch, date) as unknown as ReportData);
       setSelectedReportDate(date);
     } catch (err) {
       toast.error("加载AI报表失败", { description: err instanceof Error ? err.message : "网络请求失败" });
@@ -3948,12 +1952,7 @@ export default function OddsMonitorPage() {
 
   const loadReportTrend = useCallback(async () => {
     try {
-      const res = await fetch("/api/report?trend=14");
-      const json = await res.json();
-      if (!res.ok || !json.success || !Array.isArray(json.trend)) {
-        throw new Error(json.error || "加载报表趋势失败");
-      }
-      setReportTrend(json.trend);
+      setReportTrend(await fetchReportTrend(fetch) as Array<{ date: string; total: number; correct: number; accuracy: number; totalCorrect: number; totalAccuracy: string }>);
     } catch (err) {
       toast.error("加载报表趋势失败", { description: err instanceof Error ? err.message : "网络请求失败" });
     }
@@ -3967,24 +1966,12 @@ export default function OddsMonitorPage() {
   // --- Sort and filter matches (always by original order from source) ---
   const minOddsSumVal = parseFloat(minOddsSum) || 0;
 
-  const filteredMatches = useMemo(() => matches
-    .filter((m) => m.state === "0") // Only show not-started matches
-    .filter((m) => selectedLeagues.size === 0 || selectedLeagues.has(m.league))
-    .filter((m) => {
-      if (minOddsSumVal <= 0) return true;
-      const home = parseFloat(m.homeOdds);
-      const away = parseFloat(m.awayOdds);
-      if (isNaN(home) || isNaN(away)) return false;
-      return (home + away) > minOddsSumVal;
-    })
-    .sort((a, b) => {
-      // Pinned first
-      const aPinned = pinnedMatches.has(a.id) ? 0 : 1;
-      const bPinned = pinnedMatches.has(b.id) ? 0 : 1;
-      if (aPinned !== bPinned) return aPinned - bPinned;
-      // Then by original order from source (same as original website)
-      return a.orderIndex - b.orderIndex;
-    }), [matches, selectedLeagues, minOddsSumVal, pinnedMatches]);
+  const filteredMatches = useMemo(() => projectScheduledMatches({
+    matches,
+    selectedLeagues,
+    minimumOddsSum: minOddsSumVal,
+    pinnedMatchIds: pinnedMatches,
+  }), [matches, selectedLeagues, minOddsSumVal, pinnedMatches]);
 
   useEffect(() => {
     detailedScheduleRef.current = () => {
@@ -3995,7 +1982,7 @@ export default function OddsMonitorPage() {
         const observedAt = oddsSourceMetaRef.current.get(match.id)?.sourceObservedAt;
         if (!isOddsStale(observedAt, Date.now())) continue;
         const priority = pinnedMatches.has(match.id) || expandedCrown.has(match.id) || expandedCompanies.has(match.id) ? 100 : 1;
-        void enqueueOddsRefresh(match.id, priority, true);
+        void enqueueOddsRefresh(match.id, priority);
       }
     };
     detailedScheduleRef.current();
@@ -4009,100 +1996,30 @@ export default function OddsMonitorPage() {
     .map((id) => pinnedMatchInfo.get(id)!);
 
   // --- In-progress / finished matches for monitor tab bottom section ---
-  const otherStateMatches = useMemo(() => matches
-    .filter((m) => m.state !== "0")
-    .filter((m) => selectedLeagues.size === 0 || selectedLeagues.has(m.league))
-    .sort((a, b) => {
-      // Pinned first
-      const aPinned = pinnedMatches.has(a.id) ? 0 : 1;
-      const bPinned = pinnedMatches.has(b.id) ? 0 : 1;
-      if (aPinned !== bPinned) return aPinned - bPinned;
-      const aKind = getMatchStatus(a.state).kind;
-      const bKind = getMatchStatus(b.state).kind;
-      const aPriority = aKind === "scheduled" ? 99 : OTHER_MATCH_STATUS_PRIORITY[aKind];
-      const bPriority = bKind === "scheduled" ? 99 : OTHER_MATCH_STATUS_PRIORITY[bKind];
-      if (aPriority !== bPriority) return aPriority - bPriority;
-      return a.orderIndex - b.orderIndex;
-    }), [matches, selectedLeagues, pinnedMatches]);
-
-  const otherStateCounts = useMemo(() => {
-    const counts: Record<OtherMatchFilter, number> = { all: otherStateMatches.length, live: 0, halftime: 0, finished: 0, unknown: 0 };
-    for (const match of otherStateMatches) {
-      const kind = getMatchStatus(match.state).kind;
-      if (kind !== "scheduled") counts[kind] += 1;
-    }
-    return counts;
-  }, [otherStateMatches]);
-
-  const visibleOtherStateMatches = useMemo(() => {
-    if (otherMatchFilter === "all") return otherStateMatches;
-    return otherStateMatches.filter((match) => getMatchStatus(match.state).kind === otherMatchFilter);
-  }, [otherStateMatches, otherMatchFilter]);
+  const otherMatchProjection = useMemo(() => projectOtherMatches({
+    matches,
+    selectedLeagues,
+    pinnedMatchIds: pinnedMatches,
+    filter: otherMatchFilter,
+    statusKind: state => getMatchStatus(state).kind,
+  }), [matches, selectedLeagues, pinnedMatches, otherMatchFilter]);
+  const otherStateMatches = otherMatchProjection.all;
+  const otherStateCounts = otherMatchProjection.counts;
+  const visibleOtherStateMatches = otherMatchProjection.visible;
 
   const activeOtherMatchFilterLabel = OTHER_MATCH_FILTERS.find(filter => filter.key === otherMatchFilter)?.label ?? "全部";
 
   // --- Odds comparison summary (from all matches with notes) ---
-  const oddsComparisonSummary = useMemo(() => {
-    let totalDiff = 0;
-    let matchCount = 0;
-    const details: Array<{
-      matchId: string;
-      home: string;
-      away: string;
-      league: string;
-      type: "handicap" | "total";
-      predictedOdds: number;
-      currentOdds: number;
-      sumTotal: number;
-      diff: number;
-    }> = [];
-
-    for (const match of matches) {
-      // Only compute comparison for not-started matches (state === "0")
-      // In-progress/finished matches use stale odds, should not count
-      if (match.state !== "0") continue;
-      const matchNotes = notes.get(match.id);
-      if (!matchNotes) continue;
-
-      const hc = matchNotes.handicapNote && !matchNotes.handicapSettled
-        ? computeHandicapComparison(matchNotes.handicapNote, match.homeOdds, match.awayOdds, oddsBaseTotal)
-        : null;
-      if (hc) {
-        totalDiff += hc.diff;
-        matchCount++;
-        details.push({
-          matchId: match.id, home: match.homeTeam, away: match.awayTeam,
-          league: match.league, type: "handicap",
-          predictedOdds: hc.predictedOdds, currentOdds: hc.currentOdds,
-          sumTotal: hc.sumTotal, diff: hc.diff,
-        });
-      }
-
-      const tc = matchNotes.totalNote && !matchNotes.totalSettled
-        ? computeTotalComparison(matchNotes.totalNote, match.overOdds, match.underOdds, oddsBaseTotal)
-        : null;
-      if (tc) {
-        totalDiff += tc.diff;
-        matchCount++;
-        details.push({
-          matchId: match.id, home: match.homeTeam, away: match.awayTeam,
-          league: match.league, type: "total",
-          predictedOdds: tc.predictedOdds, currentOdds: tc.currentOdds,
-          sumTotal: tc.sumTotal, diff: tc.diff,
-        });
-      }
-    }
-
-    return { totalDiff, matchCount, details } as const;
-  }, [matches, notes, oddsBaseTotal]);
+  const oddsComparisonSummary = useMemo(() => buildOddsComparisonSummary({
+    matches,
+    notes,
+    oddsBaseTotal,
+  }), [matches, notes, oddsBaseTotal]);
 
   // --- Alert when odds comparison total exceeds threshold ---
   const prevTotalExcess = useRef(0);
   useEffect(() => {
-    if (
-      oddsComparisonSummary.totalDiff > oddsAlertThreshold &&
-      oddsComparisonSummary.totalDiff > prevTotalExcess.current
-    ) {
+    if (shouldPlayThresholdAlert(oddsComparisonSummary.totalDiff, oddsAlertThreshold, prevTotalExcess.current)) {
       // Play alert sound
       try {
         const ctx = new AudioContext();
@@ -4492,7 +2409,7 @@ export default function OddsMonitorPage() {
               </Button>
 
               {/* Manual refresh */}
-              <Button variant="outline" size="icon-sm" className="border-gray-700 text-gray-300 hover:bg-gray-800" onClick={fetchData} disabled={loading} aria-label="立即刷新赔率" title="立即刷新赔率">
+              <Button variant="outline" size="icon-sm" className="border-gray-700 text-gray-300 hover:bg-gray-800" onClick={refreshOdds} disabled={loading} aria-label="立即刷新赔率" title="立即刷新赔率">
                 <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
               </Button>
               </div>
@@ -7874,9 +5791,8 @@ export default function OddsMonitorPage() {
                     setSelectedPredDate(d);
                     if (d) {
                       loadPredictionByDate(d);
-                      fetch(`/api/prediction?date=${d}`)
-                        .then((res) => res.json())
-                        .then((json) => setPastedJson(json.data || ""))
+                      workstationActions.fetchPredictions(d)
+                        .then(setPastedJson)
                         .catch(() => {});
                     }
                   }}
@@ -7983,7 +5899,7 @@ export default function OddsMonitorPage() {
                     variant="destructive"
                     size="sm"
                     onClick={async () => {
-                      await fetch(`/api/prediction?date=${selectedPredDate}`, { method: "DELETE" });
+                      await workstationActions.deletePredictions(selectedPredDate);
                       setPredictionDates((prev) => prev.filter((d) => d !== selectedPredDate));
                       setPastedJson("");
                       setSavedJson("");

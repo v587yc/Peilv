@@ -29,6 +29,11 @@ const eslintConfig = defineConfig([
     // Build artifacts:
     'server.js',
     'dist/**',
+    'coverage/**',
+    // Local agent tooling and isolated worktrees:
+    '.claude/**',
+    '.superpowers/**',
+    '.trellis/**',
     // Script files (CommonJS):
     'scripts/**/*.js',
   ]),

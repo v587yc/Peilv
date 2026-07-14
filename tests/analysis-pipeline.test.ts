@@ -14,7 +14,7 @@ import {
   analyzeMatch,
   learnBacktestPatterns,
   verifyBacktestPredictions,
-} from "@/lib/services/analysis-pipeline";
+} from "@/app/api/backtest/_analysis-pipeline";
 
 describe("in-process analysis pipeline", () => {
   beforeEach(() => {

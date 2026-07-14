@@ -7,7 +7,7 @@ const db = vi.hoisted(() => ({
   strategyInserts: [] as Record<string, unknown>[],
 }));
 
-vi.mock("@/app/api/feishu/_helpers", () => ({
+vi.mock("@/lib/integrations/feishu/notifier", () => ({
   sendFeishuVerifyResult: vi.fn(async () => undefined),
 }));
 

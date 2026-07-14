@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
-import { sendFeishuVerifyResult } from "@/app/api/feishu/_helpers";
+import { sendFeishuVerifyResult } from "@/lib/integrations/feishu/notifier";
 import { isInternalRequest } from "@/lib/internal-auth";
 import type { PredictionMarket } from "@/lib/verification";
 import {

@@ -38,7 +38,7 @@ vi.mock("@/lib/llm", () => ({
   })),
 }));
 
-vi.mock("@/app/api/feishu/_helpers", () => ({
+vi.mock("@/lib/integrations/feishu/notifier", () => ({
   sendFeishuAIAnalysis: vi.fn(async () => undefined),
 }));
 
@@ -272,6 +272,10 @@ describe("learned indicator weights", () => {
     }) as never);
 
     expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "分析完成但保存预测失败: prediction write failed",
+    });
     expect(mocks.enqueueT30).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
-import { clearWebhookCache } from "@/app/api/feishu/_helpers";
+import { clearWebhookCache } from "@/lib/integrations/feishu/settings";
 import { writeAuditLog } from "@/lib/audit-log";
 
 const MASKED_SETTING_VALUE = "••••••••";

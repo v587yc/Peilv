@@ -6,7 +6,7 @@ const db = vi.hoisted(() => ({
   upserts: [] as Record<string, unknown>[],
 }));
 
-vi.mock("@/lib/services/analysis-pipeline", () => ({
+vi.mock("@/app/api/backtest/_analysis-pipeline", () => ({
   analyzeMatch: vi.fn(),
   verifyBacktestPredictions: vi.fn(),
   learnBacktestPatterns: vi.fn(),

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { getBacktestLimits, throwIfAborted, validateBacktestInput } from "@/lib/backtest/limits";
-import { analyzeMatch, learnBacktestPatterns, verifyBacktestPredictions } from "@/lib/services/analysis-pipeline";
+import { analyzeMatch, learnBacktestPatterns, verifyBacktestPredictions } from "./_analysis-pipeline";
 import { persistScheduleResults } from "@/lib/verification/match-results";
 
 function parseDbJsonObject(value: unknown): Record<string, unknown> {

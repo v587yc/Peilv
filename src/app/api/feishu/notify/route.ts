@@ -1,49 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseClient } from "@/storage/database/supabase-client";
-
-// Feishu Bot Webhook API
-// Supports: text, post (rich text), interactive (card), test message types
-// Webhook URL format: https://open.feishu.cn/open-apis/bot/v2/hook/{token}
-
-// Cache webhook URL (refreshed every 5 minutes)
-let cachedWebhookUrl = "";
-let webhookCacheTime = 0;
-
-async function getWebhookUrl(): Promise<string> {
-  // Cache for 5 minutes
-  const now = Date.now();
-  if (cachedWebhookUrl && now - webhookCacheTime < 300000) {
-    return cachedWebhookUrl;
-  }
-
-  // Load from DB first (user-configured)
-  try {
-    const supabase = getSupabaseClient();
-    const { data } = await supabase
-      .from("app_settings")
-      .select("value")
-      .eq("key", "feishu_webhook_url")
-      .single();
-
-    if (data?.value) {
-      cachedWebhookUrl = data.value;
-      webhookCacheTime = now;
-      return cachedWebhookUrl;
-    }
-  } catch {
-    // DB not available
-  }
-
-  // Fallback to env var
-  const envUrl = process.env.FEISHU_WEBHOOK_URL || "";
-  if (envUrl) {
-    cachedWebhookUrl = envUrl;
-    webhookCacheTime = now;
-    return envUrl;
-  }
-
-  return "";
-}
+import { sendFeishuPayload } from "@/lib/integrations/feishu/notifier";
+import { getFeishuWebhookUrl } from "@/lib/integrations/feishu/settings";
 
 /**
  * Send a message to Feishu group via webhook
@@ -62,7 +19,7 @@ async function getWebhookUrl(): Promise<string> {
  */
 export async function POST(request: NextRequest) {
   try {
-    const webhookUrl = await getWebhookUrl();
+    const webhookUrl = await getFeishuWebhookUrl({ preferStored: true });
     if (!webhookUrl) {
       return NextResponse.json(
         { success: false, error: "飞书Webhook未配置，请先在设置中填写Webhook URL" },
@@ -120,22 +77,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    const result = await sendFeishuPayload(payload, {
+      getWebhookUrl: async () => webhookUrl,
     });
 
-    const result = await response.json();
-
-    if (result.code === 0 || result.StatusCode === 0) {
-      return NextResponse.json({ success: true, data: result });
-    } else {
-      return NextResponse.json(
-        { success: false, error: result.msg || result.StatusMessage || "飞书发送失败", detail: result },
-        { status: 500 }
-      );
+    if (result.success) {
+      return NextResponse.json({ success: true, data: result.detail });
     }
+    return NextResponse.json(
+      {
+        success: false,
+        error: result.transportError ? `飞书通知异常: ${result.error}` : result.error,
+        ...(result.detail ? { detail: result.detail } : {}),
+      },
+      { status: 500 },
+    );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "未知错误";
     return NextResponse.json(
@@ -150,7 +106,7 @@ export async function POST(request: NextRequest) {
  * GET /api/feishu/notify
  */
 export async function GET() {
-  const webhookUrl = await getWebhookUrl();
+  const webhookUrl = await getFeishuWebhookUrl({ preferStored: true });
   if (!webhookUrl) {
     return NextResponse.json({
       success: false,
