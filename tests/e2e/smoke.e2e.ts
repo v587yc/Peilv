@@ -36,6 +36,45 @@ test("未认证请求无法访问敏感 API", async ({ request }) => {
   });
 });
 
+test("统一管理员登录可进入并退出管理控制台", async ({ page }) => {
+  await page.goto("/admin/audit?actorId=single-team-admin");
+  await expect(page).toHaveURL(/\/login\?next=%2Fadmin%2Faudit%3FactorId%3Dsingle-team-admin$/);
+
+  await page.getByLabel("管理员令牌").fill("playwright-admin-token");
+  await page.getByRole("button", { name: "安全登录" }).click();
+
+  await expect(page).toHaveURL(/\/admin\/audit\?actorId=single-team-admin$/);
+  await expect(page.getByRole("heading", { name: "审计日志" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "控制台总览" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "设置与数据源，后续阶段" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "版本更新，后续阶段" })).toBeDisabled();
+  await expect(page.getByText("旧部署控制台", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "退出" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.goto("/admin");
+  await expect(page).toHaveURL(/\/login\?next=%2Fadmin$/);
+});
+
+test("管理 API 拒绝未认证和跨站写请求", async ({ request }) => {
+  const unauthenticated = await request.get("/api/admin/audit");
+  expect(unauthenticated.status()).toBe(401);
+  await expect(unauthenticated.json()).resolves.toMatchObject({ success: false, error: "需要管理员登录" });
+
+  const login = await request.post("/api/auth/session", {
+    data: { token: "playwright-admin-token" },
+    headers: { Origin: "http://127.0.0.1:3100" },
+  });
+  expect(login.ok()).toBe(true);
+
+  const crossSite = await request.post("/api/admin/audit", {
+    data: {},
+    headers: { Origin: "https://evil.example" },
+  });
+  expect(crossSite.status()).toBe(403);
+  await expect(crossSite.json()).resolves.toMatchObject({ success: false, error: "跨站请求校验失败" });
+});
+
 test("首页提供全部核心页面导航", async ({ page }) => {
   await page.goto("/");
 

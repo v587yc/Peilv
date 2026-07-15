@@ -15,15 +15,15 @@ export interface AuditLogEntry {
 
 const SENSITIVE_KEY = /(?:token|secret|password|authorization|cookie|api[_-]?key|webhook)/i;
 
-function sanitize(value: unknown, depth = 0): unknown {
+export function sanitizeAuditValue(value: unknown, depth = 0): unknown {
   if (depth > 5) return "[truncated]";
   if (typeof value === "string") return value.length > 1000 ? `${value.slice(0, 1000)}…` : value;
-  if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitize(item, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitizeAuditValue(item, depth + 1));
   if (!value || typeof value !== "object") return value;
 
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
-    output[key] = SENSITIVE_KEY.test(key) ? "[redacted]" : sanitize(child, depth + 1);
+    output[key] = SENSITIVE_KEY.test(key) ? "[redacted]" : sanitizeAuditValue(child, depth + 1);
   }
   return output;
 }
@@ -38,9 +38,9 @@ export async function writeAuditLog(entry: AuditLogEntry): Promise<boolean> {
       object_id: entry.objectId || null,
       request_id: entry.requestId || null,
       idempotency_key: entry.idempotencyKey || null,
-      old_value: entry.oldValue === undefined ? null : sanitize(entry.oldValue),
-      new_value: entry.newValue === undefined ? null : sanitize(entry.newValue),
-      metadata: sanitize(entry.metadata || {}),
+      old_value: entry.oldValue === undefined ? null : sanitizeAuditValue(entry.oldValue),
+      new_value: entry.newValue === undefined ? null : sanitizeAuditValue(entry.newValue),
+      metadata: sanitizeAuditValue(entry.metadata || {}),
     });
     if (error) {
       console.error("[Audit] Failed to write audit log:", error.message);

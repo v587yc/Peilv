@@ -1,15 +1,18 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { LockKeyhole, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedNext = searchParams.get("next");
+  const destination = requestedNext && /^\/admin(?:\/|\?|$)/.test(requestedNext) ? requestedNext : "/admin";
   const tokenRef = useRef<HTMLInputElement>(null);
   const [token, setToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -17,9 +20,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     fetch("/api/auth/session", { cache: "no-store" }).then(response => {
-      if (response.ok) router.replace("/odds");
+      if (response.ok) router.replace(destination);
     }).catch(() => undefined);
-  }, [router]);
+  }, [destination, router]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -40,7 +43,7 @@ export default function LoginPage() {
       }
 
       setToken("");
-      router.replace("/odds");
+      router.replace(destination);
       router.refresh();
     } catch {
       setError("无法连接服务器，请稍后重试");
@@ -99,5 +102,13 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<main className="min-h-dvh bg-background" aria-label="正在加载登录页面" />}>
+      <LoginForm />
+    </Suspense>
   );
 }

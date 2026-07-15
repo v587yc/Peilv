@@ -78,8 +78,33 @@ async function auditTrigger(
 
 export function proxy(request: NextRequest, event: NextFetchEvent): NextResponse {
   const pathname = request.nextUrl.pathname;
+  const isAdminApi = pathname === "/api/admin" || pathname.startsWith("/api/admin/");
+  const isAdminPage = pathname === "/admin" || pathname.startsWith("/admin/");
   const isDeploymentApi = pathname === "/api/deployments" || pathname.startsWith("/api/deployments/");
   const isDeploymentPage = pathname === "/deployments" || pathname.startsWith("/deployments/");
+
+  if (isAdminApi || isAdminPage) {
+    const authorization = authorizeAdminRequest(request);
+    if (!authorization.ok || authorization.actor.actorType !== "admin") {
+      if (isAdminApi) {
+        const error = authorization.ok ? "需要管理员登录" : authorization.error;
+        const status = authorization.ok ? 401 : authorization.status;
+        return jsonError(error, status);
+      }
+      const login = request.nextUrl.clone();
+      login.pathname = "/login";
+      login.search = "";
+      login.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
+      return NextResponse.redirect(login);
+    }
+    if (isAdminApi && !isSameOriginMutation(request)) return jsonError("跨站请求校验失败", 403);
+
+    const headers = new Headers(request.headers);
+    headers.set("x-request-id", crypto.randomUUID());
+    headers.set("x-authenticated-actor-id", authorization.actor.actorId);
+    headers.set("x-authenticated-actor-type", authorization.actor.actorType);
+    return NextResponse.next({ request: { headers } });
+  }
 
   if (isDeploymentApi || isDeploymentPage) {
     const actor = authorizeDeploymentRequest(request);
@@ -127,5 +152,5 @@ export function proxy(request: NextRequest, event: NextFetchEvent): NextResponse
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/deployments/:path*"],
+  matcher: ["/api/:path*", "/admin/:path*", "/deployments/:path*"],
 };
