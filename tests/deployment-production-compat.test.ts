@@ -129,6 +129,7 @@ describe("candidate auto-collect lifecycle", () => {
       const mocks: Record<string, string> = {
         systemctl: `#!/usr/bin/env bash\ncase "$*" in *LoadState*) printf 'not-found\\n'; exit 4;; *MainPID*) printf '${mainPid}\\n';; *ControlGroup*) printf '\\n';; *) exit 90;; esac\n`,
         mountpoint: "#!/usr/bin/env bash\nexit 1\n",
+        ss: "#!/usr/bin/env bash\nexit 1\n",
         findmnt: "#!/usr/bin/env bash\nexit 0\n",
         ps: "#!/usr/bin/env bash\nexit 0\n",
       };
