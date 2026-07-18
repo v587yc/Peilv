@@ -29,7 +29,9 @@ export async function buildLockedMigrationSql({ migrationsDirectory, planText })
   for (const row of rows) {
     const sql = await readFile(path.join(migrationsDirectory, row.file), "utf8");
     if (createHash("sha256").update(sql).digest("hex") !== row.sha256) throw new Error("Migration checksum mismatch");
-    if (/^\s*\\/m.test(sql)) throw new Error("Migration contains unsupported psql meta-command");
+    if (sql.split(/\r?\n/).some(line => line.trimStart().startsWith("\\"))) {
+      throw new Error("Migration contains unsupported psql meta-command");
+    }
     const aliases = row.file === "0001_production_baseline.sql" ? [row.version, "0001_canonical_baseline"] : [row.version];
     const aliasSql = aliases.map(literal).join(",");
     blocks.push(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version IN(${aliasSql})) AS migration_applied \\gset
