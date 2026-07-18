@@ -24,9 +24,20 @@ async function bash(script: string, work: string, extra: Record<string, string> 
   });
 }
 
+async function nativePath(value: string): Promise<string> {
+  if (process.platform !== "win32") return value;
+  try {
+    return (await exec("cygpath", ["-w", value])).stdout.trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return value;
+    throw error;
+  }
+}
+
 async function lockContext(work: string) {
   const { stdout } = await bash(`source "$BUILD_SCRIPT"; initialize_build_context; printf '%s\\n%s' "$build_lock" "$workspace_real"`, work);
-  const [lock, canonicalWorkspace] = stdout.trim().split(/\r?\n/);
+  const [shellLock, canonicalWorkspace] = stdout.trim().split(/\r?\n/);
+  const lock = await nativePath(shellLock);
   return { lock, canonicalWorkspace };
 }
 
