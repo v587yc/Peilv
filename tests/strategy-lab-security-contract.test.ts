@@ -91,14 +91,13 @@ describe("Strategy Lab database security contract", () => {
     expect(factMigrationSql).toMatch(/SET search_path\s*=\s*public\s*,\s*pg_temp/i);
   });
 
-  it("keeps isolated PG16 QA opt-in, secret-safe and random-resource scoped", async () => {
-    const script = await read("scripts/qa-strategy-lab-pg16.sh");
-    expect(script).toContain("postgres:16-alpine");
-    expect(script).toContain("trap cleanup EXIT INT TERM");
-    expect(script).toContain("strategy-lab-pg16-qa-$(date +%s)-$$-$RANDOM");
-    expect(script).not.toMatch(/docker system prune|docker volume prune|POSTGRES_PASSWORD=[A-Za-z0-9]+\b/);
-    expect(script).not.toContain("set -x");
-    expect(script).toContain("pg_try_advisory_lock");
+  it("keeps the formal migration runner secret-safe and lock-scoped", async () => {
+    const runner = await read("scripts/run-migrations.mjs");
+    expect(runner).toContain("pg_try_advisory_lock");
+    expect(runner).toContain("pg_advisory_unlock");
+    expect(runner).toContain('stdio: ["pipe", "ignore", "inherit"]');
+    expect(runner).not.toMatch(/POSTGRES_PASSWORD\s*=|set -x|docker system prune|docker volume prune/);
+    expect(runner).not.toContain("\\quit 0");
   });
 });
 
