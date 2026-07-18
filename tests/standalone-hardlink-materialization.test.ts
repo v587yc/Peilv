@@ -60,5 +60,30 @@ describe("trusted pnpm hardlink materialization",()=>{
   await expect(exec("node",[materializer,source,stage,workspace],{timeout:30_000})).rejects.toMatchObject({stderr:expect.stringContaining("escapes allowed dependency roots")});
   const externalStage=path.join(external,"stage");await mkdir(externalStage);
   await expect(exec("node",[materializer,external,externalStage,workspace],{timeout:30_000})).rejects.toMatchObject({stderr:expect.stringContaining("Standalone source must be inside the workspace")});
- },30_000);
+  },30_000);
+
+  it("resolves pnpm-style relative multi-level internal links",async()=>{
+   const {workspace,source,stage}=await workspaceFixture("peilv-semver-links-");
+   const store=path.join(workspace,"node_modules","semver@7.7.3","node_modules","semver");
+   await mkdir(store,{recursive:true}); await writeFile(path.join(store,"index.js"),"module.exports='semver'\n");
+   const pnpmLinks=path.join(source,"node_modules",".pnpm","node_modules"); await mkdir(pnpmLinks,{recursive:true});
+   try { await symlink("../../../../node_modules/semver@7.7.3/node_modules/semver",path.join(pnpmLinks,"semver")); }
+   catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return; throw error; }
+   const nested=path.join(source,"node_modules","alias"); await mkdir(nested,{recursive:true});
+   try { await symlink("../.pnpm/node_modules/semver",path.join(nested,"semver")); }
+   catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return; throw error; }
+   await exec("node",[materializer,source,stage,workspace],{timeout:30_000});
+   expect(await readFile(path.join(stage,"node_modules",".pnpm","node_modules","semver","index.js"),"utf8")).toBe("module.exports='semver'\n");
+   expect(await readFile(path.join(stage,"node_modules","alias","semver","index.js"),"utf8")).toBe("module.exports='semver'\n");
+  },30_000);
+
+  it("rejects dangling and cyclic links separately",async()=>{
+   const {workspace,source,stage}=await workspaceFixture("peilv-link-errors-");
+   try { await symlink("missing-target",path.join(source,"dangling.js")); }
+   catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return; throw error; }
+   await expect(exec("node",[materializer,source,stage,workspace],{timeout:30_000})).rejects.toMatchObject({stderr:expect.stringContaining("Dangling symlink rejected")});
+   await rm(path.join(source,"dangling.js"));
+   await symlink("cycle-b",path.join(source,"cycle-a")); await symlink("cycle-a",path.join(source,"cycle-b"));
+   await expect(exec("node",[materializer,source,stage,workspace],{timeout:30_000})).rejects.toMatchObject({stderr:expect.stringContaining("Cyclic symlink rejected")});
+  },30_000);
 });

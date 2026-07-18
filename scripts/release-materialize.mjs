@@ -13,6 +13,29 @@ if (!(sourceReal === workspaceReal || sourceReal.startsWith(`${workspaceReal}${p
 const allowedRoots = [sourceReal, path.join(workspaceReal, "node_modules")].map(value => fs.realpathSync(value));
 const inside = (value, root) => value === root || value.startsWith(`${root}${path.sep}`);
 const allowed = value => allowedRoots.some(root => inside(value, root));
+function resolveSymlinkTarget(start) {
+  let current = path.resolve(start);
+  const seen = new Set();
+  while (true) {
+    const identity = path.normalize(current);
+    if (seen.has(identity)) throw new Error(`Cyclic symlink rejected: ${start}`);
+    seen.add(identity);
+    let info;
+    try { info = fs.lstatSync(current); }
+    catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") throw new Error(`Dangling symlink rejected: ${start}`);
+      throw error;
+    }
+    if (!info.isSymbolicLink()) {
+      const real = fs.realpathSync(current);
+      if (!allowed(real)) throw new Error(`Symlink target escapes allowed dependency roots: ${start}`);
+      return real;
+    }
+    const link = fs.readlinkSync(current);
+    if (path.isAbsolute(link)) current = path.resolve(link);
+    else current = path.resolve(path.dirname(current), link);
+  }
+}
 const stableFields = ["dev", "ino", "size", "ctimeMs", "mtimeMs", "mode", "nlink"];
 const active = new Set();
 let members = 0, total = 0;
@@ -70,9 +93,7 @@ function materialize(from, to, relative) {
   if (/\.map$/i.test(path.basename(relative))) return;
   const initial = fs.lstatSync(from, { bigint: false });
   if (initial.isSymbolicLink()) {
-    let real;
-    try { real = fs.realpathSync(from); } catch { throw new Error(`Dangling or cyclic symlink rejected: ${from}`); }
-    if (!allowed(real)) throw new Error(`Symlink target escapes allowed dependency roots: ${from}`);
+    const real = resolveSymlinkTarget(from);
     return materialize(real, to, relative);
   }
   validateName(relative);
