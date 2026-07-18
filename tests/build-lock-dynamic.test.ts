@@ -25,7 +25,7 @@ async function bash(script: string, work: string, extra: Record<string, string> 
 }
 
 async function lockContext(work: string) {
-  const { stdout } = await bash(`source "$BUILD_SCRIPT"; initialize_build_context; printf '%s\\n%s' "$(cygpath -w "$build_lock")" "$workspace_real"`, work);
+  const { stdout } = await bash(`source "$BUILD_SCRIPT"; initialize_build_context; printf '%s\\n%s' "$build_lock" "$workspace_real"`, work);
   const [lock, canonicalWorkspace] = stdout.trim().split(/\r?\n/);
   return { lock, canonicalWorkspace };
 }

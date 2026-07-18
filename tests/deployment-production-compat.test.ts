@@ -12,6 +12,16 @@ const lifecyclePath = path.join(root, "scripts", "lib", "candidate-lifecycle.sh"
 const releaseId = "r20260716000001-a1-0123456789ab";
 const requestId = "12345678-1234-4234-8234-123456789abc";
 
+async function shellPath(value: string): Promise<string> {
+  if (process.platform !== "win32") return value;
+  try {
+    return (await exec("cygpath", ["-u", value])).stdout.trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return value.replaceAll("\\", "/");
+    throw error;
+  }
+}
+
 function functionBlock(source: string, name: string, nextName: string): string {
   const start = source.indexOf(`${name}() {`);
   const end = source.indexOf(`${nextName}() {`, start);
@@ -61,7 +71,7 @@ describe("production compatibility probes", () => {
     const sandbox = await mkdtemp(path.join(tmpRoot, "probe-runtime-"));
     try {
       const deploy = await readFile(deployPath, "utf8");
-      const shellSandbox = (await exec("cygpath", ["-u", sandbox])).stdout.trim();
+      const shellSandbox = sandbox.replaceAll("\\", "/");
       await exec("bash", ["-lc", `chmod 0700 ${JSON.stringify(shellSandbox)} && stat -c '%a' ${JSON.stringify(shellSandbox)}`]);
       const actualDirectoryMode = (await exec("bash", ["-lc", `stat -c '%a' ${JSON.stringify(shellSandbox)}`])).stdout.trim();
       const create = functionBlock(deploy, "create_probe_runtime", "cleanup_probe_runtime")
@@ -123,8 +133,8 @@ describe("candidate auto-collect lifecycle", () => {
         ps: "#!/usr/bin/env bash\nexit 0\n",
       };
       for (const [name, content] of Object.entries(mocks)) await writeFile(path.join(bin, name), content, { mode: 0o700 });
-      const shellLifecycle = (await exec("cygpath", ["-u", lifecyclePath])).stdout.trim();
-      const shellSandbox = (await exec("cygpath", ["-u", sandbox])).stdout.trim();
+      const shellLifecycle = lifecyclePath.replaceAll("\\", "/");
+      const shellSandbox = sandbox.replaceAll("\\", "/");
       const harness = `#!/usr/bin/env bash\nset -Eeuo pipefail\nexport PATH="$1/bin:$PATH"\nsource ${JSON.stringify(shellLifecycle)}\ncandidate_stop_and_release peilv-candidate-${releaseId}.service ${releaseId} /srv/peilv-candidate\n`;
       await writeFile(path.join(sandbox, "run.sh"), harness, { mode: 0o700 });
       let status = "0";
@@ -155,7 +165,7 @@ describe("failed release quarantine isolation", () => {
       const deploy = await readFile(deployPath, "utf8");
       const fn = functionBlock(deploy, "quarantine_created_release", "restore_on_failure")
         .replace('install -d -o root -g root -m 0700 "$base/quarantine"', 'mkdir -p "$base/quarantine"');
-      const shellPath = (await exec("cygpath", ["-u", sandbox])).stdout.trim();
+      const shellPath = sandbox.replaceAll("\\", "/");
       const harness = `#!/usr/bin/env bash\nset -Eeuo pipefail\nbase=${JSON.stringify(`${shellPath}/opt/peilv`)}\nrelease_id=${releaseId}\nrequest_id=${requestId}\nrelease_dir="$base/releases/$release_id"\nrelease_created=1\nrelease_activated=0\n${fn}\nmkdir -p "$release_dir" "$base/quarantine/$release_id.failed-$request_id"\nprintf old >"$base/quarantine/$release_id.failed-$request_id/sentinel"\nprintf new >"$release_dir/payload"\nquarantine_created_release\n[[ "$(cat "$base/quarantine/$release_id.failed-$request_id/sentinel")" == old ]]\n[[ "$(cat "$base/quarantine/$release_id.failed-$request_id.attempt-1/payload")" == new ]]\n`;
       await writeFile(path.join(sandbox, "run.sh"), harness, { mode: 0o700 });
       await exec("bash", [path.join(sandbox, "run.sh")]);

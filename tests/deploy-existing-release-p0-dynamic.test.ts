@@ -62,7 +62,7 @@ describe("deploy existing release P0 regression", () => {
   it("quarantines a release created by this attempt when extraction fails", async () => {
     const sandbox = await mkdtemp(path.join(testTmpRoot, "created-release-"));
     try {
-      const shellSandbox = (await exec("cygpath", ["-u", sandbox])).stdout.trim();
+      const shellSandbox = sandbox.replaceAll("\\", "/");
       const deploy = await readFile(deployPath, "utf8");
       const quarantineFunction = deploy.slice(deploy.indexOf("quarantine_created_release() {"), deploy.indexOf("restore_on_failure() {"))
         .trim()
