@@ -71,7 +71,7 @@ describe("production compatibility probes", () => {
     const sandbox = await mkdtemp(path.join(tmpRoot, "probe-runtime-"));
     try {
       const deploy = await readFile(deployPath, "utf8");
-      const shellSandbox = sandbox.replaceAll("\\", "/");
+      const shellSandbox = await shellPath(sandbox);
       await exec("bash", ["-lc", `chmod 0700 ${JSON.stringify(shellSandbox)} && stat -c '%a' ${JSON.stringify(shellSandbox)}`]);
       const actualDirectoryMode = (await exec("bash", ["-lc", `stat -c '%a' ${JSON.stringify(shellSandbox)}`])).stdout.trim();
       const create = functionBlock(deploy, "create_probe_runtime", "cleanup_probe_runtime")
