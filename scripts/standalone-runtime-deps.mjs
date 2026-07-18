@@ -98,8 +98,9 @@ function repairMissingPnpmLink(linkPath) {
   if (!link.trim()) throw new Error(`Empty standalone dependency link: ${linkPath}`);
   const requestedStore = requestedStoreFromTarget(linkPath, link);
   let candidates = candidatePackages(name, requestedStore);
-  if (!requestedStore) candidates = candidatePackages(name, null);
-  if (candidates.length !== 1) throw new Error(`Missing standalone dependency has no unique workspace match: ${linkPath} (${candidates.map(item => `${item.store}@${item.version}`).join(", ")})`);
+  if (!requestedStore || candidates.length === 0) candidates = candidatePackages(name, null);
+  if (candidates.length === 0) throw new Error(`Missing standalone dependency has no workspace match: ${linkPath}`);
+  if (candidates.length > 1) throw new Error(`Missing standalone dependency has no unique workspace match: ${linkPath} (${candidates.map(item => `${item.store}@${item.version}`).join(", ")})`);
   const candidate = candidates[0].path;
   if (!inside(candidate, dependencyRoot)) throw new Error(`Workspace dependency candidate escapes node_modules: ${candidate}`);
   copyResolvedPackage(candidate, linkPath);

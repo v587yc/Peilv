@@ -50,9 +50,15 @@ describe("standalone runtime dependency repair", () => {
   });
 
   it("rejects multiple workspace versions instead of guessing", async () => {
-    const value = await fixture({ versions: ["6.3.1", "7.7.3"], target: "../../semver-missing/node_modules/semver" });
+    const value = await fixture({ versions: ["6.3.1", "7.7.3"], target: "../semver-missing/node_modules/semver" });
     if (!value) return;
     await expect(exec(process.execPath, [runner, value.standalone, value.workspace])).rejects.toMatchObject({ stderr: expect.stringContaining("no unique workspace match") });
+  });
+
+  it("reports a missing pnpm package separately from an ambiguous package", async () => {
+    const value = await fixture({ versions: [], target: "../semver-missing/node_modules/semver" });
+    if (!value) return;
+    await expect(exec(process.execPath, [runner, value.standalone, value.workspace])).rejects.toMatchObject({ stderr: expect.stringContaining("has no workspace match") });
   });
 
   it.each([
