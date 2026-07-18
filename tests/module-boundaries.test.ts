@@ -10,6 +10,7 @@ const SCAN_ROOTS = [
 ];
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx"]);
 const APP_MODULE_PATTERN = /^(?:@\/app\/|.*src\/app\/|(?:\.\.\/)+app\/)/;
+const LEGACY_ROUTE_PATTERN = /^(?:@\/app\/api\/backtest(?:\/|$)|.*src\/app\/api\/backtest(?:\/|$))/;
 
 function findAppImports(source: string): string[] {
   const sourceFile = ts.createSourceFile("module.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -70,6 +71,20 @@ describe("module boundaries", () => {
       }
     }
 
+    expect(violations).toEqual([]);
+  }, 15_000);
+
+  it("prevents admin adapters from depending on the legacy backtest route", async () => {
+    const adminRoute = path.join(SOURCE_ROOT, "app", "api", "admin", "backtests", "route.ts");
+    const source = await readFile(adminRoute, "utf8");
+    const sourceFile = ts.createSourceFile(adminRoute, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const violations: string[] = [];
+    sourceFile.forEachChild(function visit(node) {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier) && LEGACY_ROUTE_PATTERN.test(node.moduleSpecifier.text)) {
+        violations.push(node.moduleSpecifier.text);
+      }
+      ts.forEachChild(node, visit);
+    });
     expect(violations).toEqual([]);
   });
 });

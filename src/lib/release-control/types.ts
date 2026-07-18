@@ -31,6 +31,7 @@ export type DeploymentOperation = {
 export type DeploymentOverview = {
   repository: string;
   currentRelease: string | null;
+  previousRelease: string | null;
   candidates: ReleaseCandidate[];
   operations: DeploymentOperation[];
   fetchedAt: string;

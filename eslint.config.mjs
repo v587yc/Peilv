@@ -30,6 +30,7 @@ const eslintConfig = defineConfig([
     'server.js',
     'dist/**',
     'coverage/**',
+    'release-artifacts/**',
     // Local agent tooling and isolated worktrees:
     '.claude/**',
     '.superpowers/**',

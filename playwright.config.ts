@@ -1,7 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const port = 3100;
-const baseURL = `http://127.0.0.1:${port}`;
+const baseURL = process.env.BASE_URL || `http://127.0.0.1:${port}`;
+const readinessURL = `${baseURL}/api/readiness`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -20,22 +21,34 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: {
-    command: "pnpm start",
-    url: baseURL,
-    timeout: 120_000,
-    reuseExistingServer: false,
-    env: {
-      ...process.env,
-      ADMIN_API_TOKEN: "playwright-admin-token",
-      INTERNAL_API_SECRET: "playwright-internal-secret",
-      DEPLOYMENT_ADMIN_USERNAME: "admin",
-      DEPLOYMENT_ADMIN_PASSWORD_HASH: "scrypt$16384$8$1$cGxheXdyaWdodC1zYWx0LTE$mOO8KpJWICWCmsgS2wd1dQH20fRaJizHeb9OQIEzruQ",
-      DEPLOYMENT_SESSION_SECRET: "playwright-deployment-session-secret-32",
-      COZE_PROJECT_ENV: "PROD",
-      DEPLOY_RUN_PORT: String(port),
-      HOSTNAME: "127.0.0.1",
-      PORT: String(port),
+  webServer: [
+    {
+      command: "node tests/e2e/helpers/fake-admin-session-db.mjs",
+      url: "http://127.0.0.1:54329/health",
+      timeout: 10_000,
+      reuseExistingServer: false,
     },
-  },
+    {
+      command: "node dist/server.js",
+      url: readinessURL,
+      timeout: 120_000,
+      reuseExistingServer: false,
+      env: {
+        ...process.env,
+        DATA_BACKEND: "local",
+        LOCAL_SUPABASE_URL: "http://127.0.0.1:54329",
+        LOCAL_SUPABASE_ANON_KEY: "playwright-anon-key",
+        LOCAL_SUPABASE_SERVICE_ROLE_KEY: "playwright-service-role-key",
+        INTERNAL_API_SECRET: "crow5_e2e_virtual_internal_secret_000000000000",
+        ADMIN_API_TOKEN: "crow5-e2e-virtual-admin-api-token",
+        COZE_PROJECT_ENV: "PROD",
+        NODE_ENV: "test",
+        DEPLOY_RUN_PORT: String(port),
+        HOSTNAME: "127.0.0.1",
+        PORT: String(port),
+        BASE_URL: baseURL,
+        INTERNAL_APP_BASE_URL: baseURL,
+      },
+    },
+  ],
 });

@@ -6,6 +6,7 @@ import type {
   FeishuTextElement,
 } from "./contracts";
 import { getFeishuWebhookUrl } from "./settings";
+import { safeOutboundFetch } from "@/lib/safe-fetch";
 
 export async function sendFeishuPayload(
   payload: FeishuPayload,
@@ -15,11 +16,17 @@ export async function sendFeishuPayload(
   if (!webhookUrl) return { success: false, error: "飞书Webhook未配置，请先在设置中填写Webhook URL" };
 
   try {
-    const response = await (dependencies.fetcher ?? fetch)(webhookUrl, {
+    const response = dependencies.fetcher
+      ? await dependencies.fetcher(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      : await safeOutboundFetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    });
+      }, "feishu");
     const detail = await response.json() as FeishuProviderResult;
     if (detail.code === 0 || detail.StatusCode === 0) return { success: true, detail };
     return {

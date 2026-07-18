@@ -1,0 +1,3 @@
+scripts/production-preflight.sh text eol=lf
+scripts/deploy-production.sh text eol=lf
+scripts/rollback-production.sh text eol=lf

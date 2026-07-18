@@ -10,12 +10,22 @@
 
 ## 安装与运行
 
+### 一期服务边界与端口
+
+- 本地 Web 开发端口：`1802`。
+- 独立 Worker 内部端口：`2802`，仅用于首期后台任务进程的内部通信，不作为浏览器公开入口。
+- 生产端口继续兼容现有 `5000`（正式实例）/`5001`（候选实例）约定，本期不改动生产切换流程。
+- 首期架构仍是现有 Next.js Web/API 加独立 Worker，并非全量前后端拆仓。`project/frontend`、`project/backend` 仅保留为项目结构边界，本期正式代码继续按现有 Next.js 目录组织。
+- 策略实验室一期先接入确定性的规则 A/B 与兼容适配契约。规则 C 的完整执行延期：缺少任一关键字段时必须直接执行同一份规则 A；若 A 所需数据也不足则返回数据不足。关键字段完整但没有显式注入 C 执行器时必须返回 `unavailable`，不得生成或伪造 C 的推荐结果。
+
+以上端口均为非敏感运行配置；账号、密码、令牌和数据库密钥不得写入 README 或提交到仓库。
+
 ```bash
 pnpm install
-pnpm dev
+PORT=1802 pnpm dev
 ```
 
-默认地址为 `http://localhost:5000`。生产构建与启动：
+本地开发地址为 `http://localhost:1802`。生产构建与启动仍保留现有 `5000/5001` 兼容约定：
 
 ```bash
 pnpm build
@@ -73,8 +83,11 @@ bash scripts/verify-release.sh \
 
 | 变量 | 要求 | 说明 |
 |---|---|---|
-| `ADMIN_API_TOKEN` | 受保护 API 必需 | `/login` 使用的管理员令牌，也是 12 小时 HttpOnly 会话的签名密钥；未配置时受保护接口返回 503。 |
-| `INTERNAL_API_SECRET` | 后台调度必需 | 调度分发器与内部业务调用使用的 `x-internal-api-secret`，必须与外部 cron 调用方一致且不得暴露给浏览器。 |
+| `ADMIN_BOOTSTRAP_TOKEN` | 仅首次初始化临时必需 | 高熵一次性 secret，只供本机 `pnpm admin:bootstrap` 调用 bootstrap API；首位管理员创建后必须从运行环境删除并重启。不得放入网页、argv、日志或仓库。 |
+| `ADMIN_LOGIN_RATE_LIMIT_SECRET` | 必需 | 管理员登录限流键的服务端 secret；只检查是否存在，不记录值。 |
+| `ADMIN_TRUST_PROXY` | 可选，默认关闭 | 只有值严格为 `true` 才信任代理来源头；开启前必须落实并保留 `docs/admin-auth-proxy-boundary.md` 描述的受控代理边界。未设置或其他值时不信任代理头。 |
+| `ADMIN_API_TOKEN` | 仅旧版恢复兼容 | 不是普通登录密码。账号体系初始化后，`/login` 只接受管理员账号和密码；不要继续把旧 token 分发给用户。 |
+| `INTERNAL_API_SECRET_FILE` | 本地开发可选 | 指向32–128位 base64url（`A-Z a-z 0-9 _ -`）凭据文件。Linux生产不从环境变量读取密钥，而由 systemd `LoadCredential` 提供 `%d/internal-api-secret`；Windows生产自动化不受支持。 |
 | `PORT` | 可选 | 默认 `5000`。 |
 | `HOSTNAME` | 可选 | 默认 `localhost`。 |
 | `COZE_PROJECT_ENV` | 可选 | `DEV` 启用开发 Inspector，`PROD` 使用生产模式。 |
@@ -85,10 +98,32 @@ bash scripts/verify-release.sh \
 - `SEARCH_API_KEY`、`SEARCH_BASE_URL`
 - `FEISHU_WEBHOOK_URL`
 - `FETCH_URL_ALLOWED_HOSTS`：`/api/fetch-url` 的额外 HTTPS 域名白名单，逗号分隔；仍会拒绝凭据、私网地址和不安全重定向。
+- `ADMIN_OUTBOUND_ALLOWED_HOSTS`：管理员明确审批的额外出站域名，逗号分隔；精确域名直接填写，仅需允许子域时使用 `*.example.invalid`。自建 OpenAI 兼容或搜索端点必须先在此处授权，数据库中已有 URL 不会自动成为可信域。
+- `ADMIN_OUTBOUND_ALLOWED_PORTS`：经管理员明确审批的额外 HTTPS 端口，逗号分隔；未配置时仅允许标准 443 端口。
 
-LLM、搜索和飞书配置可存于 `app_settings`，环境变量作为回退。管理员设置 API、回测、写接口和高成本分析接口由 `src/proxy.ts` 统一保护。
+LLM、搜索和飞书配置可存于 `app_settings`，环境变量作为回退。所有地址必须使用 HTTPS，禁止 userinfo、fragment、IP 字面量和未授权端口；保存时执行静态域名策略，连接测试及实际调用会校验 DNS 返回的全部 A/AAAA 地址、固定本次连接解析结果，并逐跳复验重定向。管理员设置 API、回测、写接口和高成本分析接口由 `src/proxy.ts` 统一保护。
+
+### 构建与运行环境契约
+
+- `pnpm build` 不读取项目根目录 `.env*` 作为生产打包配置。构建脚本会在 Next 构建前把这些文件原子隔离到工作区外、同卷的受限临时目录，并在成功、失败或收到信号时恢复；文件内容不会被读取、打印、修改或加入 Git。
+- `.next/standalone` 和 release 制品禁止包含任何 `.env*`。构建与 `create-release.sh` 均采用 fail closed 检查，不以事后删除掩盖泄漏。
+- 生产运行时非敏感配置只由 systemd `EnvironmentFile=/opt/peilv/shared/app.env` 注入；内部 secret 只由 `LoadCredential` 注入，release 本身不携带运行配置或凭据。
+- `infra/systemd/peilv.service` 固定且唯一声明 `HOSTNAME=127.0.0.1`、`PORT=5000`、`DEPLOY_RUN_PORT=5000`。release 验证、preflight 与 deploy 会对缺失、重复、旧值和已安装 unit 漂移 fail closed；候选运行由隔离 lifecycle 显式覆盖为 `5001`。
+- 只有明确设计为浏览器公开配置的 `NEXT_PUBLIC_*` 才允许进入客户端 bundle。secret 和服务端配置不得改名为 `NEXT_PUBLIC_*`，也不得通过 `next.config` 的 `env` 烘焙。
 
 ## 数据库初始化与迁移
+
+### 首位超级管理员
+
+完成数据库迁移并启动应用后，`GET /api/auth/session` 在没有管理员账号时返回 `initialized:false`。公网 `/login` 只显示“尚未初始化”、本机操作说明和重新检查按钮，不提供 bootstrap token 输入框，也不会继续普通登录。
+
+在应用服务器的受信任终端执行：
+
+```bash
+node ./scripts/admin-bootstrap.mjs
+```
+
+CLI 不接受命令行参数。token 优先从受保护的 `ADMIN_BOOTSTRAP_TOKEN` 环境读取，也支持 TTY 隐藏输入；账号和显示名交互读取，密码隐藏读取且不回显。若应用并非监听 `http://127.0.0.1:5000`，可设置只含 origin、无凭据/查询/片段的 `ADMIN_BOOTSTRAP_BASE_URL`。默认只允许 HTTP(S) loopback；非本机仅允许 HTTPS，并需显式设置 `ADMIN_BOOTSTRAP_ALLOW_REMOTE_HTTPS=true` 确认已建立受控安全边界。初始化成功后立即从运行环境移除 bootstrap token 并重启应用，再用账号密码登录。旧 `ADMIN_API_TOKEN` 不能作为普通登录密码；文档和命令中不得写入真实 secret。
 
 ### 新数据库
 
@@ -110,11 +145,33 @@ migrations/0002_match_odds_freshness.sql
 migrations/0003_prediction_analyzed_at.sql
 migrations/0004_prediction_verification_columns.sql
 migrations/0005_match_t30_analysis.sql
+migrations/0006_market_settlement_evidence.sql
+migrations/0007_weighted_learning_samples.sql
+migrations/0008_management_command_receipts.sql
+migrations/0009_admin_identity.sql
+migrations/0010_admin_identity_guardrails.sql
+migrations/0011_admin_login_rate_limit.sql
+migrations/0012_admin_login_reservations.sql
+migrations/0013_admin_user_optimistic_concurrency.sql
+migrations/0014_admin_login_uniform_reservations.sql
+migrations/0015_admin_lifecycle_strong_audit.sql
+migrations/0016_atomic_backtest_claim.sql
+migrations/0017_management_command_recovery_states.sql
+migrations/0018_command_audit_and_backtest_leases.sql
+migrations/0019_backtest_owner_fenced_persistence.sql
+migrations/0020_strategy_lab_fact_model.sql
+migrations/0021_strategy_lab_policy_and_artifacts.sql
+migrations/0022_strategy_lab_snapshot_provider.sql
+migrations/0023_strategy_lab_trusted_settlement.sql
 ```
 
-迁移不会由应用启动过程自动执行。必须按编号全部执行，并检查 `schema_migrations` 已记录对应版本；`0004_prediction_verification_columns.sql` 用于补齐旧库的预测验证字段（包括 `prediction_results.auto_is_correct`）。
+迁移不会由应用启动过程自动执行。必须以 `migrations/manifest.json` 为唯一顺序和校验依据，按编号执行至当前最新版本 `0023_strategy_lab_trusted_settlement`，并检查 `schema_migrations` 已记录全部已执行版本。管理员账号、持久会话与 RBAC 依赖 `0009_admin_identity.sql`；`0010` 增加首位超级管理员及权限护栏；`0011` 增加持久登录限流；`0012` 用原子、有界 reservation 替代 check-record 竞态窗口；`0013` 为管理员变更增加基于 `updated_at` 前置条件的乐观并发控制（OCC）。`0014`–`0019` 继续收紧登录、生命周期审计、回测 claim、命令恢复、命令审计和 owner fence；`0020`–`0023` 建立 Strategy Lab 事实模型、策略制品、快照 provider 和 trusted settlement。
 
-迁移是非破坏性基线：补字段、统一 `YYYYMMDD` 日期、将重复数据归档到 `migration_duplicate_archive`、确定性保留最新记录，再创建唯一约束与索引。生产执行后应检查 `schema_migrations` 和归档表；真实历史数据清理仍必须在目标数据库上验证。
+回滚边界必须以 manifest 中的 `codeRollbackSafe` 为准：当前 `0001_production_baseline.sql` 以及 `0014`–`0019` 标记为 `codeRollbackSafe=false`。这些迁移应用后，禁止直接回退到不兼容的旧代码版本（尤其是 `0013` 或更早版本）；只能回退到通过 release manifest 兼容性检查、且与已应用 schema 相容的代码 release。`codeRollbackSafe=true` 也不代表可以回滚数据库迁移，数据库只执行前向迁移，不做页面级或脚本级降级。
+
+Strategy Lab 的通用 migration/setup 只建立并强制默认拒绝的 RLS，不创建托管环境可能禁止创建的 LOGIN 角色。具备 `CREATEROLE`/对象所有权的受控环境需单独执行 `infra/local-data/sql/strategy-lab-roles.sql`；该脚本只创建无密码的 `NOLOGIN` 分组角色并安装最小 ACL/policy。运行时 LOGIN 必须由部署 secret 工具预创建，再仅授予 `strategy_lab_writer`（或只读场景的 `strategy_lab_reader`），禁止使用 `strategy_lab_owner`、超级用户或 `BYPASSRLS` DSN。当前 policy 的 `USING (true)` 边界仅适用于单租户 Strategy Lab，并且只绑定专用角色。
+
+迁移是非破坏性基线：补字段、统一 `YYYYMMDD` 日期、将重复数据归档到 `migration_duplicate_archive`、确定性保留最新记录，再创建唯一约束与索引。生产执行后应检查 `schema_migrations` 和归档表，并确认 manifest 中所有迁移文件的 SHA-256；真实历史数据清理仍必须在目标数据库上验证。
 
 不要把 `disable-rls.sql` 当作常规迁移。生产环境应配置明确的 RLS 策略或仅由受控服务端使用 service-role key。
 
@@ -129,7 +186,7 @@ migrations/0005_match_t30_analysis.sql
 | 12:15 | 执行 AI 分析 |
 | 02:00 | 验证昨日结果 → 学习 → 生成报表 |
 
-生产分析保存成功后会立即按比赛 ID 幂等创建或更新赛前 30 分钟任务；回测不会创建生产任务。每分钟调度只补建固定日任务并执行已到期队列，部署平台应每分钟向 `POST /api/automation/dispatch` 发送 `x-internal-api-secret`。另由独立计划任务每 15 分钟调用 `POST /api/automation/reconcile`，用于修复瞬时漏建、历史预测和仍处于 pending 状态的开赛时间变化。两个接口都只接受 `INTERNAL_API_SECRET`，浏览器关闭不影响后台任务。
+生产分析保存成功后会立即按比赛 ID 幂等创建或更新赛前 30 分钟任务；回测不会创建生产任务。调度与修复任务通过 systemd credential 文件读取内部凭据并调用受保护接口，凭据不进入进程环境或命令行。浏览器关闭不影响后台任务。
 
 ## 验证、学习与回测隔离
 

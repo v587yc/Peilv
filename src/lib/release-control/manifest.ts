@@ -5,6 +5,7 @@ const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 const releaseIdSchema = z.string().regex(/^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$/);
 const migrationFileSchema = z.string().regex(/^[0-9]{4}_[a-z0-9_]+\.sql$/);
 const migrationVersionSchema = z.string().regex(/^[0-9]{4}_[a-z0-9_]+$/);
+const releaseFileSchema = z.object({ path: z.string().min(1).max(500), sha256: sha256Schema }).strict();
 
 export const migrationManifestEntrySchema = z.object({
   file: migrationFileSchema,
@@ -44,6 +45,7 @@ export const releaseManifestSchema = z.object({
   archiveSha256: sha256Schema.nullable(),
   createdAt: z.string().datetime({ offset: true }),
   migrations: z.array(migrationManifestEntrySchema).min(1),
+  files: z.array(releaseFileSchema).min(1),
 }).strict().superRefine((value, context) => {
   if (value.archiveFile !== `peilv-${value.releaseId}.tar.gz`) {
     context.addIssue({ code: "custom", message: "Archive filename does not match release ID" });

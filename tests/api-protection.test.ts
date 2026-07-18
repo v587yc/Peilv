@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getApiProtection } from "@/lib/api-protection";
+import { getApiProtection, getInternalRoutePurpose, INTERNAL_ROUTE_ALLOWLIST } from "@/lib/api-protection";
 
 describe("API protection policy", () => {
   it.each([
@@ -43,6 +43,29 @@ describe("API protection policy", () => {
   it("marks the required audited triggers", () => {
     expect(getApiProtection("/api/analysis/verify", "PATCH").auditTrigger).toBe("manual_verification");
     expect(getApiProtection("/api/analysis/learn", "POST").auditTrigger).toBe("learning_trigger");
-    expect(getApiProtection("/api/backtest", "POST").auditTrigger).toBe("backtest_trigger");
+    expect(getApiProtection("/api/backtest", "POST").auditTrigger).toBeUndefined();
+  });
+
+  it("assigns capabilities to protected legacy routes", () => {
+    expect(getApiProtection("/api/settings", "GET").capability).toBe("admin:view");
+    expect(getApiProtection("/api/settings", "POST").capability).toBe("admin:configure");
+    expect(getApiProtection("/api/analysis", "POST").capability).toBe("admin:execute");
+    expect(getApiProtection("/api/analysis/verify", "PATCH").capability).toBe("admin:configure");
+    expect(getApiProtection("/api/analysis/learn", "POST").capability).toBe("admin:execute");
+    expect(getApiProtection("/api/strategy/v1/publish", "POST").capability).toBe("admin:dangerous");
+    expect(getApiProtection("/api/prediction", "POST").capability).toBe("admin:configure");
+  });
+
+  it("keeps the internal allowlist exact and purpose-bound", () => {
+    expect(INTERNAL_ROUTE_ALLOWLIST).toEqual([
+      { pathname: "/api/automation/dispatch", method: "POST", purpose: "automation:dispatch" },
+      { pathname: "/api/automation/reconcile", method: "POST", purpose: "automation:reconcile" },
+      { pathname: "/api/automation/compensate", method: "POST", purpose: "automation:compensate" },
+      { pathname: "/api/storage/health", method: "GET", purpose: "storage:health" },
+    ]);
+    expect(getInternalRoutePurpose("/api/automation/dispatch", "POST")).toBe("automation:dispatch");
+    expect(getInternalRoutePurpose("/api/automation/dispatch", "GET")).toBeNull();
+    expect(getInternalRoutePurpose("/api/automation/dispatch/extra", "POST")).toBeNull();
+    expect(getInternalRoutePurpose("/api/analysis", "POST")).toBeNull();
   });
 });

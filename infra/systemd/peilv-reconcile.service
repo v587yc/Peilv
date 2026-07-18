@@ -6,11 +6,28 @@ Requires=peilv.service
 
 [Service]
 Type=oneshot
-User=peilv
+User=peilv-reconcile
 Group=peilv
 WorkingDirectory=/opt/peilv/current
 EnvironmentFile=/opt/peilv/shared/app.env
-ExecStart=/bin/sh /opt/peilv/current/scripts/reconcile-automation.sh
+Environment=NODE_ENV=production
+LoadCredential=internal-api-secret:/opt/peilv/shared/credentials/internal-api-secret
+RuntimeDirectory=peilv-reconcile
+RuntimeDirectoryMode=0700
+ExecStart=/bin/sh -c '{ printf '\''url = "http://127.0.0.1:5000/api/automation/reconcile"\nrequest = "POST"\nheader = "Content-Type: application/json"\ndata = "{}"\nfail-with-body\nsilent\nshow-error\nmax-time = 330\n'\''; } | /usr/local/libexec/peilv/curl-secret.sh "$CREDENTIALS_DIRECTORY/internal-api-secret"'
 TimeoutStartSec=340
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/run/peilv-reconcile
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077

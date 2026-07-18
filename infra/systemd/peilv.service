@@ -1,0 +1,38 @@
+[Unit]
+Description=Peilv production application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=peilv-app
+Group=peilv
+WorkingDirectory=/opt/peilv/current
+EnvironmentFile=/opt/peilv/shared/app.env
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=5000
+Environment=DEPLOY_RUN_PORT=5000
+LoadCredential=internal-api-secret:/opt/peilv/shared/credentials/internal-api-secret
+RuntimeDirectory=peilv-app
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/node /opt/peilv/current/server.js
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/run/peilv-app
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

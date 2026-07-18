@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "maxArchiveBytes": 536870912,
+  "maxMembers": 50000,
+  "maxFileBytes": 134217728,
+  "maxTotalBytes": 1610612736,
+  "maxPathBytes": 240,
+  "maxPathDepth": 32,
+  "maxCompressionRatio": 200,
+  "forbiddenSegments": [
+    ".git", ".cache", ".local-data", "coverage", "test-results",
+    "playwright-report", "blob-report", ".pnpm-store", ".store"
+  ],
+  "forbiddenBasenamePatterns": [
+    "^\\.env(?:$|\\.)", "credential", "credentials", "^npm-debug\\.log$",
+    "^yarn-error\\.log$", "\\.(?:map|log|dump|backup|pem|key|p12|pfx)$"
+  ],
+  "forbiddenPathPatterns": [
+    "(?:^|/)\\.next/(?:cache|dev|diagnostics)(?:/|$)",
+    "(?:^|/)node_modules/\\.cache(?:/|$)",
+    "(?:^|/)node_modules/\\.pnpm/(?:lock\\.yaml|store/|metadata/)(?:/|$)"
+  ]
+}

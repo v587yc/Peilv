@@ -12,6 +12,7 @@
 - 数据库只执行尚未登记在 `schema_migrations` 中的前向迁移。
 - 上传、暂停调度、停止应用、备份、迁移、切换和重启前，需要向用户报告影响与回退点并取得一次明确确认。
 - 不使用 `--no-verify`、强制覆盖、删除旧 release 或删除备份来绕过问题。
+- 不在公网 UI、命令行参数、shell history 或日志中收集/传递 `ADMIN_BOOTSTRAP_TOKEN`。
 
 ## 2. 已知生产拓扑
 
@@ -24,7 +25,7 @@
 | 应用服务 | `peilv.service` |
 | 自动分发 timer | `peilv-dispatch.timer` |
 | 自动修复 timer | `peilv-reconcile.timer` |
-| 应用用户/组 | `peilv:peilv` |
+| 应用用户/组 | `peilv-app:peilv`；候选为隔离的 `peilv-candidate:peilv-candidate`，且不属于 `peilv` 组 |
 | 应用监听端口 | `5000` |
 | 候选版本检查端口 | `5001` |
 | OpenResty 上游 | `http://127.0.0.1:5000` |
@@ -38,9 +39,11 @@
 | PostgreSQL 数据目录 | `/opt/peilv/data/postgres` |
 | 数据库备份目录 | `/opt/peilv/backups` |
 | Node.js | `/usr/bin/node`，当前为 Node 22 系列 |
-| pnpm | `/usr/bin/pnpm`，项目锁定 pnpm 9 |
+| 生产启动 | 仅 `/usr/bin/node server.js`；生产路径禁止 pnpm/npm/npx/yarn/corepack 与 lifecycle |
 
 生产根地址和 SSH/1Panel 登录信息由用户临时提供，不记录在本文。
+
+`peilv.service` 的生产监听契约必须显式且唯一包含 `Environment=HOSTNAME=127.0.0.1`、`Environment=PORT=5000`、`Environment=DEPLOY_RUN_PORT=5000`。release 归档必须复制仓库中的同一模板；verify、preflight 和 deploy 对缺失、重复、`0.0.0.0`、`3000` 或已安装 unit 与当前 release 漂移一律阻断。候选生命周期继续通过隔离的 `env -i` 将三项覆盖为 loopback `5001`，不受生产模板固定端口影响。
 
 ## 3. 本地发布前验证
 
@@ -59,24 +62,22 @@ pnpm build
 2. TypeScript 无错误。
 3. ESLint 无错误。
 4. Next.js 生产构建成功。
-5. `dist/server.js` 由 `tsup` 成功生成。
+5. `.next/standalone/server.js`、`.next/BUILD_ID`、`.next/routes-manifest.json`、`.next/static` 和 `public` 齐全。
 6. 新增迁移有测试覆盖，且迁移文件可重复注册而不重复写入 `schema_migrations`。
+7. 迁移已按照 `migrations/manifest.json` 按序执行至当前最新版本 `0023_strategy_lab_trusted_settlement`，并完成 SQL SHA-256 校验；管理员身份迁移包含 `0009`–`0013`，`0012` 是原子登录 reservation，`0013` 是管理员更新 OCC，`0014`–`0019` 是登录/审计/回测恢复与 owner fence 的强化迁移，`0020`–`0023` 是 Strategy Lab 迁移。旧库不得跳过或乱序执行任何迁移。
 
 若只做紧急热修，可以先运行相关目标测试和 `pnpm ts-check`，但生产构建仍必须执行。
+
+构建环境契约：项目根 `.env*` 仅供本地开发，`scripts/build.sh` 会在 Next 构建期间将其隔离到工作区外、同卷的受限临时目录，并通过 trap 在成功、失败和信号退出时原样恢复。standalone 或 release 中发现任意 `.env*` 均直接失败。生产非敏感配置由 `peilv.service` 的 `EnvironmentFile=/opt/peilv/shared/app.env` 在运行时提供；secret 仅通过 systemd `LoadCredential` 提供。禁止把服务端配置或 secret 改名为 `NEXT_PUBLIC_*` 或写入 `next.config` 的 `env`。
 
 ## 4. 无密钥发布包
 
 ### 4.1 应包含
 
-- `.next` 生产构建结果；
-- `dist/server.js`；
-- `public`；
+- Next standalone 自包含运行树（根 `server.js`、`.next/BUILD_ID`、`.next/routes-manifest.json`、`.next/static`、`public`、追踪依赖）；
 - `migrations`；
 - 运行所需的 `scripts`；
-- `package.json`；
-- `pnpm-lock.yaml`；
-- `.npmrc`；
-- `next.config.ts`。
+- release manifest 与 migration manifest；release manifest 的 `files` 数组绑定全部制品文件树 SHA-256，migration manifest 保持仅描述迁移。
 
 ### 4.2 必须排除
 
@@ -147,17 +148,11 @@ docker exec local-data-postgres-1 sh -lc \
   "select version from schema_migrations order by applied_at, version;"'
 ```
 
-检查受保护健康接口时，应在内存中读取 `/opt/peilv/shared/app.env`，使用 `INTERNAL_API_SECRET`，不得打印该值：
+检查受保护健康接口时，使用 root 管理的 `/opt/peilv/shared/credentials/internal-api-secret` 和 `/usr/local/libexec/peilv/curl-secret.sh`。凭据不得进入环境变量、argv 或输出：
 
 ```bash
-sh -lc '
-  set -a
-  . /opt/peilv/shared/app.env
-  set +a
-  curl -fsS \
-    -H "x-internal-api-secret: $INTERNAL_API_SECRET" \
-    http://127.0.0.1:5000/api/storage/health
-'
+printf 'url = "http://127.0.0.1:5000/api/storage/health"\nfail\nsilent\nshow-error\n' | \
+  /usr/local/libexec/peilv/curl-secret.sh /opt/peilv/shared/credentials/internal-api-secret
 ```
 
 确认：
@@ -169,6 +164,25 @@ sh -lc '
 - 数据库和 PostgREST 健康；
 - 待执行迁移列表；
 - 上一个 release 可作为代码回退点。
+- 必填的 `ADMIN_LOGIN_RATE_LIMIT_SECRET` 已存在（只检查存在性，不输出值）。`ADMIN_TRUST_PROXY` 可不设置；只有严格为 `true` 时，候选 release 必须包含并落实 `docs/admin-auth-proxy-boundary.md` 的受控代理边界。空安装需存在临时 `ADMIN_BOOTSTRAP_TOKEN`；已有管理员时该变量必须为空或已删除。
+
+### 5.1 首次超级管理员启用闭环
+
+数据库迁移必须按 `migrations/manifest.json` 顺序执行至当前最新版本 `0023_strategy_lab_trusted_settlement.sql`，完成迁移登记和校验后再启动应用。其中 `0012` 保证登录尝试 reservation 原子且有界，`0013` 保证管理员并发修改通过 OCC 检测冲突，`0014`–`0019` 提供统一登录 reservation、强审计、原子回测 claim、命令恢复、命令审计、回测租约和 owner fence，`0020`–`0023` 提供 Strategy Lab 的事实模型、策略制品、快照 provider 和 trusted settlement。若 `/api/auth/session` 返回 `initialized:false`，公网登录页只显示未初始化状态，不能在网页输入 bootstrap token。
+
+### 5.2 迁移后的代码回退边界
+
+代码回退必须读取并遵守 `migrations/manifest.json` 的 `codeRollbackSafe`。当前 `0001_production_baseline.sql` 以及 `0014`–`0019` 明确标记为 `codeRollbackSafe=false`；这些迁移应用后，禁止直接回退到 `0013` 或更早的旧代码。只能回退到 release manifest 兼容性检查通过、且与当前已应用 schema 相容的代码 release。该标记只约束代码 release 兼容性，不提供数据库降级能力；数据库只允许前向迁移。任何无法证明兼容性的回退都必须在切换前阻断，并保留当前 release、数据库备份和审计记录。
+
+在当前生产 release 目录、加载受保护环境后执行 `node ./scripts/admin-bootstrap.mjs`。CLI 不接受 argv 参数；账号/显示名交互输入，密码隐藏输入，token 从受保护环境或隐藏输入读取。base URL 默认仅允许本机 loopback；若确需跨主机初始化，只允许 HTTPS，并需显式设置 `ADMIN_BOOTSTRAP_ALLOW_REMOTE_HTTPS=true` 确认受控安全边界，URL 本身不得包含凭据、查询参数或片段。CLI 成功后：
+
+1. 从 `/opt/peilv/shared/app.env` 删除 `ADMIN_BOOTSTRAP_TOKEN`；
+2. 重启 `peilv.service`，避免旧进程继续持有 token；
+3. 重新访问 `/login`，确认出现账号密码登录并用首位 `super_admin` 登录；
+4. 验证 RBAC 页面和 `admin.bootstrap` 审计记录；
+5. 确认旧 `ADMIN_API_TOKEN` 无法作为普通账号密码登录。
+
+文档、命令输出和工单均不得记录真实 token、管理员密码或数据库密码。
 
 ## 6. 向用户报告并确认
 
@@ -203,18 +217,11 @@ ARCHIVE=/opt/peilv/releases/.peilv-$RELEASE_ID.tar.gz
 5. 解压并设置所有者为 `peilv:peilv`。
 6. 删除服务器上的临时压缩包。
 7. 再次确认 release 中不存在 `.env`。
-8. 安装锁定的生产依赖：
+8. 不安装任何依赖、不触发 lifecycle。做静态运行检查：
 
 ```bash
-runuser -u peilv -- sh -lc \
-  "cd '$RELEASE_DIR' && pnpm install --prod --frozen-lockfile"
-```
-
-9. 做静态运行检查：
-
-```bash
-runuser -u peilv -- sh -lc \
-  "cd '$RELEASE_DIR' && node --check dist/server.js && pnpm list --prod --depth 0 >/dev/null"
+runuser -u peilv-app -- sh -lc \
+  "cd '$RELEASE_DIR' && /usr/bin/node --check server.js"
 ```
 
 上传和安装期间，旧版本继续在 5000 提供服务。
@@ -240,25 +247,28 @@ systemctl is-active peilv-reconcile.service
 systemctl stop peilv.service
 ```
 
-创建 PostgreSQL custom-format 备份：
+创建 PostgreSQL custom-format 备份。必须先写同目录 `.partial`，校验并 fsync 后再原子发布：
 
 ```bash
 install -d -o root -g peilv -m 0750 /opt/peilv/backups
 
 docker exec local-data-postgres-1 sh -lc \
   'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-  > "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump"
+  > "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump.partial"
 
-chmod 0640 "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump"
+chmod 0640 "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump.partial"
 ```
 
 验证备份：
 
 ```bash
-test -s "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump"
+test -s "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump.partial"
 docker exec -i local-data-postgres-1 pg_restore -l \
-  < "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump" \
+  < "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump.partial" \
   > /dev/null
+sync -f "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump.partial"
+mv -T "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump.partial" "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump"
+sync -d /opt/peilv/backups
 sha256sum "/opt/peilv/backups/peilv-before-$RELEASE_ID.dump"
 ```
 
@@ -293,41 +303,37 @@ docker logs --since 5m local-data-postgrest-1
 
 ## 10. 候选版本检查
 
-切换前，使用同一生产环境文件在 5001 启动候选版本：
+切换前，先把目标 release 复制到磁盘型专用目录 `/var/lib/peilv/candidate-stage/<release-id>`。`/var/lib/peilv/candidate-stage` 必须是非 symlink、非 tmpfs/ramfs、`root:root 0700`，并与 `/opt/peilv/{shared,backups,releases,incoming}` 分离。preflight 和 deploy/rollback 都会按 release 解压后实际占用量检查可用空间，并额外保留 `max(25%, 256 MiB)` 安全余量；空间或父目录契约不满足时，在生产写入、备份、停服务和迁移前阻断。
+
+root 先创建单次 release 目录并复制文件，复制前后计算包含相对路径、类型和文件 SHA-256 的 tree hash；hash 与 release verifier 均通过后，才把目录设置为 `root:peilv-candidate`、目录 `0550`、文件 `0440`。父目录 `0700` 阻止 candidate 枚举其它 release；systemd 仅通过 `BindReadOnlyPaths=/var/lib/peilv/candidate-stage/<release-id>:/srv/peilv-candidate` 精确暴露本次 tree，WorkingDirectory 使用 `/srv/peilv-candidate`。成功、失败或信号退出都只清理经过严格 releaseId 校验的本次目录，candidate staging 不进入部署 WAL，也不参与恢复状态。
+
+候选由 supplementary groups 精确为空的 `peilv-candidate:peilv-candidate` 启动，使用 `env -i`，不加载 EnvironmentFile、credential 或 shared。`PrivateNetwork=yes` 创建独立网络命名空间，候选无法访问宿主 `127.0.0.1`；root 受信 helper 校验 systemd unit Id、MainPID 和 cgroup 后，通过 `nsenter -t <MainPID> -n` 探测候选命名空间内的 `127.0.0.1:5001`。候选同时受 RuntimeMaxSec、MemoryMax、MemorySwapMax=0、TasksMax、CPUQuota、LimitNOFILE、有界 `/tmp`、日志限速、空 capability 集及 kernel/process sandbox 约束。`InaccessiblePaths` 屏蔽 `/etc/peilv`、`/var/lib/peilv`、shared、backups、releases、incoming 和宿主 `/run` 敏感 socket。候选必须在停止 timer/application、备份和迁移之前唯一通过一次：
 
 ```bash
-runuser -u peilv -- sh -lc '
-  set -a
-  . /opt/peilv/shared/app.env
-  set +a
-  export PORT=5001
-  cd '"$RELEASE_DIR"'
-  nohup node dist/server.js >/tmp/peilv-candidate.log 2>&1 &
-  echo $! >/tmp/peilv-candidate.pid
-'
+systemd-run --unit=peilv-candidate --uid=peilv-candidate --gid=peilv-candidate \
+  --working-directory="/srv/peilv-candidate" \
+  --property="PrivateNetwork=yes" --property="SupplementaryGroups=" \
+  --property="BindReadOnlyPaths=/var/lib/peilv/candidate-stage/<release-id>:/srv/peilv-candidate" \
+  --property="InaccessiblePaths=/etc/peilv /var/lib/peilv /opt/peilv/shared /opt/peilv/backups /opt/peilv/releases /opt/peilv/incoming /run/docker.sock /run/systemd/private /run/postgresql" \
+  --property="RuntimeDirectory=peilv" --property="RuntimeDirectoryMode=0700" \
+  --property="NoNewPrivileges=true" --property="ProtectProc=invisible" --property="ProcSubset=pid" \
+  --property="IPAddressDeny=any" --property="IPAddressAllow=localhost" \
+  /usr/bin/env -i NODE_ENV=production HOSTNAME=127.0.0.1 PORT=5001 DEPLOY_RUN_PORT=5001 \
+  /usr/bin/node server.js
 ```
 
 检查：
 
 ```bash
-curl -fsS http://127.0.0.1:5001/
-curl -fsS http://127.0.0.1:5001/odds
+PID="$(systemctl show peilv-candidate-<release-id>.service -p MainPID --value)"
+nsenter -t "$PID" -n -- curl -fsS http://127.0.0.1:5001/api/readiness
 ```
 
-受保护健康检查：
+候选 readiness 只验证进程与 build 完整性，不访问数据库/schema，也不交付内部凭据。正式切换后才使用固定 host helper `/usr/local/libexec/peilv/curl-secret.sh` 做可信 `/api/storage/health` probe，验证数据库与 schema。
 
-```bash
-sh -lc '
-  set -a
-  . /opt/peilv/shared/app.env
-  set +a
-  curl -fsS \
-    -H "x-internal-api-secret: $INTERNAL_API_SECRET" \
-    http://127.0.0.1:5001/api/storage/health
-'
-```
+确认候选日志没有 error、exception 或 fatal 后，由共享 lifecycle helper 执行 stop、有界等待、必要时 SIGKILL，再确认 unit inactive、MainPID=0、固定网络命名空间中 5001 消失且 bind 已释放。任一证明失败都阻断事务并保留 stage，不得清理。
 
-确认候选日志没有 error、exception 或 fatal 后停止候选进程，并删除临时 PID/日志文件。
+deploy、rollback 与 preflight 共用 `/run/lock/peilv-deploy.lock`。任何 private archive、verified tree、release、candidate、DB backup 或 systemd transaction 写入前，按底层 device 聚合峰值 blocks 与 inodes并加入安全余量；数据库无法在线估算时必须显式提供保守的 `PEILV_DB_BACKUP_ESTIMATE_KIB`。事务备份与 quarantine 的 GC 也必须持有该锁，至少保留最近一次成功事务恢复材料，并跳过 current、WAL 引用、rollback 候选和 quarantine。失败且从未激活的 release 移入 `/opt/peilv/quarantine`，不得作为 rollback 候选。
 
 ## 11. 原子切换正式版本
 
@@ -417,6 +423,14 @@ systemctl list-timers peilv-reconcile.timer peilv-dispatch.timer --no-pager
 
 已知外部限制：Titan history 端点曾出现 `success=true` 但返回 0 场，而 future 端点正常返回大量比赛。遇到该状态时必须保持预测为 pending，不得伪造赛果或准确率。该问题应单独排查历史页面语义、响应内容、编码、反爬或解析规则。
 
+## 13.1 systemd 用户与凭据边界
+
+生产主机需预先创建共享只读代码组 `peilv`，以及互不复用的系统用户 `peilv-app`、`peilv-reconcile`、`peilv-dispatch`、`peilv-candidate`、`peilv-probe`。应用、reconcile、dispatch、probe 按需属于 `peilv` 组；`peilv-candidate` 只能拥有同名主组且不得有任何 supplementary group。release 目录保持 `peilv:peilv:0750`；每个服务只能写自己的 systemd `RuntimeDirectory`，不得写 release 或 shared。账户创建属于主机高权限操作，应由基础设施审批流程执行，本仓库脚本不会自动创建用户。
+
+安装 release 内的 app、reconcile、dispatch service/timer 后执行 `systemctl daemon-reload`。production preflight 会核对实际 unit hash、独立用户、组成员关系、LoadCredential 与 sandbox 属性。
+
+内部凭据轮换脚本 `scripts/rotate-internal-secret.sh` 当前只支持 `--dry-run`，仅检查前置条件并输出不含值的原子轮换计划；真实写入、fsync/rename、重启消费者及旧凭据失效验证属于高危操作，必须另行明确批准，本任务未执行。
+
 ## 14. 回滚
 
 ### 14.1 只回滚代码
@@ -449,7 +463,7 @@ systemctl list-timers peilv-reconcile.timer peilv-dispatch.timer --no-pager
 
 - 不把本地 `.env` 上传到服务器；
 - 不把生产 `.env` 下载进 release 或提交到代码库；
-- 不在命令输出中打印 `INTERNAL_API_SECRET`、管理员令牌或数据库密码；
+- 不在环境变量、argv 或命令输出中承载内部 API 凭据、管理员令牌或数据库密码；生产凭据由 systemd `LoadCredential` 提供。
 - 不直接覆盖 `/opt/peilv/current` 目录内容；
 - 不删除旧 release 来腾空间后再发布；
 - 不在备份未验证前执行迁移；

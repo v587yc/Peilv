@@ -9,7 +9,7 @@
 | 路径 | 用途 |
 |---|---|
 | `/` | 导航首页，不自动重定向。 |
-| `/login` | 管理员令牌登录。 |
+| `/login` | 管理员账号密码登录；未初始化时仅展示本机 CLI 指引。 |
 | `/odds` | 赛事、赔率采集、分析、验证学习与报表主页面。 |
 | `/test-ai` | LLM、搜索和飞书配置测试。 |
 | `/backtest` | 创建、查询和取消隔离回测任务。 |
@@ -45,7 +45,7 @@ pnpm test:e2e             # 独立使用 127.0.0.1:3100
 数据库定义的可执行来源：
 
 1. `setup-database.sql`：新环境完整初始化基线。
-2. `migrations/0001_production_baseline.sql`：已有环境的非破坏性升级。
+2. `migrations/manifest.json` 描述的全部迁移：已有环境必须按 manifest 顺序执行至当前版本 `0023_strategy_lab_trusted_settlement`，不得跳过或乱序。`0012` 提供原子登录 reservation，`0013` 提供管理员更新 OCC，`0014`–`0019` 提供登录/审计/回测恢复与 owner fence，`0020`–`0023` 提供 Strategy Lab 事实模型、策略制品、快照 provider 和 trusted settlement。
 3. `src/storage/database/shared/schema.ts`：代码侧 Drizzle 模型，必须与 SQL 同步维护。
 
 `0001_production_baseline.sql` 会：
@@ -57,7 +57,7 @@ pnpm test:e2e             # 独立使用 127.0.0.1:3100
 - 为预测、日报、赔率、联赛选择、回测运行等自然键建立唯一索引；
 - 建立策略版本、后台任务、赔率快照、数据质量和审计表。
 
-新库直接执行 `setup-database.sql`。旧库必须先备份，再按编号执行迁移，并核对 `schema_migrations`、`migration_duplicate_archive` 和真实业务数据。`disable-rls.sql` 只用于明确的诊断场景，不是部署步骤。
+新库直接执行 `setup-database.sql`。旧库必须先备份，再按 manifest 编号执行迁移，并核对 `schema_migrations`、`migration_duplicate_archive`、manifest 中的 SQL SHA-256 和真实业务数据。当前 `0001_production_baseline.sql` 以及 `0014`–`0019` 的 `codeRollbackSafe=false`；这些迁移应用后，禁止直接回退到 `0013` 或更早的不兼容代码，只能回退到通过 release manifest 兼容性检查的代码版本。数据库只允许前向迁移，不执行数据库降级。`disable-rls.sql` 只用于明确的诊断场景，不是部署步骤。
 
 核心表分组：
 
@@ -66,7 +66,7 @@ pnpm test:e2e             # 独立使用 127.0.0.1:3100
 | 赔率与输入 | `match_odds`、`odds_snapshots`、`prediction_data`、`league_selections`、`user_focused_leagues` |
 | 线上分析 | `prediction_results`、`learned_patterns`、`strategy_versions`、`daily_reports` |
 | 回测隔离 | `prediction_results_backtest`、`learned_patterns_backtest`、`backtest_jobs` |
-| 运维 | `automation_tasks`、`automation_task_steps`、`audit_logs`、`data_quality_records` |
+| 运维与身份 | `automation_tasks`、`automation_task_steps`、`audit_logs`、`data_quality_records`、`admin_users`、`admin_sessions`、`admin_login_attempts` |
 | 配置与记忆 | `app_settings`、`memory_bank` |
 
 ## 4. 认证与环境变量
@@ -79,10 +79,13 @@ pnpm test:e2e             # 独立使用 127.0.0.1:3100
 
 ### 4.2 管理员与内部调用
 
-- `ADMIN_API_TOKEN`：管理员登录令牌和 HttpOnly 会话签名密钥。会话有效期 12 小时；未配置时受保护 API 返回 503。
-- `INTERNAL_API_SECRET`：后台 dispatch 及内部分析/写入请求的共享密钥，通过 `x-internal-api-secret` 发送。
+- `ADMIN_BOOTSTRAP_TOKEN`：只用于空数据库创建首位 `super_admin` 的一次性 secret。只从受保护环境或 TTY 隐藏输入读取，初始化后删除并重启。
+- `ADMIN_LOGIN_RATE_LIMIT_SECRET`：登录限流键 secret，必须在服务端设置。
+- `ADMIN_TRUST_PROXY`：可选且默认关闭；只有严格设置为 `true` 时才信任代理客户端地址，并要求流量经过会覆盖来源头的受控代理边界。
+- `ADMIN_API_TOKEN`：仅旧版恢复兼容，不是普通登录凭据；账号初始化后登录只接受账号密码。
+- `INTERNAL_API_SECRET_FILE`：本地开发内部凭据文件；生产通过 systemd `LoadCredential` 提供，不使用环境变量承载密钥。
 
-`src/proxy.ts` 根据 `src/lib/api-protection.ts` 统一保护设置、LLM 测试、飞书、URL 抓取、回测、高成本分析以及业务写接口。浏览器会话写请求还执行同源校验；内部任务可使用内部密钥。
+管理员采用数据库账号、强密码哈希、持久 HttpOnly 会话和 RBAC。`super_admin` 管理管理员与角色，其他角色仅获得其声明能力；关键变更写审计。登录保护由 `0012` 的原子、有界 reservation 消除并发 check-record 窗口；管理员写操作由 `0013` 的 `updated_at` 前置条件执行 OCC，冲突返回而非覆盖新数据。首次启动时 `/login` 不收集 bootstrap token，只提示服务器操作员运行 `pnpm admin:bootstrap`。CLI 不接受 argv secret；成功后必须清理临时 token 并重启。`src/proxy.ts` 根据 `src/lib/api-protection.ts` 统一保护设置、LLM 测试、飞书、URL 抓取、回测、高成本分析以及业务写接口。浏览器会话写请求还执行同源校验；内部任务可使用内部密钥。
 
 ### 4.3 其他变量
 

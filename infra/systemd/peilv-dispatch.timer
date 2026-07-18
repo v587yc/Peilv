@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispatch Peilv automation tasks every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=1s
+Unit=peilv-dispatch.service
+
+[Install]
+WantedBy=timers.target

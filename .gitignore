@@ -28,6 +28,7 @@ blob-report/
 
 # Release artifacts
 release-artifacts/
+/preflight-result.json
 
 # Private credentials
 *.pem
@@ -101,6 +102,8 @@ Desktop.ini
 *.temp
 .tmp/
 .temp/
+/.test-tmp*/
+/NUL
 
 # Optional files
 *.tgz
@@ -117,3 +120,47 @@ Desktop.ini
 /20
 
 .coze-logs
+
+# Local Claude deployment credentials and generated deployment state
+/.claude/production_deploy_key
+/.claude/production_deploy_host_key
+/.claude/gha_peilv_audit_key
+/.claude/gha_peilv_audit_key.pub
+/.claude/gha_peilv_deploy_key
+/.claude/gha_peilv_deploy_key.pub
+/.claude/gha_peilv_rollback_key
+/.claude/gha_peilv_rollback_key.pub
+/.claude/peilv_temp_deploy_key
+/.claude/peilv_temp_deploy_key.pub
+/.claude/prod_ssh_host_key
+/.claude/prod_ssh_host_key.pub
+/.claude/preflight-download/
+/.claude/preflight-worktree/
+/.claude/deployment-artifacts/
+/.claude/preflight-*/
+/.claude/tmp-preflight-*/
+/.claude/production-*/
+/.claude/test-download-*/
+/.claude/worktrees/
+/.claude/deployment-untracked-files.txt
+/.claude/deployment-working-tree.patch
+
+# Local agent QA, brainstorming runtime state, and backups
+/.claude/agents/
+/.claude/commands/
+/.claude/hooks/
+/.claude/skills/
+/.claude/settings.json
+/.gstack/qa-reports/
+/.superpowers/brainstorm/.last-token
+/.superpowers/brainstorm/.last-port
+/.superpowers/brainstorm/*/state/
+/.superpowers/brainstorm/*/content/
+/.claude/backups/
+
+# Local workflow journals and one-off QA adapters
+/.trellis/
+/CLAUDE.md
+/scripts/qa-strategy-lab-*
+/docs/superpowers/
+/prototype/

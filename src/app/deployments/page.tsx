@@ -1,5 +1,2 @@
-import { DeploymentConsole } from "@/app/deployments/_components/deployment-console";
-
-export default function DeploymentsPage() {
-  return <DeploymentConsole />;
-}
+import { redirect } from "next/navigation";
+export default function Page() { redirect("/admin/deployments"); }

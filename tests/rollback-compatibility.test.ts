@@ -18,6 +18,7 @@ const manifest = (releaseId: string, migrations: ReturnType<typeof migration>[])
   archiveSha256: "b".repeat(64),
   createdAt: new Date(0).toISOString(),
   migrations,
+  files: [{ path: "server.js", sha256: "c".repeat(64) }],
 });
 
 const currentId = `r20-a1-${"a".repeat(12)}`;

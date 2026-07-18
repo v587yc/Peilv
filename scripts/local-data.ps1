@@ -16,7 +16,9 @@ $InfraDirectory = Join-Path $ProjectRoot 'infra\local-data'
 $ComposeFile = Join-Path $InfraDirectory 'compose.yml'
 $EnvFile = Join-Path $InfraDirectory '.env'
 $SetupSql = Join-Path $ProjectRoot 'setup-database.sql'
+$StrategyLabTrustedSettlementSql = Join-Path $ProjectRoot 'migrations\0023_strategy_lab_trusted_settlement.sql'
 $RolesSql = Join-Path $InfraDirectory 'sql\roles.sql'
+$StrategyLabRolesSql = Join-Path $InfraDirectory 'sql\strategy-lab-roles.sql'
 $DefaultDataDirectory = Join-Path $ProjectRoot '.local-data'
 $PostgresImage = 'postgres:15.8-alpine'
 
@@ -132,8 +134,10 @@ function Invoke-Bootstrap {
     $envValues = Read-LocalEnv
     Wait-Postgres
     Invoke-PsqlFile $SetupSql
+    Invoke-PsqlFile $StrategyLabTrustedSettlementSql
     $escapedPassword = $envValues['AUTHENTICATOR_PASSWORD'].Replace("'", "''")
     Invoke-PsqlFile $RolesSql ("\set authenticator_password '" + $escapedPassword + "'`n")
+    Invoke-PsqlFile $StrategyLabRolesSql
 
     $requiredTables = @('schema_migrations','health_check','prediction_data','match_odds','daily_reports','prediction_results','prediction_results_backtest','learned_patterns','learned_patterns_backtest','strategy_versions','app_settings','memory_bank','league_selections','user_focused_leagues','backtest_jobs','automation_tasks','automation_task_steps','odds_snapshots','data_quality_records','audit_logs','migration_duplicate_archive')
     $tableList = ($requiredTables | ForEach-Object { "'$_'" }) -join ','

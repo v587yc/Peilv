@@ -6,6 +6,8 @@ import {
 } from "@/lib/github/github-actions-adapter";
 import { mapOperationStatus } from "@/lib/release-control/status";
 import type { DeploymentOperation, DeploymentOverview, ReleaseCandidate } from "@/lib/release-control/types";
+import { loadProductionReleaseState } from "@/lib/release-control/production-state";
+import { getSupabaseClient } from "@/storage/database/supabase-client";
 
 function releaseId(run: GitHubWorkflowRun): string {
   return `r${run.id}-a${run.run_attempt}-${run.head_sha.slice(0, 12)}`;
@@ -61,11 +63,15 @@ export async function getDeploymentOverview(): Promise<DeploymentOverview> {
     ...operations.deploy.map(run => operation("deploy", run)),
     ...operations.rollback.map(run => operation("rollback", run)),
   ].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const latestDeploy = allOperations.find(value => value.kind === "deploy" && value.status === "succeeded");
+  const production = await loadProductionReleaseState({
+    operations: [...operations.deploy, ...operations.rollback],
+    client: getSupabaseClient(),
+  });
 
   return {
     repository: `${process.env.GITHUB_REPOSITORY_OWNER}/${process.env.GITHUB_REPOSITORY_NAME}`,
-    currentRelease: latestDeploy?.title.match(/r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}/)?.[0] ?? null,
+    currentRelease: production.currentRelease,
+    previousRelease: production.previousRelease,
     candidates,
     operations: allOperations.slice(0, 30),
     fetchedAt: new Date().toISOString(),

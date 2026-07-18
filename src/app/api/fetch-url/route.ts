@@ -11,6 +11,17 @@ async function fetchWithNativeFetch(url: string) {
   }
 }
 
+function safeFetchError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "抓取失败";
+  const policyErrors = [
+    "仅允许访问 HTTPS 地址", "URL 不允许包含凭据", "URL 不允许包含 fragment",
+    "URL 不允许使用 IP 字面量", "URL 不允许使用本地主机名",
+    "目标端口不在允许列表中", "目标域名不在允许列表中",
+    "URL 长度或格式无效", "URL 格式无效",
+  ];
+  return policyErrors.includes(message) ? message : "目标内容抓取失败";
+}
+
 // For Coze share links, use native fetch to follow redirect and get fresh signed URL
 async function fetchCozeShareLink(shareUrl: string) {
   try {
@@ -139,7 +150,7 @@ export async function POST(request: NextRequest) {
       // Non-Coze URLs: use native fetch
       const fetchResult = await fetchWithNativeFetch(url);
       if (fetchResult.error) {
-        return NextResponse.json({ error: fetchResult.error }, { status: 500 });
+        return NextResponse.json({ error: safeFetchError(new Error(fetchResult.error)) }, { status: 400 });
       }
       textContent = fetchResult.textContent || "";
       resolvedUrl = fetchResult.resolvedUrl || url;
@@ -161,7 +172,6 @@ export async function POST(request: NextRequest) {
       detectedDate,
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "抓取失败";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: safeFetchError(err) }, { status: 500 });
   }
 }

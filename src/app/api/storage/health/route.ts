@@ -2,9 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { authorizeAdminRequest } from "@/lib/admin-auth";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { getStorageBackendInfo } from "@/storage/database/storage-config";
+import { isAuthorizedInternalRoute, isInternalRequest } from "@/lib/internal-auth";
+import { requireAdminCapability } from "@/lib/auth/admin-capabilities";
 
 export async function GET(request: NextRequest) {
-  const authorization = authorizeAdminRequest(request);
+  if (isInternalRequest(request) && !isAuthorizedInternalRoute(request, "storage:health")) {
+    return NextResponse.json({ success: false, error: "内部任务无权访问此接口" }, { status: 403 });
+  }
+  const authorization = isInternalRequest(request)
+    ? await authorizeAdminRequest(request)
+    : await requireAdminCapability(request, "admin:view");
   if (!authorization.ok) {
     return NextResponse.json({ success: false, error: authorization.error }, { status: authorization.status });
   }
