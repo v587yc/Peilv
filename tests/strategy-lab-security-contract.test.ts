@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { buildLockedMigrationSql, parseMigrationPlan, runMigrationProcess, STRATEGY_LAB_MIGRATION_LOCK_KEY } from "../scripts/run-migrations.mjs";
+import {
+  STRATEGY_LAB_MIGRATION_LOCK_KEY,
+  buildLockedMigrationSql,
+  parseMigrationPlan,
+  runMigrationProcess,
+} from "../scripts/run-migrations.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const read = (file: string) => readFile(path.join(root, file), "utf8");
