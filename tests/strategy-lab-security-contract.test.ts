@@ -1,24 +1,17 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { beforeAll, describe, expect, it, vi } from "vitest";
-
-let STRATEGY_LAB_MIGRATION_LOCK_KEY: string;
-let buildLockedMigrationSql: typeof import("../scripts/run-migrations.mjs").buildLockedMigrationSql;
-let parseMigrationPlan: typeof import("../scripts/run-migrations.mjs").parseMigrationPlan;
-let runMigrationProcess: typeof import("../scripts/run-migrations.mjs").runMigrationProcess;
+import { describe, expect, it, vi } from "vitest";
+import {
+  STRATEGY_LAB_MIGRATION_LOCK_KEY,
+  buildLockedMigrationSql,
+  parseMigrationPlan,
+  runMigrationProcess,
+} from "../scripts/run-migrations.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const read = (file: string) => readFile(path.join(root, file), "utf8");
 
 describe("Strategy Lab database security contract", () => {
-  beforeAll(async () => {
-    const migrationRunner = await import("../scripts/run-migrations.mjs");
-    STRATEGY_LAB_MIGRATION_LOCK_KEY = migrationRunner.STRATEGY_LAB_MIGRATION_LOCK_KEY;
-    buildLockedMigrationSql = migrationRunner.buildLockedMigrationSql;
-    parseMigrationPlan = migrationRunner.parseMigrationPlan;
-    runMigrationProcess = migrationRunner.runMigrationProcess;
-  });
-
   it("keeps 0021 default-deny across all fourteen tables and all migration functions", async () => {
     const sql = await read("migrations/0021_strategy_lab_policy_and_artifacts.sql");
     for (const table of ["snapshot_sets","snapshot_items","experiment_runs","predictions","settlements","command_receipts","match_facts","focused_league_baselines","focused_league_events","league_policy_artifacts","league_policy_captures","strategy_artifacts","strategy_publications","build_artifacts"]) {
