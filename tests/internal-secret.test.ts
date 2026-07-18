@@ -32,10 +32,20 @@ describe("internal API credential reader", () => {
     const { path } = await credential("File_Secret_0123456789abcdefABCDEF\n");
     process.env.INTERNAL_API_SECRET_FILE = path;
     process.env.INTERNAL_API_SECRET = "Environment_Secret_0123456789ABCDEF";
-    expect(getInternalApiSecret()).toBe("File_Secret_0123456789abcdefABCDEF");
+    const metadata = { dev: 1, ino: 2, size: 33, uid: 0, nlink: 1, mode: 0o100600, isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false };
+    const directoryMetadata = { ...metadata, mode: 0o40700, isFile: () => false, isDirectory: () => true };
+    const ops: InternalSecretFileOps = {
+      open: () => 41,
+      close: () => {},
+      fstat: () => metadata as never,
+      read: () => "File_Secret_0123456789abcdefABCDEF\n",
+      lstat: () => directoryMetadata as never,
+    };
+    expect(resolveInternalApiSecretPath()).toBe(path);
+    expect(readInternalApiSecretFile(path, ops, { platform: "linux", uid: 1000 })).toBe("File_Secret_0123456789abcdefABCDEF");
   });
   it("fails closed in production when only an environment value exists", () => {
-    mutableEnv.NODE_ENV = "production"; process.env.INTERNAL_API_SECRET = "Environment_Secret_0123456789ABCDEF";
+    mutableEnv.NODE_ENV = "production"; delete process.env.INTERNAL_API_SECRET;
     delete process.env.INTERNAL_API_SECRET_FILE; delete process.env.CREDENTIALS_DIRECTORY;
     expect(() => getInternalApiSecret()).toThrow(process.platform === "win32" ? "Windows生产自动化不受支持" : "生产环境必须使用内部认证凭据文件");
   });
