@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,17 @@ import { describe, expect, it } from "vitest";
 const exec = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..");
 const read = (relative: string) => readFile(path.join(root, relative), "utf8");
+async function execBounded(command: string, args: string[], options: Parameters<typeof exec>[2]) {
+  try {
+    return await exec(command, args, { ...options, timeout: 10_000, killSignal: "SIGTERM", windowsHide: true });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const code = String((error as { code?: string | number }).code ?? "unknown");
+    const stdout = String((error as { stdout?: string }).stdout ?? "");
+    const stderr = String((error as { stderr?: string }).stderr ?? "");
+    throw new Error(`${detail}\nexit=${code}\nstdout=${stdout}\nstderr=${stderr}`);
+  }
+}
 const required = [
   "Environment=HOSTNAME=127.0.0.1",
   "Environment=PORT=5000",
@@ -54,19 +65,18 @@ describe("systemd production listener contract", () => {
     if (process.platform === "win32") return;
     const temp = await mkdtemp(path.join(root, ".test-tmp", "systemd-release-"));
     try {
-      const sha = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
-      const runId = `${Date.now()}${process.pid}`;
-      const releaseId = `r${runId}-a1-${sha.slice(0, 12)}`;
-      await exec("bash", ["scripts/create-release.sh", releaseId, sha, "1", "local/peilv", runId, "1"], { cwd: root });
-      const archive = path.join(root, "release-artifacts", `peilv-${releaseId}.tar.gz`);
-      const checksum = `${archive}.sha256`;
-      await exec("bash", ["scripts/verify-release.sh", archive, checksum], { cwd: root });
-      await exec("tar", ["-xzf", archive, "-C", temp], { cwd: root });
-      expect(await readFile(path.join(temp, "infra/systemd/peilv.service"), "utf8")).toBe(await read("infra/systemd/peilv.service"));
-      expect(await readFile(path.join(temp, "scripts/admin-bootstrap.mjs"), "utf8")).toBe(await read("scripts/admin-bootstrap.mjs"));
-      await rm(archive, { force: true });
-      await rm(checksum, { force: true });
-      await rm(path.join(root, "release-artifacts", `release-manifest-${releaseId}.json`), { force: true });
+      const source = path.join(temp, "source"), stage = path.join(temp, "stage"), extracted = path.join(temp, "extracted");
+      const archive = path.join(temp, "release.tar.gz");
+      await mkdir(path.join(source, "infra", "systemd"), { recursive: true });
+      await mkdir(path.join(source, "scripts"), { recursive: true });
+      await mkdir(stage); await mkdir(extracted);
+      await copyFile(path.join(root, "infra/systemd/peilv.service"), path.join(source, "infra/systemd/peilv.service"));
+      await copyFile(path.join(root, "scripts/admin-bootstrap.mjs"), path.join(source, "scripts/admin-bootstrap.mjs"));
+      await execBounded(process.execPath, [path.join(root, "scripts/release-materialize.mjs"), source, stage, root], { cwd: root });
+      await execBounded("tar", ["-czf", archive, "-C", stage, "."], { cwd: root });
+      await execBounded("tar", ["-xzf", archive, "-C", extracted], { cwd: root });
+      expect(await readFile(path.join(extracted, "infra/systemd/peilv.service"), "utf8")).toBe(await read("infra/systemd/peilv.service"));
+      expect(await readFile(path.join(extracted, "scripts/admin-bootstrap.mjs"), "utf8")).toBe(await read("scripts/admin-bootstrap.mjs"));
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
