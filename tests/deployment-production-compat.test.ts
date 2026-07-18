@@ -17,7 +17,10 @@ async function shellPath(value: string): Promise<string> {
   try {
     return (await exec("cygpath", ["-u", value])).stdout.trim();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return value.replaceAll("\\", "/");
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      const normalized = value.replaceAll("\\", "/");
+      return normalized.replace(/^([A-Za-z]):\//, (_, drive: string) => `/${drive.toLowerCase()}/`);
+    }
     throw error;
   }
 }
