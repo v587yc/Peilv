@@ -47,7 +47,7 @@ describe("internal API credential reader", () => {
   it("fails closed in production when only an environment value exists", () => {
     mutableEnv.NODE_ENV = "production"; delete process.env.INTERNAL_API_SECRET;
     delete process.env.INTERNAL_API_SECRET_FILE; delete process.env.CREDENTIALS_DIRECTORY;
-    expect(() => getInternalApiSecret()).toThrow(process.platform === "win32" ? "Windows生产自动化不受支持" : "生产环境必须使用内部认证凭据文件");
+    expect(() => getInternalApiSecret()).toThrowError(expect.objectContaining({ code: process.platform === "win32" ? "production_platform_unsupported" : "production_credentials_directory_required" }));
   });
   it.each(["", "bad\r\n", "bad\nvalue", "short", "x".repeat(129), "Invalid.Secret.0123456789ABCDEFGHIJ"])("rejects invalid content", content => {
     expect(() => normalizeInternalApiSecret(content)).toThrow();
@@ -59,10 +59,10 @@ describe("internal API credential reader", () => {
   });
   posixIt("rejects broad permissions and symlinks", async () => {
     const broad = await credential("Secret_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0o644); process.env.INTERNAL_API_SECRET_FILE = broad.path;
-    expect(() => getInternalApiSecret()).toThrow("权限过宽");
+    expect(() => getInternalApiSecret()).toThrowError(expect.objectContaining({ code: "secret_parent_owner_invalid" }));
     const privateFile = await credential("Secret_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ"); const link = join(privateFile.root, "link");
     await symlink(privateFile.path, link); process.env.INTERNAL_API_SECRET_FILE = link;
-    expect(() => getInternalApiSecret()).toThrow("凭据文件无效");
+    expect(() => getInternalApiSecret()).toThrowError(expect.objectContaining({ code: "secret_parent_owner_invalid" }));
   });
   it("validates and reads through the same descriptor and closes it", () => {
     const calls: string[] = [];

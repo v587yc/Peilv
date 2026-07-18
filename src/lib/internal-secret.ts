@@ -6,6 +6,34 @@ const MAX_SECRET_CHARS = 128;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 type FileMetadata = ReturnType<typeof fstatSync>;
+export type InternalSecretErrorCode =
+  | "production_platform_unsupported"
+  | "production_secret_env_forbidden"
+  | "production_credentials_directory_required"
+  | "secret_parent_invalid"
+  | "secret_parent_owner_invalid"
+  | "secret_parent_permissions_invalid"
+  | "secret_file_invalid"
+  | "secret_file_permissions_invalid"
+  | "secret_file_links_invalid"
+  | "secret_file_owner_invalid"
+  | "secret_file_size_invalid"
+  | "secret_file_changed_during_read"
+  | "secret_not_configured";
+
+export class InternalSecretError extends Error {
+  readonly code: InternalSecretErrorCode;
+
+  constructor(code: InternalSecretErrorCode, message: string) {
+    super(message);
+    this.name = "InternalSecretError";
+    this.code = code;
+  }
+}
+
+function secretError(code: InternalSecretErrorCode, message: string): InternalSecretError {
+  return new InternalSecretError(code, message);
+}
 export type InternalSecretFileOps = {
   open(path: string, flags: number): number;
   close(fd: number): void;
@@ -35,13 +63,13 @@ export function resolveInternalApiSecretPath(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   if (env.NODE_ENV === "production") {
-    if (platform === "win32") throw new Error("Windows生产自动化不受支持；请使用Linux systemd credential部署");
+    if (platform === "win32") throw secretError("production_platform_unsupported", "Windows生产自动化不受支持；请使用Linux systemd credential部署");
     if (env.INTERNAL_API_SECRET_FILE || env.INTERNAL_API_SECRET) {
-      throw new Error("生产环境禁止通过环境变量指定内部认证凭据");
+      throw secretError("production_secret_env_forbidden", "生产环境禁止通过环境变量指定内部认证凭据");
     }
     const directory = env.CREDENTIALS_DIRECTORY;
     if (!directory || !/^\/run\/credentials\/[A-Za-z0-9_.@-]+$/.test(directory)) {
-      throw new Error("生产环境必须使用systemd运行凭据目录");
+      throw secretError("production_credentials_directory_required", "生产环境必须使用systemd运行凭据目录");
     }
     return `${directory}/internal-api-secret`;
   }
@@ -55,27 +83,27 @@ function validateParentDirectories(path: string, ops: InternalSecretFileOps): vo
   let current = dirname(path);
   while (current) {
     const metadata = ops.lstat(current);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("内部认证凭据父目录无效");
-    if (Number(metadata.uid) !== 0) throw new Error("内部认证凭据父目录所有者无效");
-    if ((Number(metadata.mode) & 0o022) !== 0) throw new Error("内部认证凭据父目录权限过宽");
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw secretError("secret_parent_invalid", "内部认证凭据父目录无效");
+    if (Number(metadata.uid) !== 0) throw secretError("secret_parent_owner_invalid", "内部认证凭据父目录所有者无效");
+    if ((Number(metadata.mode) & 0o022) !== 0) throw secretError("secret_parent_permissions_invalid", "内部认证凭据父目录权限过宽");
     if (current === root) break;
     current = dirname(current);
   }
 }
 
 function validateFileMetadata(metadata: FileMetadata, uid?: number, systemdRuntimeCredential = false): void {
-  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("内部认证凭据文件无效");
+  if (!metadata.isFile() || metadata.isSymbolicLink()) throw secretError("secret_file_invalid", "内部认证凭据文件无效");
   const permissions = Number(metadata.mode) & 0o777;
   if (systemdRuntimeCredential) {
-    if (permissions !== 0o440 || Number(metadata.uid) !== 0) throw new Error("systemd运行凭据文件权限无效");
+    if (permissions !== 0o440 || Number(metadata.uid) !== 0) throw secretError("secret_file_permissions_invalid", "systemd运行凭据文件权限无效");
   } else if ((permissions & 0o077) !== 0) {
-    throw new Error("内部认证凭据文件权限过宽");
+    throw secretError("secret_file_permissions_invalid", "内部认证凭据文件权限过宽");
   }
-  if (Number(metadata.nlink) !== 1) throw new Error("内部认证凭据文件链接数无效");
+  if (Number(metadata.nlink) !== 1) throw secretError("secret_file_links_invalid", "内部认证凭据文件链接数无效");
   if (uid !== undefined) {
-    if (Number(metadata.uid) !== 0 && Number(metadata.uid) !== uid) throw new Error("内部认证凭据文件所有者无效");
+    if (Number(metadata.uid) !== 0 && Number(metadata.uid) !== uid) throw secretError("secret_file_owner_invalid", "内部认证凭据文件所有者无效");
   }
-  if (metadata.size < MIN_SECRET_CHARS || metadata.size > MAX_SECRET_CHARS + 1) throw new Error("内部认证凭据文件大小无效");
+  if (metadata.size < MIN_SECRET_CHARS || metadata.size > MAX_SECRET_CHARS + 1) throw secretError("secret_file_size_invalid", "内部认证凭据文件大小无效");
 }
 
 export function readInternalApiSecretFile(
@@ -102,7 +130,7 @@ export function readInternalApiSecretFile(
       before.ctimeMs !== after.ctimeMs || before.mtimeMs !== after.mtimeMs ||
       before.mode !== after.mode || before.uid !== after.uid || before.nlink !== after.nlink
     ) {
-      throw new Error("内部认证凭据文件在读取期间发生变化");
+      throw secretError("secret_file_changed_during_read", "内部认证凭据文件在读取期间发生变化");
     }
     return normalizeInternalApiSecret(value);
   } finally {
@@ -113,8 +141,8 @@ export function readInternalApiSecretFile(
 export function getInternalApiSecret(): string {
   const path = resolveInternalApiSecretPath();
   if (path) return readInternalApiSecretFile(path);
-  if (process.env.NODE_ENV === "production") throw new Error("生产环境必须使用内部认证凭据文件");
+  if (process.env.NODE_ENV === "production") throw secretError("production_credentials_directory_required", "生产环境必须使用内部认证凭据文件");
   const value = process.env.INTERNAL_API_SECRET;
-  if (!value) throw new Error("内部认证凭据未配置");
+  if (!value) throw secretError("secret_not_configured", "内部认证凭据未配置");
   return normalizeInternalApiSecret(value);
 }
