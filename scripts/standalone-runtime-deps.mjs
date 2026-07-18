@@ -95,6 +95,7 @@ function repairMissingPnpmLink(linkPath) {
   const name = symlinkPackageName(path.relative(standalone, linkPath));
   if (!name) throw new Error(`Unresolvable missing standalone dependency link: ${linkPath}`);
   const link = fs.readlinkSync(linkPath);
+  if (!link.trim()) throw new Error(`Empty standalone dependency link: ${linkPath}`);
   const requestedStore = requestedStoreFromTarget(linkPath, link);
   let candidates = candidatePackages(name, requestedStore);
   if (!requestedStore) candidates = candidatePackages(name, null);
@@ -102,6 +103,13 @@ function repairMissingPnpmLink(linkPath) {
   const candidate = candidates[0].path;
   if (!inside(candidate, dependencyRoot)) throw new Error(`Workspace dependency candidate escapes node_modules: ${candidate}`);
   copyResolvedPackage(candidate, linkPath);
+}
+
+function isPnpmVirtualTarget(linkPath, link) {
+  if (!link.trim()) return false;
+  const resolved = path.isAbsolute(link) ? path.resolve(link) : path.resolve(path.dirname(linkPath), link);
+  const relative = path.relative(path.join(standalone, "node_modules", ".pnpm"), resolved);
+  return !relative.startsWith("..") && relative.split(path.sep).length >= 3 && relative.includes(`${path.sep}node_modules${path.sep}`);
 }
 
 function repairStandaloneLinks() {
@@ -118,6 +126,10 @@ function repairStandaloneLinks() {
         if (link.kind === "missing") {
           if (!inside(link.path, allowedRoots[0]) && !inside(link.path, dependencyRoot)) {
             throw new Error(`Standalone dependency link escapes allowed roots: ${current}`);
+          }
+          const linkText = fs.readlinkSync(current);
+          if (!isPnpmVirtualTarget(current, linkText)) {
+            throw new Error(`Dangling standalone dependency link: ${current}`);
           }
           repairMissingPnpmLink(current);
           changed = true;

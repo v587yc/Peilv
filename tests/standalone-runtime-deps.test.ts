@@ -36,7 +36,7 @@ async function fixture({ versions = ["7.7.3"], target = "../semver@7.7.3/node_mo
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === "EPERM") return null;
     throw error;
   }
-  return { workspace, standalone };
+  return { root, workspace, standalone };
 }
 
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))));
@@ -56,11 +56,18 @@ describe("standalone runtime dependency repair", () => {
   });
 
   it.each([
-    ["external", "../../../../outside/semver"],
+    ["external", "__EXTERNAL__"],
     ["dangling", "../../missing/node_modules/semver"],
     ["cycle", "cycle-b"],
   ])("rejects %s runtime links", async (kind, target) => {
-    const value = await fixture({ target });
+    let externalRoot: string | null = null;
+    if (kind === "external") {
+      externalRoot = await mkdtemp(path.join(os.tmpdir(), "peilv-runtime-external-"));
+      roots.push(externalRoot);
+      await mkdir(path.join(externalRoot, "semver"), { recursive: true });
+      await writeFile(path.join(externalRoot, "semver", "package.json"), JSON.stringify({ name: "semver", version: "7.7.3" }));
+    }
+    const value = await fixture({ target: externalRoot ? path.join(externalRoot, "semver") : target });
     if (!value) return;
     if (kind === "cycle") {
       const root = path.join(value.standalone, "node_modules", ".pnpm", "node_modules");
@@ -68,6 +75,7 @@ describe("standalone runtime dependency repair", () => {
       await symlink("cycle-b", path.join(root, "semver"));
       await symlink("semver", path.join(root, "cycle-b"));
     }
-    await expect(exec(process.execPath, [runner, value.standalone, value.workspace])).rejects.toMatchObject({ stderr: expect.stringMatching(/Cyclic|Dangling|escapes allowed/) });
+    const expected = kind === "cycle" ? /Cyclic/ : kind === "dangling" ? /Dangling/ : /escapes allowed/;
+    await expect(exec(process.execPath, [runner, value.standalone, value.workspace])).rejects.toMatchObject({ stderr: expect.stringMatching(expected) });
   });
 });
