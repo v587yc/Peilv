@@ -43,12 +43,26 @@ export async function writeAuditLog(entry: AuditLogEntry): Promise<boolean> {
       metadata: sanitizeAuditValue(entry.metadata || {}),
     });
     if (error) {
-      console.error("[Audit] Failed to write audit log:", error.message);
+      if ((error as { code?: string }).code === "23505" && entry.idempotencyKey && entry.action.endsWith(".succeeded")) return true;
+      logAuditFailure(error, entry);
       return false;
     }
     return true;
   } catch (error) {
-    console.error("[Audit] Failed to write audit log:", error instanceof Error ? error.message : error);
+    logAuditFailure(error, entry);
     return false;
   }
+}
+
+function logAuditFailure(error: unknown, entry: AuditLogEntry): void {
+  const candidate = error as { name?: unknown; code?: unknown; message?: unknown } | null;
+  const redact = (value: unknown) => typeof value === "string"
+    ? value.slice(0, 500).replace(/(password|secret|token|authorization|cookie|api[_-]?key)\s*[=:]\s*[^\s,;]+/gi, "$1=[redacted]").replace(/postgres(?:ql)?:\/\/[^\s@]+@/gi, "postgresql://[redacted]@")
+    : "unknown";
+  console.error(JSON.stringify({
+    level: "error",
+    scope: "audit.persistence",
+    error: { name: redact(candidate?.name), code: redact(candidate?.code), message: redact(candidate?.message) },
+    context: sanitizeAuditValue({ action: entry.action, objectType: entry.objectType, objectId: entry.objectId, requestId: entry.requestId }),
+  }));
 }

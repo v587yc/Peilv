@@ -97,7 +97,7 @@ function createRepository(): AuditRepository {
 }
 
 export async function GET(request: NextRequest) {
-  const authorization = requireAdminCapability(request, REQUIRED_CAPABILITY);
+  const authorization = await requireAdminCapability(request, REQUIRED_CAPABILITY);
   if (!authorization.ok) {
     return NextResponse.json(
       { success: false, error: authorization.error },

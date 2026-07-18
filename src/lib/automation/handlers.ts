@@ -46,9 +46,7 @@ interface OddsData {
 const COMPANY_IDS = ["3", "35", "42", "47", "8"];
 
 function internalHeaders(json = false): HeadersInit {
-  const secret = process.env.INTERNAL_API_SECRET;
-  if (!secret) throw new Error("INTERNAL_API_SECRET未配置");
-  const headers: Record<string, string> = { "x-internal-api-secret": secret };
+  const headers: Record<string, string> = { "x-internal-api-secret": getInternalApiSecret() };
   if (json) headers["Content-Type"] = "application/json";
   return headers;
 }
@@ -457,3 +455,4 @@ export const automationHandlers: AutomationHandlers = {
     report,
   },
 };
+import { getInternalApiSecret } from "@/lib/internal-secret";

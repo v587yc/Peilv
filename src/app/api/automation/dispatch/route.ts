@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isInternalRequest } from "@/lib/internal-auth";
+import { isAuthorizedInternalRoute } from "@/lib/internal-auth";
 import { createAutomationService } from "@/lib/automation/service";
+import { getInternalAppBaseUrl } from "@/lib/internal-app-base-url";
 
 export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
-  if (!isInternalRequest(request)) {
+  if (!isAuthorizedInternalRoute(request, "automation:dispatch")) {
     return NextResponse.json({ success: false, error: "内部任务认证失败" }, { status: 403 });
   }
 
   try {
     const body = await request.json().catch(() => ({})) as { maxTasks?: number };
     const maxTasks = Math.max(1, Math.min(Number(body.maxTasks) || 1, 20));
-    const service = createAutomationService(request.nextUrl.origin);
+    const service = createAutomationService(getInternalAppBaseUrl());
     const ensured = await service.engine.ensureDueTasks();
     const processed = await service.engine.runAvailable(maxTasks);
     return NextResponse.json({
@@ -21,7 +22,7 @@ export async function POST(request: NextRequest) {
       processed: processed.map((task) => task.id),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "调度失败";
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    console.error("[Automation] Dispatch failed:", error);
+    return NextResponse.json({ success: false, error: "自动化调度失败" }, { status: 500 });
   }
 }

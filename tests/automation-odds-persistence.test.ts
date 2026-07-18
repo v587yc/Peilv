@@ -25,7 +25,7 @@ afterEach(() => {
 
 describe("automation odds persistence", () => {
   it("passes source freshness metadata through the guarded odds POST", async () => {
-    vi.stubEnv("INTERNAL_API_SECRET", "test-secret");
+    vi.stubEnv("INTERNAL_API_SECRET", "Test_Internal_Secret_0123456789AB");
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
@@ -73,7 +73,7 @@ describe("automation odds persistence", () => {
   });
 
   it("saves a Crown snapshot when only total odds are available", async () => {
-    vi.stubEnv("INTERNAL_API_SECRET", "test-secret");
+    vi.stubEnv("INTERNAL_API_SECRET", "Test_Internal_Secret_0123456789AB");
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);

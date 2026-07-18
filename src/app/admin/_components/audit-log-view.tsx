@@ -8,24 +8,30 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { adminApiRequest, isAdminFeatureUnavailable } from "./admin-api-client";
+import { AdminEmptyState, AdminLoadingState, RawDiagnostics } from "./admin-ui";
 
 type ApiResult = AuditPage & { success: true };
 
 function AuditDetails({ item }: { item: AuditLogDto }) {
   return (
     <div className="grid gap-3 text-sm">
-      {(["oldValue", "newValue", "metadata"] as const).map(key => (
-        <section key={key}>
-          <h3 className="mb-1 font-medium">{key}</h3>
-          <pre className="max-h-52 overflow-auto rounded-md border bg-muted/40 p-3 text-xs whitespace-pre-wrap break-all">
-            {JSON.stringify(item[key], null, 2)}
-          </pre>
-        </section>
-      ))}
+      <div className="grid gap-3 rounded-xl border border-white/8 bg-white/[0.025] p-4 sm:grid-cols-2">
+        <AuditDetail label="动作" value={item.action} />
+        <AuditDetail label="对象" value={`${item.objectType}${item.objectId ? ` · ${item.objectId}` : ""}`} />
+        <AuditDetail label="操作者" value={`${item.actorType}${item.actorId ? ` · ${item.actorId}` : ""}`} />
+        <AuditDetail label="请求 ID" value={item.requestId || "—"} mono />
+      </div>
+      <RawDiagnostics value={item.oldValue} label="变更前数据" />
+      <RawDiagnostics value={item.newValue} label="变更后数据" />
+      <RawDiagnostics value={item.metadata} label="请求诊断元数据" />
     </div>
   );
+}
+
+function AuditDetail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return <div className="min-w-0"><p className="text-xs text-muted-foreground">{label}</p><p className={mono ? "mt-1 truncate font-mono text-xs" : "mt-1 truncate font-medium"}>{value}</p></div>;
 }
 
 export function AuditLogView() {
@@ -36,17 +42,19 @@ export function AuditLogView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<AuditLogDto | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
 
   const load = useCallback(async (signal: AbortSignal) => {
     setLoading(true);
     setError("");
+    setUnavailable(false);
     try {
-      const response = await fetch(`/api/admin/audit?${searchParams.toString()}`, { cache: "no-store", signal });
-      const result = await response.json().catch(() => ({})) as Partial<ApiResult> & { error?: string };
-      if (!response.ok || !result.success || !Array.isArray(result.items)) throw new Error(result.error || "审计日志加载失败");
+      const result = await adminApiRequest<Partial<ApiResult> & { error?: string }>(`/api/admin/audit?${searchParams.toString()}`, { cache: "no-store", signal }, "审计日志加载失败");
+      if (!result.success || !Array.isArray(result.items)) throw new Error(result.error || "审计日志加载失败");
       setPage({ items: result.items, nextCursor: result.nextCursor || null, previousCursor: result.previousCursor || null });
     } catch (caught) {
-      if ((caught as { name?: string }).name !== "AbortError") setError(caught instanceof Error ? caught.message : "审计日志加载失败");
+      if (isAdminFeatureUnavailable(caught)) setUnavailable(true);
+      else if ((caught as { name?: string }).name !== "AbortError") setError(caught instanceof Error ? caught.message : "审计日志加载失败");
     } finally {
       if (!signal.aborted) setLoading(false);
     }
@@ -78,8 +86,8 @@ export function AuditLogView() {
   }
 
   return (
-    <Card>
-      <CardContent className="space-y-4 pt-6">
+    <Card className="overflow-hidden border-white/8 bg-card/70 shadow-xl shadow-black/10">
+      <CardContent className="space-y-4 p-4 sm:p-5">
         <form onSubmit={submit} className="grid gap-2 md:grid-cols-4 xl:grid-cols-8" aria-label="审计日志筛选">
           <Input name="actorId" aria-label="Actor ID" placeholder="Actor ID" defaultValue={searchParams.get("actorId") || ""} />
           <Input name="actorType" aria-label="Actor 类型" placeholder="Actor 类型" defaultValue={searchParams.get("actorType") || ""} />
@@ -95,11 +103,12 @@ export function AuditLogView() {
           </div>
         </form>
 
-        {loading ? <div className="space-y-2" aria-label="正在加载"><Skeleton className="h-10 w-full" /><Skeleton className="h-32 w-full" /></div> : null}
+        {loading ? <AdminLoadingState label="正在查询审计记录" rows={5} /> : null}
         {!loading && error ? <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{error}</div> : null}
-        {!loading && !error && page.items.length === 0 ? <div className="rounded-md border border-dashed p-10 text-center text-sm text-muted-foreground">没有符合条件的审计记录</div> : null}
+        {!loading && unavailable ? <AdminEmptyState title="审计服务尚未启用" description="其他后台功能不受影响；服务启用后，受保护操作会显示在这里。" /> : null}
+        {!loading && !error && !unavailable && page.items.length === 0 ? <AdminEmptyState title="没有符合条件的审计记录" description="请调整筛选条件或清除过滤后重试。" /> : null}
         {!loading && !error && page.items.length ? (
-          <Table>
+          <><div className="grid gap-3 md:hidden">{page.items.map(item => <article key={item.id} className="rounded-xl border border-white/8 bg-background/30 p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate font-medium">{item.action}</p><p className="mt-1 text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString("zh-CN")}</p></div><Badge variant="outline">{item.actorType}</Badge></div><p className="mt-4 truncate text-xs text-muted-foreground">{item.objectType} · {item.objectId || "—"}</p><Button className="mt-4 w-full" size="sm" variant="outline" onClick={() => setSelected(item)}>查看详情</Button></article>)}</div><div className="hidden overflow-x-auto md:block"><Table>
             <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>Actor</TableHead><TableHead>动作</TableHead><TableHead>对象</TableHead><TableHead>Request ID</TableHead><TableHead className="text-right">详情</TableHead></TableRow></TableHeader>
             <TableBody>{page.items.map(item => (
               <TableRow key={item.id}>
@@ -111,7 +120,7 @@ export function AuditLogView() {
                 <TableCell className="text-right"><Button size="sm" variant="ghost" onClick={() => setSelected(item)}>查看详情</Button></TableCell>
               </TableRow>
             ))}</TableBody>
-          </Table>
+          </Table></div></>
         ) : null}
         <div className="flex justify-end gap-2">
           <Button variant="outline" disabled={!page.previousCursor || loading} onClick={() => page.previousCursor && navigate(page.previousCursor, "after")}>上一页</Button>
@@ -119,7 +128,7 @@ export function AuditLogView() {
         </div>
       </CardContent>
       <Dialog open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader><DialogTitle>审计详情</DialogTitle><DialogDescription>所有值均由服务端再次递归脱敏。</DialogDescription></DialogHeader>
           {selected ? <AuditDetails item={selected} /> : null}
         </DialogContent>
