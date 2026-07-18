@@ -41,6 +41,7 @@ jobs:
   inspect-production:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: production
     steps:
       - name: Validate fixed candidate identity
         env:

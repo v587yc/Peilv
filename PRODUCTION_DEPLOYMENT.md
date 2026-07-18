@@ -498,7 +498,7 @@ systemctl list-timers peilv-reconcile.timer peilv-dispatch.timer --no-pager
 仓库包含两条工作流：
 
 - `.github/workflows/ci.yml`：每次 push/PR 自动运行测试、类型检查、ESLint、生产构建、Playwright E2E 和无密钥制品验证；不会连接生产服务器。
-- `.github/workflows/production-preflight.yml`：仅允许手动触发，只构建候选制品并只读检查服务器；不会上传制品到生产目录，也不会停止服务、备份、迁移或切换。
+- `.github/workflows/production-preflight.yml`：仅允许手动触发，只接受成功的 `main` push 所生成的不可变候选制品，并通过绑定 `production` Environment 的只读 SSH Job 检查服务器；不会上传制品到生产目录，也不会停止服务、备份、迁移或切换。
 - `.github/workflows/deploy-approved-production.yml`：仅允许手动触发；用户把预检 Summary 中的 `Release ID` 与 `Release SHA-256` 填入后，才执行上传和生产发布。
 
 自动发布仍以本文第 1–15 节为约束：
@@ -512,7 +512,7 @@ systemctl list-timers peilv-reconcile.timer peilv-dispatch.timer --no-pager
 GitHub 配置：
 
 - Repository Secrets：`PROD_HOST`、`PROD_PORT`、`PROD_AUDIT_USER`、`PROD_AUDIT_SSH_KEY`、`PROD_SSH_HOST_KEY`、`PROD_DEPLOY_USER`、`PROD_DEPLOY_SSH_KEY`。
-- 不依赖 GitHub Environment 审批；生产发布由“先运行 `Production preflight`，再手动复制 `Release ID` 与 `Release SHA-256` 运行 `Deploy approved production`”完成。
+- `production` Environment 当前采用单人模式，不配置 required reviewer，避免触发者无法自审造成死锁；它只提供 `main` deployment branch policy 和生产 Secrets 作用域。生产发布仍由“先运行 `Production preflight`，再手动复制 `Release ID` 与 `Release SHA-256` 运行 `Deploy approved production`”完成。
 - 生产部署设置并发锁，同一时间只能运行一个发布。
 
 服务器使用 `peilv-audit` 与 `peilv-deploy` 两个专用 SSH 账号，通过 root-owned `/usr/local/sbin/peilv-control` 进入固定预检或部署命令。GitHub 不保存 root 密码、1Panel 密码、管理员令牌、数据库密码或共享环境文件内容。

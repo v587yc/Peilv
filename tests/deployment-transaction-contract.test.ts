@@ -7,6 +7,20 @@ const executableLines = (script: string): string[] => script.split(String.fromCh
 const candidateStart = (script: string): number => script.indexOf("candidate_start", script.indexOf("candidate_started_at="));
 
 describe("production deployment transaction contract", () => {
+  it("scopes the manual main-only immutable preflight inspection to production", async () => {
+    const workflow = await read(".github/workflows/production-preflight.yml");
+    const inspectJob = workflow.slice(workflow.indexOf("  inspect-production:"));
+    expect(workflow).toContain("  workflow_dispatch:");
+    expect(workflow).not.toMatch(/^\s{2}(?:push|pull_request|schedule):/m);
+    expect(inspectJob).toMatch(/inspect-production:\n\s+runs-on: ubuntu-latest\n\s+timeout-minutes: 20\n\s+environment: production\n\s+steps:/);
+    expect(inspectJob).toContain('run.head_branch !== "main"');
+    expect(inspectJob).toContain('run.event !== "push"');
+    expect(inspectJob).toContain("artifact.workflow_run?.id !== Number(process.env.SOURCE_RUN_ID)");
+    expect(inspectJob).toContain("artifact.workflow_run?.head_sha !== process.env.COMMIT_SHA");
+    expect(inspectJob).toContain("artifact.expired");
+    expect(inspectJob).toContain("artifact-ids: ${{ inputs.source_artifact_id }}");
+  });
+
   it("carries an explicit maintenance-window confirmation through the approved control path", async () => {
     const workflow = await read(".github/workflows/deploy-approved-production.yml");
     const control = await read("infra/deploy/peilv-control");
