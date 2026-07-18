@@ -97,4 +97,3 @@ export function buildPriorityContext(indicators: RuleIndicator[]): string {
 
   return lines.join("\n");
 }
-

@@ -14,7 +14,7 @@ export function handicapLineToNumber(line: string): number {
   const cleanStar = line.replace(/^\*/, "");
   const isReceiving = cleanStar.startsWith("受让") || cleanStar.startsWith("受");
   const cleanLine = cleanStar.replace(/^受让/, "").replace(/^受/, "");
-  
+
   const chineseMap: Record<string, number> = {
     "平手": 0, "平": 0,
     "半球": 0.5, "半": 0.5,
@@ -28,7 +28,7 @@ export function handicapLineToNumber(line: string): number {
     "四球半": 4.5,
     "球半": 1.5,
   };
-  
+
   if (cleanLine.includes("/")) {
     const parts = cleanLine.split("/");
     const low = chineseMap[parts[0]] ?? parseFloat(parts[0]);
@@ -38,14 +38,14 @@ export function handicapLineToNumber(line: string): number {
       return isReceiving ? -val : val;
     }
   }
-  
+
   if (chineseMap[cleanLine] !== undefined) {
     return isReceiving ? -chineseMap[cleanLine] : chineseMap[cleanLine];
   }
-  
+
   const numVal = parseFloat(cleanLine);
   if (!isNaN(numVal)) return isReceiving ? -numVal : numVal;
-  
+
   return NaN;
 }
 
@@ -62,9 +62,9 @@ function mapLineChangeToWaterSignal(
   companyInitLine: number
 ): WaterSignal {
   if (lineChange === "same") return "中立";
-  
+
   const homeIsFav = isHomeFavoring(companyInitLine);
-  
+
   if (lineChange === "up") {
     // 升盘=让球方优势扩大 → 让球方水位下降
     return homeIsFav ? "主降水" : "客降水";
@@ -86,7 +86,7 @@ function mapLineChangeToWaterSignal(
     // 这意味着主队从受让变成让球，主队被看好 → 主降水
     return homeIsFav ? "主降水" : "客降水";
   }
-  
+
   return "中立";
 }
 
@@ -97,7 +97,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
   const bet18 = req.companies.find(c => c.companyId === "42");
   const pingbo = req.companies.find(c => c.companyId === "47");
   const bet365 = req.companies.find(c => c.companyId === "8");
-  
+
   const defaultCompanies = [crown, yinghe, bet18, pingbo, bet365].filter(Boolean) as CompanyOddsForAnalysis[];
   const isFuture = req.scheduleMode === "future";
   const isHistory = req.scheduleMode === "history";
@@ -125,7 +125,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
           total++;
 
           let lineChange: "up" | "down" | "same" | "cross_to_receiving" | "cross_to_favoring";
-          
+
           if (initLine > 0 && refLine < 0) {
             lineChange = "cross_to_receiving"; // 让→受
             detailLines.push(`${comp.companyName}:${comp.asianLineInit}→${refHandicap.line}(让→受)`);
@@ -224,7 +224,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
     let homeOddsDrop = 0;   // 主水下降→主降水
     let awayOddsDrop = 0;   // 客水下降→客降水
     let total = 0;
-    
+
     // Compare company init water vs company live water
     for (const comp of defaultCompanies) {
       const initHome = parseNumber(comp.asianHomeInit);
@@ -236,7 +236,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       if (liveHome < initHome) homeOddsDrop++;
       if (liveAway < initAway) awayOddsDrop++;
     }
-    
+
     // Also compare with reference water (crown12/crownLive)
     if (refHandicap && crown) {
       const initHome = parseNumber(crown.asianHomeInit);
@@ -249,10 +249,10 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
         if (refAway < initAway) awayOddsDrop++;
       }
     }
-    
+
     let signal: WaterSignal = "不确定";
     let reasoning = "";
-    
+
     if (total > 0) {
       if (homeOddsDrop > awayOddsDrop && homeOddsDrop >= total * 0.5) {
         signal = "主降水";
@@ -268,7 +268,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       signal = "不确定";
       reasoning = "无有效水位数据";
     }
-    
+
     indicators.push({
       name: "水位变化方向",
       value: total > 0 ? `主水降${homeOddsDrop}/${total}` : "无数据",
@@ -285,17 +285,17 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       const line = handicapLineToNumber(comp.asianLineInit);
       if (!isNaN(line)) lines.push(line);
     }
-    
+
     let signal: WaterSignal = "中立";
     let reasoning = "";
     let value = "";
-    
+
     if (lines.length >= 2) {
       const maxLine = Math.max(...lines);
       const minLine = Math.min(...lines);
       const diff = maxLine - minLine;
       value = `差值${diff.toFixed(2)}`;
-      
+
       if (diff >= 0.5) {
         signal = "不确定";
         reasoning = `各公司盘口差异大(${minLine}~${maxLine})，市场分歧明显，降水方向不确定`;
@@ -311,7 +311,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       signal = "不确定";
       reasoning = "公司数据不足，无法判断分歧度";
     }
-    
+
     indicators.push({
       name: "公司分歧度",
       value,
@@ -468,7 +468,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
   // 晚开主水更低=资金流入主队=主降水，晚开客水更低=客降水
   {
     const openTimes: { company: string; time: string; line: number; homeOdds: number; awayOdds: number }[] = [];
-    
+
     for (const comp of defaultCompanies) {
       if (!comp.openTime) continue;
       const line = handicapLineToNumber(comp.asianLineInit);
@@ -477,34 +477,34 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       const awayOdds = parseNumber(comp.asianAwayInit);
       openTimes.push({ company: comp.companyName, time: comp.openTime, line, homeOdds, awayOdds });
     }
-    
+
     let signal: WaterSignal = "中立";
     let reasoning = "";
     let value = "";
-    
+
     if (openTimes.length >= 2) {
       openTimes.sort((a, b) => {
         const na = normalizeOpenTime(a.time);
         const nb = normalizeOpenTime(b.time);
         return na.localeCompare(nb);
       });
-      
+
       const early = openTimes.slice(0, Math.ceil(openTimes.length / 2));
       const late = openTimes.slice(Math.ceil(openTimes.length / 2));
-      
+
       // 同盘口不同水位: 比较早开 vs 晚开的主水/客水均值
       const earlyHomeOdds = early.filter(o => !isNaN(o.homeOdds));
       const lateHomeOdds = late.filter(o => !isNaN(o.homeOdds));
       const earlyAwayOdds = early.filter(o => !isNaN(o.awayOdds));
       const lateAwayOdds = late.filter(o => !isNaN(o.awayOdds));
-      
+
       let waterSignal = "";
       if (earlyHomeOdds.length > 0 && lateHomeOdds.length > 0) {
         const earlyHomeAvg = earlyHomeOdds.reduce((s, o) => s + o.homeOdds, 0) / earlyHomeOdds.length;
         const lateHomeAvg = lateHomeOdds.reduce((s, o) => s + o.homeOdds, 0) / lateHomeOdds.length;
         const earlyAwayAvg = earlyAwayOdds.length > 0 ? earlyAwayOdds.reduce((s, o) => s + o.awayOdds, 0) / earlyAwayOdds.length : NaN;
         const lateAwayAvg = lateAwayOdds.length > 0 ? lateAwayOdds.reduce((s, o) => s + o.awayOdds, 0) / lateAwayOdds.length : NaN;
-        
+
         const homeWaterDrop = earlyHomeAvg - lateHomeAvg; // 正值=晚开主水更低
         const awayWaterDrop = !isNaN(earlyAwayAvg) && !isNaN(lateAwayAvg) ? earlyAwayAvg - lateAwayAvg : NaN;
 
@@ -512,7 +512,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
         const earlyAvgAbs = early.reduce((s, o) => s + Math.abs(o.line), 0) / early.length;
         const lateAvgAbs = late.length > 0 ? late.reduce((s, o) => s + Math.abs(o.line), 0) / late.length : earlyAvgAbs;
         const lineDiff = lateAvgAbs - earlyAvgAbs;
-        
+
         value = `早${earlyAvgAbs.toFixed(2)}/晚${lateAvgAbs.toFixed(2)}`;
 
         // 盘口相同/接近时，水位信号为主
@@ -533,7 +533,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
           }
         }
       }
-      
+
       if (waterSignal.includes("主降水")) {
         signal = "主降水";
         reasoning = `开盘时间分析: ${waterSignal}`;
@@ -549,7 +549,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       signal = "不确定";
       reasoning = "开盘时间数据不足";
     }
-    
+
     indicators.push({
       name: "开盘时间早晚",
       value,
@@ -566,7 +566,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
     let overOddsDrop = 0;
     let underOddsDrop = 0;
     let total = 0;
-    
+
     for (const comp of defaultCompanies) {
       const initLine = parseNumber(comp.totalLineInit);
       if (isNaN(initLine)) continue;
@@ -576,7 +576,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       if (!isNaN(initOver) && initOver < 0.85) overOddsDrop++;
       if (!isNaN(initUnder) && initUnder < 0.85) underOddsDrop++;
     }
-    
+
     if (refTotal?.line && crown) {
       const initLine = parseNumber(crown.totalLineInit);
       const refLine = parseNumber(refTotal.line);
@@ -591,11 +591,11 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       if (!isNaN(initOver) && !isNaN(refOver) && refOver < initOver) overOddsDrop++;
       if (!isNaN(initUnder) && !isNaN(refUnder) && refUnder < initUnder) underOddsDrop++;
     }
-    
+
     let signal: WaterSignal = "中立";
     let reasoning = "";
     let value = "";
-    
+
     if (total > 0) {
       if (lineUp > lineDown && lineUp >= 1) {
         // 大小球盘口上调 → 大球受热 → 大水可能下降
@@ -616,7 +616,7 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
       signal = "不确定";
       reasoning = "无大小球数据";
     }
-    
+
     indicators.push({
       name: "大小球趋势",
       value,
@@ -640,4 +640,3 @@ export function computeRuleIndicators(req: AnalysisRequest, weights: IndicatorWe
 export function normalizeOpenTime(time: string): string {
   return time.replace(/(\d{1,2})-(\d{1,2})\s/, (_, m, d) => `${m.padStart(2, "0")}-${d.padStart(2, "0")} `);
 }
-
