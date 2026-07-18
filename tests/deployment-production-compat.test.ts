@@ -138,7 +138,7 @@ describe("candidate auto-collect lifecycle", () => {
       };
       for (const [name, content] of Object.entries(mocks)) await writeFile(path.join(bin, name), content, { mode: 0o700 });
       const shellLifecycle = lifecyclePath.replaceAll("\\", "/");
-      const shellSandbox = sandbox.replaceAll("\\", "/");
+      const shellSandbox = await shellPath(sandbox);
       const harness = `#!/usr/bin/env bash\nset -Eeuo pipefail\nexport PATH="$1/bin:$PATH"\nsource ${JSON.stringify(shellLifecycle)}\ncandidate_stop_and_release peilv-candidate-${releaseId}.service ${releaseId} /srv/peilv-candidate\n`;
       await writeFile(path.join(sandbox, "run.sh"), harness, { mode: 0o700 });
       let status = "0";
