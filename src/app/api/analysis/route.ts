@@ -17,6 +17,9 @@ import { upsertMatchT30Task } from "@/lib/automation/match-t30-task";
 import { SupabaseAutomationRepository } from "@/lib/automation/repository";
 
 export async function POST(request: NextRequest) {
+  if (isInternalRequest(request)) {
+    return NextResponse.json({ success: false, error: "内部任务无权访问此接口" }, { status: 403 });
+  }
   try {
     const body: AnalysisRequest = await request.json();
     if (body.source === "backtest" && !isInternalRequest(request)) {
@@ -55,13 +58,14 @@ export async function POST(request: NextRequest) {
     const message = error instanceof Error ? error.message : "分析失败";
     console.error("[Analysis] Error:", message);
     const responseMessage = error instanceof AnalysisPersistenceError
-      ? `分析完成但保存预测失败: ${message}`
-      : message;
+      ? "分析完成但保存预测失败"
+      : "分析服务暂时不可用";
     return NextResponse.json({ success: false, error: responseMessage }, { status: 500 });
   }
 }
 
 export async function GET(req: NextRequest) {
+  if (isInternalRequest(req)) return NextResponse.json({ error: "内部任务无权访问此接口" }, { status: 403 });
   try {
     const date = req.nextUrl.searchParams.get("date");
     if (!date) return NextResponse.json({ error: "date required" }, { status: 400 });
@@ -75,7 +79,7 @@ export async function GET(req: NextRequest) {
     const predictions = await repository.findByDate(date);
     return NextResponse.json({ success: true, predictions });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "加载失败";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("[Analysis] Query failed:", error);
+    return NextResponse.json({ error: "分析结果加载失败" }, { status: 500 });
   }
 }

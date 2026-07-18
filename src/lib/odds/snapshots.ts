@@ -1,5 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
+import { stableCanonicalJson } from "@/lib/canonical-json";
+
+export const ODDS_SNAPSHOT_HASH_VERSION = "canonical-json-v2" as const;
 
 export type OddsWritePayload = {
   oddsData?: Record<string, unknown>;
@@ -158,8 +162,8 @@ export async function appendOddsSnapshots(
     : "odds-db";
 
   const snapshotRows = candidates.map((candidate) => {
-    const serialized = JSON.stringify(candidate.rawPayload);
-    const contentHash = createHash("sha256").update(serialized).digest("hex");
+    const canonicalContent = stableCanonicalJson(candidate.rawPayload);
+    const contentHash = createHash("sha256").update(canonicalContent, "utf8").digest("hex");
     return {
       match_id: input.matchId,
       match_date: input.matchDate,
@@ -167,11 +171,13 @@ export async function appendOddsSnapshots(
       market_type: candidate.marketType,
       snapshot_type: candidate.snapshotType,
       source,
-      odds: candidate.rawPayload,
+      odds: JSON.parse(canonicalContent) as Record<string, unknown>,
       source_observed_at: observedAt?.toISOString() ?? null,
       collected_at: capturedAtIso,
       content_hash: contentHash,
-      idempotency_key: `${input.matchId}:${input.matchDate}:${candidate.snapshotType}:${candidate.companyId}:${candidate.marketType}:${capturedAtIso}:${randomUUID()}`,
+      hash_version: ODDS_SNAPSHOT_HASH_VERSION,
+      canonical_content_hash: contentHash,
+      idempotency_key: `${input.matchId}:${input.matchDate}:${candidate.snapshotType}:${candidate.companyId}:${candidate.marketType}:${ODDS_SNAPSHOT_HASH_VERSION}:${capturedAtIso}:${randomUUID()}`,
     };
   });
 

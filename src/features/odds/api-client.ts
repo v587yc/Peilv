@@ -139,10 +139,15 @@ export async function loadFeishuWebhook(fetcher: FetchLike): Promise<string> {
 }
 
 export async function saveFeishuWebhook(fetcher: FetchLike, webhook: string): Promise<void> {
-  await requestJson(fetcher, "/api/settings", {
-    method: "POST",
+  await requestJson(fetcher, "/api/admin/settings", {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings: { feishu_webhook_url: webhook } }),
+    body: JSON.stringify({
+      targetId: "setting.batch",
+      reason: "赔率页面更新飞书通知设置",
+      idempotencyKey: `settings:feishu:${crypto.randomUUID()}`,
+      payload: { replacements: { feishu_webhook_url: webhook } },
+    }),
   }, "保存飞书设置失败");
 }
 

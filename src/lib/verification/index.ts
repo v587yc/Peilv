@@ -194,11 +194,14 @@ export function settlePrediction(input: ScoreSettlementInput): SettlementOutcome
     if (prediction !== "主" && prediction !== "客" && prediction !== "主队" && prediction !== "客队") {
       return "invalid";
     }
-    const homeSelected = prediction === "主" || prediction === "主队";
-    const margin = homeScore - awayScore;
-    return combineSettlementLegs(lines.map(line => settleLeg(
-      homeSelected ? margin - line : line - margin,
-    )));
+    if (!Number.isSafeInteger(homeScore) || !Number.isSafeInteger(awayScore)) return "invalid";
+    try {
+      return calculateAsianSettlement({
+        selection: prediction === "主" || prediction === "主队" ? "home" : "away",
+        handicapQuarterUnits: Math.round(rawLine * 4), homeScore, awayScore,
+        selectedWaterMillionths: 1_000_000,
+      }).outcome;
+    } catch { return "invalid"; }
   }
 
   if (input.market === "total") {
@@ -463,3 +466,4 @@ export function hasCompleteVerificationOdds(odds: MatchOddsInput | null | undefi
   const crownLive = parseDbJsonObject(odds.crown_live_odds);
   return Boolean(crownLive.handicapLine && crownLive.handicapHome && crownLive.handicapAway);
 }
+import { calculateAsianSettlement } from "./asian-settlement";

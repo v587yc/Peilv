@@ -19,7 +19,7 @@ import {
 describe("in-process analysis pipeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.INTERNAL_API_SECRET = "test-secret";
+    process.env.INTERNAL_API_SECRET = "Test_Internal_Secret_0123456789AB";
     routeMocks.analyze.mockResolvedValue(Response.json({ success: true, data: { matchId: "1" } }));
     routeMocks.verify.mockResolvedValue(Response.json({ success: true, verified: 2 }));
     routeMocks.learn.mockImplementation(async () => Response.json({ success: true, patternsFound: 1 }));
@@ -30,7 +30,7 @@ describe("in-process analysis pipeline", () => {
     await expect(analyzeMatch({ matchId: "1" })).resolves.toMatchObject({ success: true });
     expect(fetchSpy).not.toHaveBeenCalled();
     const request = routeMocks.analyze.mock.calls[0][0] as Request;
-    expect(request.headers.get("x-internal-api-secret")).toBe("test-secret");
+    expect(request.headers.get("x-internal-api-secret")).toBe("Test_Internal_Secret_0123456789AB");
     expect(await request.json()).toEqual({ matchId: "1" });
     fetchSpy.mockRestore();
   });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isInternalRequest } from "@/lib/internal-auth";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { sendFeishuVerifyResult } from "@/lib/integrations/feishu/notifier";
-import { isInternalRequest } from "@/lib/internal-auth";
 import type { PredictionMarket } from "@/lib/verification";
 import {
   marketVerificationWeight,
@@ -58,6 +58,7 @@ async function loadFocusedLeagues(supabase: ReturnType<typeof getSupabaseClient>
 
 // Mine patterns from verified predictions and update learned_patterns table
 export async function POST(request: NextRequest) {
+  if (isInternalRequest(request)) return NextResponse.json({ error: "内部任务无权访问此接口" }, { status: 403 });
   try {
     const body = await request.json().catch(() => ({}));
     if (body.market !== "handicap" && body.market !== "total") {
@@ -101,7 +102,8 @@ export async function POST(request: NextRequest) {
     const { data: rawPredictions, error } = await query;
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[Learn] Prediction query failed:", error);
+      return NextResponse.json({ error: "学习样本加载失败" }, { status: 500 });
     }
 
     const focusedLeagues = await loadFocusedLeagues(supabase);
@@ -435,6 +437,7 @@ export async function POST(request: NextRequest) {
 
 // Get current learned patterns and dynamic weights
 export async function GET(request: NextRequest) {
+  if (isInternalRequest(request)) return NextResponse.json({ error: "内部任务无权访问此接口" }, { status: 403 });
   try {
     const { searchParams } = new URL(request.url);
     const league = searchParams.get("league") || "ALL";
@@ -464,7 +467,8 @@ export async function GET(request: NextRequest) {
     const { data: patterns, error } = await query;
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[Learn] Pattern query failed:", error);
+      return NextResponse.json({ error: "学习模式加载失败" }, { status: 500 });
     }
 
     // Get the most recent suggested_weights from 3-indicator patterns (most evolved)

@@ -161,9 +161,9 @@ describe("odds workstation API client", () => {
     await expect(loadFeishuWebhook(fetcher)).resolves.toBe("***masked***");
     await saveFeishuWebhook(fetcher, "https://open.feishu.cn/hook");
     await expect(testFeishuWebhook(fetcher)).resolves.toEqual({ success: true, error: undefined });
-    expect(calls[1]).toEqual(["/api/settings", expect.objectContaining({
-      method: "POST",
-      body: JSON.stringify({ settings: { feishu_webhook_url: "https://open.feishu.cn/hook" } }),
+    expect(calls[1]).toEqual(["/api/admin/settings", expect.objectContaining({
+      method: "PATCH",
+      body: expect.stringContaining('"feishu_webhook_url":"https://open.feishu.cn/hook"'),
     })]);
   });
 });
