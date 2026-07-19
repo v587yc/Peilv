@@ -244,6 +244,11 @@ cp -a .next/static .next/standalone/.next/static
 cp -a public .next/standalone/public
 node scripts/standalone-runtime-deps.mjs .next/standalone "$COZE_WORKSPACE_PATH"
 
+# Next ships shell-quote as build tooling inside its precompiled distribution,
+# but the production server does not use it. Keep build-only tooling out of the
+# deployable standalone closure.
+rm -rf .next/standalone/node_modules/next/dist/compiled/shell-quote
+
 STANDALONE_ROOT="$COZE_WORKSPACE_PATH/.next/standalone" node <<'NODE'
 const { createRequire } = require("node:module");
 const path = require("node:path");
@@ -273,6 +278,12 @@ if find .next/standalone -mindepth 1 -maxdepth 1 -name '.test-tmp*' -print -quit
   printf 'Build rejected: assembled standalone contains a local test path\n' >&2
   exit 1
 fi
+for forbidden_dependency in react-dev-inspector react-dev-utils shell-quote; do
+  if find .next/standalone -iname "*$forbidden_dependency*" -print -quit | grep -q .; then
+    printf 'Build rejected: assembled standalone contains forbidden dependency: %s\n' "$forbidden_dependency" >&2
+    exit 1
+  fi
+done
 
   echo "Build completed successfully!"
 }
