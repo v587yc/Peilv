@@ -10,8 +10,8 @@ exec 9>"$lock_file"; flock -n 9 || { printf 'Another TCB activation is running\n
 sbin="${PEILV_TCB_SBIN:-/usr/local/sbin}"; libexec="${PEILV_TCB_LIBEXEC:-/usr/local/libexec/peilv}"
 etc="${PEILV_TCB_ETC:-/etc/peilv}"; sudoers_dir="${PEILV_TCB_SUDOERS:-/etc/sudoers.d}"
 install -d -o root -g root -m 0755 "$sbin" "$libexec" "$etc" "$sudoers_dir"
-manifest_sha='dc9086f31e66c30bac62b61a24de7a650667d42419b73d6532905e293d521e4c'
-sudoers_sha='396001a8e47180c251c097ffdc137f8690c5897404767e6e97817a8288a5cb03'
+manifest_sha='e9c0380879cd8485644f4075cb1e000c60dab3c997120109d1ee5e6d9cf6099e'
+sudoers_sha='99d3210b02a66ae156530b8e139a9a7ee18c3946ea4317b506d41a5b7c204a90'
 declare -a names=(deploy-production.sh migration-contract.mjs deploy-operation-ledger.mjs peilv-control peilv-sudoers trusted-deploy-v2.sha256)
 declare -A destinations=(
   [deploy-production.sh]="$libexec/deploy-production.sh" [migration-contract.mjs]="$libexec/migration-contract.mjs"

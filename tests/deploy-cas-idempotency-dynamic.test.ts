@@ -14,6 +14,21 @@ const manifest = { schemaVersion: 1, migrations: [
   { file: "0002_change.sql", version: "0002_change", sha256: "2".repeat(64), codeRollbackSafe: false },
 ] };
 
+async function ledgerFixture(prefix: string) {
+  const base = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const root = path.join(base, "operations");
+  const fs = await import("node:fs/promises");
+  await fs.mkdir(root, { mode: 0o700 });
+  await fs.chmod(root, 0o700);
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const source = (await readFile("scripts/deploy-operation-ledger.mjs", "utf8"))
+    .replace("stat.uid!==0||stat.gid!==0", `stat.uid!==${uid}||stat.gid!==${gid}`);
+  const script = path.join(base, "deploy-operation-ledger.mjs");
+  await writeFile(script, source);
+  return { root, script, fs };
+}
+
 describe("migration CAS and deploy request idempotency", () => {
   it("uses manifest order and binds SHA plus rollback safety without locale or Date sorting", () => {
     const first = canonicalMigrationContract(manifest, ["0001_base"]);
@@ -33,9 +48,8 @@ describe("migration CAS and deploy request idempotency", () => {
   });
 
   it("claims once, replays succeeded result, rejects running and different identity", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "deploy-operations-"));
-    await import("node:fs/promises").then(fs => fs.chmod(root, 0o700));
-    const script = "scripts/deploy-operation-ledger.mjs", json = JSON.stringify(identity);
+    const { root, script } = await ledgerFixture("deploy-operations-");
+    const json = JSON.stringify(identity);
     await expect(exec(process.execPath, [script, "check", root, request, json])).resolves.toMatchObject({ stdout: "new\n" });
     await expect(exec(process.execPath, [script, "claim", root, request, json])).resolves.toMatchObject({ stdout: "claimed\n" });
     await expect(exec(process.execPath, [script, "check", root, request, json])).rejects.toMatchObject({ code: 1 });
@@ -50,7 +64,7 @@ describe("migration CAS and deploy request idempotency", () => {
   });
 
   it("moves a host-restart running request to manual assessment without replay", async () => {
-    const root=await mkdtemp(path.join(os.tmpdir(),"deploy-recover-"));const fs=await import("node:fs/promises");await fs.chmod(root,0o700);const script="scripts/deploy-operation-ledger.mjs",json=JSON.stringify(identity);
+    const {root,script}=await ledgerFixture("deploy-recover-");const json=JSON.stringify(identity);
     await exec(process.execPath,[script,"claim",root,request,json]);await exec(process.execPath,[script,"recover-running",root,request]);
     const operation=JSON.parse((await exec(process.execPath,[script,"status",root,request])).stdout);
     expect(operation).toMatchObject({status:"manual-assessment",result:{reason:"host-restart-running-operation"}});
@@ -61,11 +75,11 @@ describe("migration CAS and deploy request idempotency", () => {
     ["wrong release",{schemaVersion:1,status:"succeeded",requestId:request,releaseId:"r2-a1-bbbbbbbbbbbb"}],
     ["wrong request",{schemaVersion:1,status:"succeeded",requestId:"223e4567-e89b-42d3-a456-426614174000",releaseId:identity.releaseId}],
     ["wrong status",{schemaVersion:1,status:"failed",requestId:request,releaseId:identity.releaseId}],
-  ])("rejects finish result identity: %s",async(_name,resultValue)=>{const root=await mkdtemp(path.join(os.tmpdir(),"deploy-finish-"));const fs=await import("node:fs/promises");await fs.chmod(root,0o700);const script="scripts/deploy-operation-ledger.mjs",json=JSON.stringify(identity),result=path.join(root,"result.json");await exec(process.execPath,[script,"claim",root,request,json]);await writeFile(result,JSON.stringify(resultValue));await expect(exec(process.execPath,[script,"finish",root,request,"succeeded",result])).rejects.toBeDefined();});
+  ])("rejects finish result identity: %s",async(_name,resultValue)=>{const {root,script}=await ledgerFixture("deploy-finish-");const json=JSON.stringify(identity),result=path.join(root,"result.json");await exec(process.execPath,[script,"claim",root,request,json]);await writeFile(result,JSON.stringify(resultValue));await expect(exec(process.execPath,[script,"finish",root,request,"succeeded",result])).rejects.toBeDefined();});
 
   it("rejects hardlinked durable operation files", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "deploy-unsafe-")); const fs = await import("node:fs/promises"); await fs.chmod(root, 0o700);
-    const script="scripts/deploy-operation-ledger.mjs", json=JSON.stringify(identity), operation=path.join(root,`${request}.json`);
+    const {root,script,fs}=await ledgerFixture("deploy-unsafe-");
+    const json=JSON.stringify(identity), operation=path.join(root,`${request}.json`);
     await exec(process.execPath,[script,"claim",root,request,json]);
     await fs.link(operation,path.join(root,"second-link"));
     await expect(exec(process.execPath,[script,"status",root,request])).rejects.toBeDefined();
@@ -76,7 +90,7 @@ describe("migration CAS and deploy request idempotency", () => {
     expect(helper).toContain("fs.lstatSync(operationPath)"); expect(helper).toContain("stat.isSymbolicLink()");
   });
 
-  it.each(["oversized", "corrupt-json", "corrupt-event-digest"])("fails closed on %s operation ledger", async kind=>{const root=await mkdtemp(path.join(os.tmpdir(),"deploy-corrupt-")),fs=await import("node:fs/promises"),script="scripts/deploy-operation-ledger.mjs",json=JSON.stringify(identity),operation=path.join(root,`${request}.json`);await fs.chmod(root,0o700);await exec(process.execPath,[script,"claim",root,request,json]);if(kind==="oversized")await writeFile(operation,"x".repeat(1024*1024+1));if(kind==="corrupt-json")await writeFile(operation,"{broken");if(kind==="corrupt-event-digest"){const value=JSON.parse(await readFile(operation,"utf8"));value.eventDigest="0".repeat(64);await writeFile(operation,JSON.stringify(value))}await expect(exec(process.execPath,[script,"status",root,request])).rejects.toBeDefined();});
+  it.each(["oversized", "corrupt-json", "corrupt-event-digest"])("fails closed on %s operation ledger", async kind=>{const {root,script}=await ledgerFixture("deploy-corrupt-"),json=JSON.stringify(identity),operation=path.join(root,`${request}.json`);await exec(process.execPath,[script,"claim",root,request,json]);if(kind==="oversized")await writeFile(operation,"x".repeat(1024*1024+1));if(kind==="corrupt-json")await writeFile(operation,"{broken");if(kind==="corrupt-event-digest"){const value=JSON.parse(await readFile(operation,"utf8"));value.eventDigest="0".repeat(64);await writeFile(operation,JSON.stringify(value))}await expect(exec(process.execPath,[script,"status",root,request])).rejects.toBeDefined();});
 
   it("maintenance confirmation cannot bypass identity, expiry, manifest, or migration CAS gates", async()=>{const deploy=await readFile("scripts/deploy-production.sh","utf8"),maintenance=deploy.indexOf('maintenance_confirmation="${9:-}"'),identity=deploy.indexOf("operation_identity="),expiry=deploy.indexOf("assert_preflight_not_expired",deploy.indexOf('[[ "$operation_check" == new ]]')),manifest=deploy.indexOf('sha256sum "$external_manifest"'),cas=deploy.indexOf("Migration ledger or pending plan CAS drift"),maintenanceUse=deploy.indexOf('incompatible_migration_pending == 1',cas);expect(maintenance).toBeGreaterThan(-1);expect(identity).toBeGreaterThan(maintenance);expect(expiry).toBeGreaterThan(identity);expect(manifest).toBeGreaterThan(expiry);expect(cas).toBeGreaterThan(manifest);expect(maintenanceUse).toBeGreaterThan(cas);});
 

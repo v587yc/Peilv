@@ -3,6 +3,7 @@ import { link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/prom
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 const exec = promisify(execFile);
@@ -64,7 +65,7 @@ describe("deploy v3 host TCB exact-set contract", () => {
     expect(manifest.map(line => line.split(" ")[1])).toEqual(Object.keys(paths));
     for (const line of manifest) {
       const [expected, name] = line.split(" ");
-      const actual = (await exec("sha256sum", [paths[name]])).stdout.split(" ")[0].replace(/^\\/, "");
+      const actual = createHash("sha256").update((await readFile(paths[name], "utf8")).replace(/\r\n/g, "\n")).digest("hex");
       expect(actual).toBe(expected);
     }
   });
