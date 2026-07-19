@@ -90,7 +90,9 @@ bash scripts/verify-release.sh \
 | `INTERNAL_API_SECRET_FILE` | 本地开发可选 | 指向32–128位 base64url（`A-Z a-z 0-9 _ -`）凭据文件。Linux生产不从环境变量读取密钥，而由 systemd `LoadCredential` 提供 `%d/internal-api-secret`；Windows生产自动化不受支持。 |
 | `PORT` | 可选 | 默认 `5000`。 |
 | `HOSTNAME` | 可选 | 默认 `localhost`。 |
-| `COZE_PROJECT_ENV` | 可选 | `DEV` 启用开发 Inspector，`PROD` 使用生产模式。 |
+| `COZE_PROJECT_ENV` | 可选 | 标识开发或生产运行环境；生产源码不加载 React Inspector。 |
+
+开发期组件定位工具必须通过仓库外的浏览器扩展或本地编辑器工具链启用，不得静态导入根 layout，也不得加入 production standalone 依赖闭包。
 
 ### AI、搜索、通知和抓取
 
