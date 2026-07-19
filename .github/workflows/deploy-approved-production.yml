@@ -20,6 +20,10 @@ on:
         description: Exact successful preflight run ID
         required: true
         type: string
+      preflight_run_attempt:
+        description: Exact preflight run attempt
+        required: true
+        type: string
       preflight_artifact_id:
         description: Exact structured preflight artifact ID
         required: true
@@ -36,6 +40,11 @@ on:
         description: Control-plane request UUID
         required: true
         type: string
+      maintenance_window_confirmed:
+        description: Confirm maintenance window only for a non-rollback-safe migration
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -61,16 +70,23 @@ jobs:
           SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
           PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          PREFLIGHT_RUN_ATTEMPT: ${{ inputs.preflight_run_attempt }}
           PREFLIGHT_ARTIFACT_ID: ${{ inputs.preflight_artifact_id }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
           REQUEST_ID: ${{ inputs.request_id }}
+          DISPATCH_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_SHA: ${{ github.sha }}
+          REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -Eeuo pipefail
+          [[ "$DISPATCH_REF_NAME" == main ]]
+          [[ "$DISPATCH_SHA" == "$COMMIT_SHA" ]]
           [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$PREFLIGHT_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PREFLIGHT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$PREFLIGHT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RELEASE_ID" == "r${SOURCE_RUN_ID}-a${SOURCE_RUN_ATTEMPT}-${COMMIT_SHA:0:12}" ]]
@@ -79,18 +95,23 @@ jobs:
           preflight_run_json="$(gh api "repos/$GH_REPO/actions/runs/$PREFLIGHT_RUN_ID")"
           candidate_artifact_json="$(gh api "repos/$GH_REPO/actions/artifacts/$SOURCE_ARTIFACT_ID")"
           preflight_artifact_json="$(gh api "repos/$GH_REPO/actions/artifacts/$PREFLIGHT_ARTIFACT_ID")"
-          SOURCE_RUN_JSON="$source_run_json" PREFLIGHT_RUN_JSON="$preflight_run_json" CANDIDATE_ARTIFACT_JSON="$candidate_artifact_json" PREFLIGHT_ARTIFACT_JSON="$preflight_artifact_json" node - <<'NODE'
-          const source = JSON.parse(process.env.SOURCE_RUN_JSON);
-          const preflight = JSON.parse(process.env.PREFLIGHT_RUN_JSON);
-          const candidate = JSON.parse(process.env.CANDIDATE_ARTIFACT_JSON);
-          const result = JSON.parse(process.env.PREFLIGHT_ARTIFACT_JSON);
-          const sourceRunId = Number(process.env.SOURCE_RUN_ID);
-          const sourceAttempt = Number(process.env.SOURCE_RUN_ATTEMPT);
-          const preflightRunId = Number(process.env.PREFLIGHT_RUN_ID);
-          if (source.event !== "push" || source.head_branch !== "main" || source.status !== "completed" || source.conclusion !== "success" || source.run_attempt !== sourceAttempt || source.head_sha !== process.env.COMMIT_SHA) throw new Error("Source run identity mismatch");
-          if (preflight.name !== "Production preflight" || preflight.event !== "workflow_dispatch" || preflight.status !== "completed" || preflight.conclusion !== "success" || preflight.head_sha !== process.env.COMMIT_SHA) throw new Error("Preflight run identity mismatch");
-          if (candidate.expired || candidate.name !== `peilv-candidate-${sourceRunId}-${sourceAttempt}` || candidate.workflow_run?.id !== sourceRunId || candidate.workflow_run?.head_sha !== process.env.COMMIT_SHA) throw new Error("Candidate artifact identity mismatch");
-          if (result.expired || result.name !== `preflight-result-${process.env.REQUEST_ID}` || result.workflow_run?.id !== preflightRunId || result.workflow_run?.head_sha !== process.env.COMMIT_SHA) throw new Error("Preflight artifact identity mismatch");
+          repository_json="$(gh api "repos/$GH_REPO")"
+          workflow_json="$(gh api "repos/$GH_REPO/actions/workflows/production-preflight.yml")"
+          workflow_id="$(WORKFLOW_JSON="$workflow_json" node -e 'const w=JSON.parse(process.env.WORKFLOW_JSON);if(!Number.isSafeInteger(w.id)||w.path!==".github/workflows/production-preflight.yml")process.exit(1);process.stdout.write(String(w.id))')"
+          # Some run API versions omit path. In that case only, re-fetch by the exact API workflow ID.
+          workflow_fallback_json=null
+          if ! PREFLIGHT_RUN_JSON="$preflight_run_json" node -e 'const r=JSON.parse(process.env.PREFLIGHT_RUN_JSON);process.exit(typeof r.path==="string"&&r.path.length>0?0:1)'; then
+            workflow_fallback_json="$(gh api "repos/$GH_REPO/actions/workflows/$workflow_id")"
+          fi
+          SOURCE_RUN_JSON="$source_run_json" PREFLIGHT_RUN_JSON="$preflight_run_json" CANDIDATE_ARTIFACT_JSON="$candidate_artifact_json" PREFLIGHT_ARTIFACT_JSON="$preflight_artifact_json" REPOSITORY_JSON="$repository_json" WORKFLOW_JSON="$workflow_json" WORKFLOW_FALLBACK_JSON="$workflow_fallback_json" node --input-type=module - <<'NODE'
+          import { validateProductionDeployIdentity } from "./scripts/validate-production-deploy-identity.mjs";
+          validateProductionDeployIdentity({
+            dispatch: { refName: process.env.DISPATCH_REF_NAME, sha: process.env.DISPATCH_SHA },
+            source: JSON.parse(process.env.SOURCE_RUN_JSON), preflight: JSON.parse(process.env.PREFLIGHT_RUN_JSON),
+            candidate: JSON.parse(process.env.CANDIDATE_ARTIFACT_JSON), result: JSON.parse(process.env.PREFLIGHT_ARTIFACT_JSON),
+            repository: JSON.parse(process.env.REPOSITORY_JSON), workflow: JSON.parse(process.env.WORKFLOW_JSON), workflowFallback: JSON.parse(process.env.WORKFLOW_FALLBACK_JSON),
+            expected: { repositoryId: Number(process.env.REPOSITORY_ID), repositoryName: process.env.GH_REPO, preflightWorkflowId: Number(process.env.WORKFLOW_ID || JSON.parse(process.env.WORKFLOW_JSON).id), sourceRunId: process.env.SOURCE_RUN_ID, sourceRunAttempt: process.env.SOURCE_RUN_ATTEMPT, preflightRunId: process.env.PREFLIGHT_RUN_ID, preflightRunAttempt: Number(process.env.PREFLIGHT_RUN_ATTEMPT), commitSha: process.env.COMMIT_SHA, requestId: process.env.REQUEST_ID },
+          });
           NODE
       - name: Download exact candidate
         uses: actions/download-artifact@v4
@@ -130,11 +151,17 @@ jobs:
             preflight-result.json preflight.md
           actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
           [[ "$(awk 'NR == 1 {print $1}' "$checksum")" == "$actual_sha" ]]
-          readarray -t result_values < <(RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" SOURCE_ARTIFACT_ID="$SOURCE_ARTIFACT_ID" ACTUAL_SHA="$actual_sha" REQUEST_ID="$REQUEST_ID" node scripts/validate-deploy-preflight.mjs "$external" "$result")
-          [[ "${#result_values[@]}" -eq 2 ]]
+          external_manifest_sha="$(sha256sum "$external" | awk '{print $1}')"
+          readarray -t result_values < <(RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" SOURCE_ARTIFACT_ID="$SOURCE_ARTIFACT_ID" ACTUAL_SHA="$actual_sha" EXTERNAL_MANIFEST_SHA="$external_manifest_sha" REQUEST_ID="$REQUEST_ID" node scripts/validate-deploy-preflight.mjs "$external" "$result")
+          [[ "${#result_values[@]}" -eq 6 ]]
           echo "ARCHIVE_SHA=${result_values[0]}" >> "$GITHUB_ENV"
-          echo "EXPECTED_CURRENT=${result_values[1]}" >> "$GITHUB_ENV"
+          echo "EXTERNAL_MANIFEST_SHA=${result_values[1]}" >> "$GITHUB_ENV"
+          echo "EXPECTED_CURRENT=${result_values[2]}" >> "$GITHUB_ENV"
+          echo "VALID_UNTIL=${result_values[3]}" >> "$GITHUB_ENV"
+          echo "MIGRATION_LEDGER_DIGEST=${result_values[4]}" >> "$GITHUB_ENV"
+          echo "PENDING_PLAN_DIGEST=${result_values[5]}" >> "$GITHUB_ENV"
           echo "CANDIDATE_DIR=$candidate_dir" >> "$GITHUB_ENV"
+          node scripts/assert-rfc3339-not-expired.mjs "${result_values[3]}"
       - name: Configure deployment SSH
         env:
           SSH_KEY: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
@@ -151,6 +178,7 @@ jobs:
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_PORT: ${{ secrets.PROD_PORT }}
           PROD_USER: ${{ secrets.PROD_DEPLOY_USER }}
+          MAINTENANCE_WINDOW_CONFIRMED: ${{ inputs.maintenance_window_confirmed }}
         run: |
           set -Eeuo pipefail
           artifact_name="peilv-candidate-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}"
@@ -158,20 +186,33 @@ jobs:
           [[ "$CANDIDATE_DIR" == "$candidate_dir" ]]
           archive="$candidate_dir/peilv-$RELEASE_ID.tar.gz"
           checksum="$archive.sha256"
+          external="$candidate_dir/release-manifest-$RELEASE_ID.json"
+          node scripts/assert-rfc3339-not-expired.mjs "$VALID_UNTIL"
           scp -i ~/.ssh/deploy_key -P "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$archive" "$checksum" "$PROD_USER@$PROD_HOST:/opt/peilv/incoming/"
+            "$archive" "$checksum" "$external" "$PROD_USER@$PROD_HOST:/opt/peilv/incoming/"
+          node scripts/assert-rfc3339-not-expired.mjs "$VALID_UNTIL"
+          maintenance_option=""
+          [[ "$MAINTENANCE_WINDOW_CONFIRMED" == true ]] && maintenance_option=" --maintenance-window-confirmed"
+          set +e
           ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
-            "sudo -n /usr/local/sbin/peilv-control deploy '$RELEASE_ID' '$ARCHIVE_SHA' '$EXPECTED_CURRENT' '$REQUEST_ID' --maintenance-window-confirmed" \
+            "sudo -n /usr/local/sbin/peilv-control deploy-v3 '$RELEASE_ID' '$ARCHIVE_SHA' '$EXTERNAL_MANIFEST_SHA' '$EXPECTED_CURRENT' '$REQUEST_ID' '$VALID_UNTIL' '$MIGRATION_LEDGER_DIGEST' '$PENDING_PLAN_DIGEST'$maintenance_option" \
             | tee deployment-summary.txt
-          scp -i ~/.ssh/deploy_key -P "$PROD_PORT" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$PROD_USER@$PROD_HOST:/tmp/deployment-$REQUEST_ID.json" deployment-result.json
-          ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$PROD_USER@$PROD_HOST" "rm -f '/tmp/deployment-$REQUEST_ID.json'"
-          node -e 'const r=require("./deployment-result.json"); if (r.schemaVersion !== 1 || r.status !== "succeeded" || r.releaseId !== process.env.RELEASE_ID || r.requestId !== process.env.REQUEST_ID) process.exit(1);'
+          deploy_ssh_status="${PIPESTATUS[0]}"
+          set -e
+          status_found=0
+          for _ in {1..60}; do
+            if ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              "$PROD_USER@$PROD_HOST" "sudo -n /usr/local/sbin/peilv-control deploy-status-v1 '$REQUEST_ID'" > deployment-operation.json 2>/dev/null; then
+              operation_status="$(node -e 'process.stdout.write(require("./deployment-operation.json").status || "")')"
+              if [[ "$operation_status" != running ]]; then status_found=1; break; fi
+            fi
+            sleep 10
+          done
+          [[ "$status_found" == 1 ]] || { printf 'Deployment status remained unavailable after SSH status %s\n' "$deploy_ssh_status" >&2; exit 1; }
+          node -e 'const o=require("./deployment-operation.json"),r=o.result; if(o.schemaVersion!==1||o.status!=="succeeded"||r?.schemaVersion !== 1 || r.status !== "succeeded" || r.releaseId !== process.env.RELEASE_ID || r.requestId !== process.env.REQUEST_ID) process.exit(1); require("node:fs").writeFileSync("deployment-result.json",JSON.stringify(r,null,2)+"\n")'
           cat deployment-summary.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Upload structured deployment result
         if: always()

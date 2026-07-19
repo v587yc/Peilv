@@ -2,20 +2,32 @@
 set -Eeuo pipefail
 umask 027
 
-usage='Usage: deploy-production.sh <release-id> <sha256> <expected-current-release-id> <request-id> [--maintenance-window-confirmed] [--approved-current-unit-hotfix-transition]'
+usage='Usage: deploy-production.sh <release-id> <sha256> <external-manifest-sha256> <expected-current-release-id> <request-id> <valid-until> <migration-ledger-digest> <pending-plan-digest> [--maintenance-window-confirmed]'
+[[ "$#" == 8 || "$#" == 9 ]] || { printf '%s\n' "$usage" >&2; exit 1; }
 release_id="${1:?$usage}"
 expected_sha="${2:?$usage}"
-expected_current_release_id="${3:?$usage}"
-request_id="${4:?$usage}"
-maintenance_confirmation=""
-transition_confirmation=""
-for option in "${@:5}"; do
-  case "$option" in
-    --maintenance-window-confirmed) maintenance_confirmation="$option" ;;
-    --approved-current-unit-hotfix-transition) transition_confirmation="$option" ;;
-    *) printf 'Unknown deployment option: %s\n' "$option" >&2; exit 1 ;;
-  esac
-done
+expected_external_manifest_sha="${3:?$usage}"
+expected_current_release_id="${4:?$usage}"
+request_id="${5:?$usage}"
+valid_until="${6:?$usage}"
+expected_migration_ledger_digest="${7:?$usage}"
+expected_pending_plan_digest="${8:?$usage}"
+maintenance_confirmation="${9:-}"
+[[ -z "$maintenance_confirmation" || "$maintenance_confirmation" == --maintenance-window-confirmed ]] || {
+  printf 'Unknown deployment option: %s\n' "$maintenance_confirmation" >&2
+  exit 1
+}
+[[ "$expected_migration_ledger_digest" =~ ^[0-9a-f]{64}$ && "$expected_pending_plan_digest" =~ ^[0-9a-f]{64}$ ]] || { printf 'Invalid migration CAS digest\n' >&2; exit 1; }
+
+assert_preflight_not_expired() {
+  local server_now
+  server_now="$(date --utc +%Y-%m-%dT%H:%M:%S.%3NZ)"
+  VALID_UNTIL="$valid_until" SERVER_NOW="$server_now" node <<'NODE'
+const strict=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/;
+function parse(value,label){const match=strict.exec(value||"");if(!match)throw new Error(`${label} must be strict UTC RFC3339`);const time=Date.parse(value),canonical=Number.isFinite(time)?new Date(time).toISOString().slice(0,19):"";if(canonical!==`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}`)throw new Error(`${label} is invalid`);return time}
+if(parse(process.env.SERVER_NOW,"Server UTC time")>=parse(process.env.VALID_UNTIL,"validUntil"))throw new Error("Production preflight has expired");
+NODE
+}
 
 if [[ ! "$release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] ||
    { [[ ! "$expected_current_release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] &&
@@ -23,7 +35,7 @@ if [[ ! "$release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] ||
   printf 'Invalid release ID\n' >&2
   exit 1
 fi
-if [[ ! "$expected_sha" =~ ^[0-9a-f]{64}$ ]]; then
+if [[ ! "$expected_sha" =~ ^[0-9a-f]{64}$ || ! "$expected_external_manifest_sha" =~ ^[0-9a-f]{64}$ ]]; then
   printf 'Invalid SHA-256\n' >&2
   exit 1
 fi
@@ -31,7 +43,6 @@ if [[ ! "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f
   printf 'Invalid request ID\n' >&2
   exit 1
 fi
-
 exec 9>/run/lock/peilv-deploy.lock
 if ! flock -n 9; then
   printf 'Another server-side deployment is running\n' >&2
@@ -40,13 +51,25 @@ fi
 
 base=/opt/peilv
 transaction_state=/var/lib/peilv/deploy-transaction.json
+operation_ledger=/usr/local/libexec/peilv/deploy-operation-ledger.mjs
+operation_root=/var/lib/peilv/deploy-operations
+result_root=/var/lib/peilv/deploy-results
+operation_claimed=0
+completed=0
 archive="$base/incoming/peilv-$release_id.tar.gz"
 checksum="$archive.sha256"
+external_manifest="$base/incoming/release-manifest-$release_id.json"
 verified_incoming_dir=/var/lib/peilv/incoming-verified
 private_archive="$verified_incoming_dir/$request_id.tar.gz"
 release_dir="$base/releases/$release_id"
-[[ ! -e "$release_dir" ]] || { printf 'Release directory already exists\n' >&2; exit 1; }
 backup="$base/backups/peilv-before-$release_id.dump"
+result_path="$result_root/$request_id.json"
+operation_identity="$(RELEASE_ID="$release_id" ARCHIVE_SHA="$expected_sha" EXTERNAL_MANIFEST_SHA="$expected_external_manifest_sha" CURRENT="$expected_current_release_id" VALID_UNTIL="$valid_until" LEDGER_DIGEST="$expected_migration_ledger_digest" PLAN_DIGEST="$expected_pending_plan_digest" node -e 'process.stdout.write(JSON.stringify({schemaVersion:3,releaseId:process.env.RELEASE_ID,archiveSha256:process.env.ARCHIVE_SHA,externalManifestSha256:process.env.EXTERNAL_MANIFEST_SHA,expectedCurrentReleaseId:process.env.CURRENT,validUntil:process.env.VALID_UNTIL,migrationLedgerDigest:process.env.LEDGER_DIGEST,pendingPlanDigest:process.env.PLAN_DIGEST}))')"
+operation_check="$("$operation_ledger" check "$operation_root" "$request_id" "$operation_identity")"
+if [[ "$operation_check" == replay ]]; then "$operation_ledger" status "$operation_root" "$request_id" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const o=JSON.parse(s);if(o.status!=="succeeded"||!o.result)process.exit(1);process.stdout.write(JSON.stringify(o.result,null,2)+"\n")})'; completed=1; exit 0; fi
+[[ "$operation_check" == new ]]
+assert_preflight_not_expired
+[[ ! -e "$release_dir" ]] || { printf 'Release directory already exists\n' >&2; exit 1; }
 old_release="$(readlink -f "$base/current")"
 old_release_id="${old_release##*/}"
 if [[ "$old_release_id" != "$expected_current_release_id" ]]; then
@@ -60,14 +83,15 @@ deployment_budget_helper=/usr/local/libexec/peilv/deployment-budget.sh
 candidate_stage_root=/var/lib/peilv/candidate-stage
 candidate_stage="$candidate_stage_root/$release_id"
 candidate_mount=/srv/peilv-candidate
-timers_stopped=0
+reconcile_timer_stopped=0
+dispatch_timer_stopped=0
 app_stopped=0
 switched=0
 migration_started=0
 migration_completed=0
 incompatible_migration_pending=0
 incompatible_migration_started=0
-completed=0
+pending_all_code_rollback_safe=0
 transaction_started=0
 candidate_lifecycle_proven=0
 candidate_started=0
@@ -170,32 +194,10 @@ verify_app_unit_contract() {
 }
 verify_installed_app_unit_binding() {
   local installed=/etc/systemd/system/peilv.service current="$old_release/infra/systemd/peilv.service"
-  if verify_app_unit_contract "$installed" && verify_app_unit_contract "$current" && cmp -s "$installed" "$current"; then return 0; fi
-  approve_current_unit_hotfix_transition "$installed" "$current" || {
-    printf 'Installed application systemd unit is missing or drifted from the current release\n' >&2; return 1;
+  verify_app_unit_contract "$installed" && verify_app_unit_contract "$current" && cmp -s "$installed" "$current" || {
+    printf 'Installed application systemd unit is missing or drifted from the current release\n' >&2
+    return 1
   }
-}
-approve_current_unit_hotfix_transition() {
-  local installed="$1" current="$2" latest_version listeners
-  [[ "$transition_confirmation" == --approved-current-unit-hotfix-transition ]] || return 1
-  [[ "$expected_current_release_id" == r20260716074436-a1-a8f074c3680f && "$old_release_id" == "$expected_current_release_id" ]] || return 1
-  verify_app_unit_contract "$installed" || return 1
-  [[ -f "$current" && ! -L "$current" ]] || return 1
-  for key in HOSTNAME PORT DEPLOY_RUN_PORT; do [[ "$(grep -Ec "^Environment=${key}=" "$current")" == 0 ]] || return 1; done
-  grep -Fxq 'ExecStart=/usr/bin/node /opt/peilv/current/server.js' "$current" || return 1
-  CURRENT_UNIT="$current" INSTALLED_UNIT="$installed" node <<'NODE' || return 1
-const fs = require("node:fs");
-const approved = new Set(["Environment=HOSTNAME=127.0.0.1", "Environment=PORT=5000", "Environment=DEPLOY_RUN_PORT=5000"]);
-const current = fs.readFileSync(process.env.CURRENT_UNIT, "utf8").split("\n");
-const installed = fs.readFileSync(process.env.INSTALLED_UNIT, "utf8").split("\n");
-const found = installed.filter(line => approved.has(line));
-if (found.length !== 3 || new Set(found).size !== 3) process.exit(1);
-if (installed.filter(line => !approved.has(line)).join("\n") !== current.join("\n")) process.exit(1);
-NODE
-  latest_version="$(docker exec local-data-postgres-1 sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select version from schema_migrations order by version desc limit 1"')"
-  [[ "$latest_version" == 0014_admin_login_uniform_reservations ]] || return 1
-  listeners="$(ss -lntH 'sport = :5000' 2>/dev/null || true)"
-  [[ -n "$listeners" ]] && awk '$4 !~ /^(127\.0\.0\.1|\[::1\]):5000$/ { exit 1 }' <<<"$listeners"
 }
 stage_release_systemd_units() {
   local release="$1" unit source staged
@@ -280,6 +282,18 @@ wait_for_inactive() {
   done
   printf 'Timed out waiting for %s\n' "$unit" >&2
   return 1
+}
+run_oneshot_and_wait() {
+  local unit="$1" timeout_usec deadline state result
+  timeout_usec="$(systemctl show "$unit" -p TimeoutStartUSec --value)"
+  [[ "$timeout_usec" =~ ^[1-9][0-9]*$ && "$timeout_usec" -le 3600000000 ]] || { printf 'Invalid TimeoutStartUSec for %s\n' "$unit" >&2; return 1; }
+  deadline=$((SECONDS + (timeout_usec + 999999) / 1000000 + 10))
+  systemctl start --no-block "$unit"
+  while (( SECONDS <= deadline )); do
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    case "$state" in inactive) result="$(systemctl show "$unit" -p Result --value)"; [[ "$result" == "success" ]] && return 0; printf 'Oneshot %s failed with Result=%s\n' "$unit" "$result" >&2; return 1;; active|activating|deactivating) sleep 1;; *) printf 'Unsafe oneshot state for %s: %s\n' "$unit" "${state:-<empty>}" >&2; return 1;; esac
+  done
+  printf 'Timed out waiting for oneshot %s\n' "$unit" >&2; return 1
 }
 
 stop_candidate() {
@@ -425,7 +439,7 @@ restore_on_failure() {
 
   if (( completed == 0 )); then
     quarantine_created_release
-    if (( transaction_started == 0 )); then cleanup_temp_files; exit "$status"; fi
+    if (( transaction_started == 0 && operation_claimed == 0 )); then cleanup_temp_files; exit "$status"; fi
     [[ -z "${rendered_openresty:-}" ]] || rm -f "$rendered_openresty"
     if (( openresty_changed == 1 )); then
       if [[ -n "$openresty_backup" && -f "$openresty_backup" ]]; then
@@ -440,8 +454,24 @@ restore_on_failure() {
       fi
       "$openresty_control" reload || true
     fi
-    if (( incompatible_migration_started == 1 )) || (( migration_started == 1 && migration_completed == 0 )); then
-      printf 'Deployment failed after a non-rollback-safe or incomplete migration. Application and timers remain stopped for database assessment.\n' >&2
+    if (( migration_started == 1 && migration_completed == 0 )) || (( migration_completed == 1 && pending_all_code_rollback_safe == 0 )); then
+      manual_reason="$([[ "$migration_completed" == 1 ]] && printf non-rollback-safe-migrations-completed || printf migration-incomplete)"
+      systemctl stop peilv-dispatch.timer || status=1
+      systemctl stop peilv-reconcile.timer || status=1
+      wait_for_inactive peilv-dispatch.service || status=1
+      wait_for_inactive peilv-reconcile.service || status=1
+      systemctl stop peilv.service || status=1
+      [[ "$(systemctl is-active peilv.service 2>/dev/null || true)" == "inactive" ]] || status=1
+      install -d -o root -g root -m 0700 "$result_root"
+      RESULT_PATH="$result_path" REQUEST_ID="$request_id" RELEASE_ID="$release_id" REASON="$manual_reason" BACKUP="${backup:-}" node <<'NODE'
+const fs=require("node:fs"),path=process.env.RESULT_PATH,temp=`${process.env.RESULT_PATH}.next`;
+const result={schemaVersion:1,status:"manual-assessment",requestId:process.env.REQUEST_ID,releaseId:process.env.RELEASE_ID,reason:process.env.REASON,backupPath:process.env.BACKUP||null,completedAt:new Date().toISOString()};
+fs.writeFileSync(temp,JSON.stringify(result,null,2)+"\n",{mode:0o600});fs.renameSync(temp,path);
+NODE
+      (( operation_claimed == 0 )) || "$operation_ledger" finish "$operation_root" "$request_id" manual-assessment "$result_path" || true
+      completed=1
+      printf '{"status":"manual-assessment","requestId":"%s","reason":"%s"}\n' "$request_id" "$manual_reason" >&2
+      printf 'Deployment failed after unsafe or incomplete migration. Application and timers remain stopped for database assessment.\n' >&2
       printf 'Database backup: %s\n' "$backup" >&2
       exit "$status"
     fi
@@ -464,16 +494,46 @@ restore_on_failure() {
       elif [[ "$original_app_state" == "active" ]] && ! check_current_application 5000 >/dev/null 2>&1; then printf 'Restored application failed readiness\n' >&2; status=1
       fi
     fi
-    if (( timers_stopped == 1 )); then
+    if (( reconcile_timer_stopped == 1 )); then
       if ! restore_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"; then printf 'Reconcile timer state restoration failed\n' >&2; status=1; fi
+    fi
+    if (( dispatch_timer_stopped == 1 )); then
       if ! restore_unit_state peilv-dispatch.timer "$original_dispatch_timer_state"; then printf 'Dispatch timer state restoration failed\n' >&2; status=1; fi
     fi
     printf 'Deployment failed. Code rollback was attempted; database restoration was not performed.\n' >&2
+  fi
+  if (( completed == 0 && operation_claimed == 1 )); then
+    install -d -o root -g root -m 0700 "$result_root"
+    RESULT_PATH="$result_path" REQUEST_ID="$request_id" RELEASE_ID="$release_id" STATUS="$status" node <<'NODE'
+const fs=require("node:fs"),p=process.env.RESULT_PATH,t=`${p}.next`;fs.writeFileSync(t,JSON.stringify({schemaVersion:1,status:"failed",requestId:process.env.REQUEST_ID,releaseId:process.env.RELEASE_ID,exitCode:Number(process.env.STATUS),completedAt:new Date().toISOString()},null,2)+"\n",{mode:0o600});fs.renameSync(t,p);
+NODE
+    "$operation_ledger" finish "$operation_root" "$request_id" failed "$result_path" || true
   fi
   cleanup_temp_files
   exit "$status"
 }
 trap restore_on_failure EXIT
+
+# Lock-held migration CAS and request claim happen before any production release/service/database write.
+[[ "$(sha256sum "$archive" | awk '{print $1}')" == "$expected_sha" ]]
+[[ -f "$external_manifest" && ! -L "$external_manifest" && "$(sha256sum "$external_manifest" | awk '{print $1}')" == "$expected_external_manifest_sha" ]]
+EXTERNAL_MANIFEST="$external_manifest" RELEASE_ID="$release_id" ARCHIVE_SHA="$expected_sha" node -e 'const m=JSON.parse(require("node:fs").readFileSync(process.env.EXTERNAL_MANIFEST,"utf8"));if(m.releaseId!==process.env.RELEASE_ID||m.archiveSha256!==process.env.ARCHIVE_SHA)throw new Error("External release manifest identity mismatch")'
+manifest_member="$(tar -tf "$archive" | awk '/(^|\/)migrations\/manifest\.json$/{print}' )"
+[[ "$(printf '%s\n' "$manifest_member" | awk 'NF{n++}END{print n+0}')" == 1 ]]
+cas_dir="$(mktemp -d /run/peilv-deploy-cas-XXXXXXXX)"; register_temp_file "$cas_dir"
+tar -xOf "$archive" "$manifest_member" >"$cas_dir/manifest.json"
+EXTERNAL_MANIFEST="$external_manifest" MIGRATION_MANIFEST="$cas_dir/manifest.json" node -e 'const fs=require("node:fs"),external=JSON.parse(fs.readFileSync(process.env.EXTERNAL_MANIFEST,"utf8")),migration=JSON.parse(fs.readFileSync(process.env.MIGRATION_MANIFEST,"utf8"));if(JSON.stringify(external.migrations)!==JSON.stringify(migration.migrations))throw new Error("External and archive migration manifests differ")'
+docker exec local-data-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select version from schema_migrations order by applied_at, version;"' >"$cas_dir/ledger"
+cas_json="$(node /usr/local/libexec/peilv/migration-contract.mjs "$cas_dir/manifest.json" "$cas_dir/ledger")"
+CAS_JSON="$cas_json" EXPECTED_LEDGER="$expected_migration_ledger_digest" EXPECTED_PLAN="$expected_pending_plan_digest" node -e 'const c=JSON.parse(process.env.CAS_JSON);if(c.unknown.length||c.migrationLedgerDigest!==process.env.EXPECTED_LEDGER||c.pendingPlanDigest!==process.env.EXPECTED_PLAN)throw new Error("Migration ledger or pending plan CAS drift")'
+pending_all_code_rollback_safe="$(CAS_JSON="$cas_json" node -e 'process.stdout.write(JSON.parse(process.env.CAS_JSON).pendingAllCodeRollbackSafe?"1":"0")')"
+install -d -o root -g root -m 0700 "$operation_root" "$result_root"
+for durable_root in "$operation_root" "$result_root"; do
+  [[ -d "$durable_root" && ! -L "$durable_root" && "$(stat -c '%U:%G:%a' "$durable_root")" == "root:root:700" ]] || { printf 'Unsafe deploy operation storage: %s\n' "$durable_root" >&2; exit 1; }
+done
+claim_result="$("$operation_ledger" claim "$operation_root" "$request_id" "$operation_identity")"
+if [[ "$claim_result" == replay ]]; then "$operation_ledger" status "$operation_root" "$request_id" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const o=JSON.parse(s);if(o.status!=="succeeded"||!o.result)process.exit(1);process.stdout.write(JSON.stringify(o.result,null,2)+"\n")})'; completed=1; exit 0; fi
+[[ "$claim_result" == claimed ]]; operation_claimed=1
 
 validate_unit_state peilv.service "$original_app_state"
 validate_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"
@@ -512,6 +572,7 @@ deployment_budget_add "$backup" "$db_backup_kib" 1 database_backup
 deployment_budget_add "$systemd_backup_dir" "$DEPLOYMENT_SYSTEMD_KIB" 32 systemd_transaction
 deployment_budget_check
 
+assert_preflight_not_expired
 install -d -o root -g root -m 0700 "$verified_incoming_dir"
 [[ ! -L "$verified_incoming_dir" && "$(stat -c '%U:%G:%a' "$verified_incoming_dir")" == root:root:700 ]]
 copied_sha="$(node "$private_copy_helper" "$archive" "$private_archive")"
@@ -530,6 +591,7 @@ done
 check_current_application 5000
 verify_installed_app_unit_binding
 
+assert_preflight_not_expired
 install -d -o root -g root -m 0755 "$release_dir"
 release_created=1
 /usr/local/libexec/peilv/verify-release.sh --archive "$private_archive" "$expected_sha" "$release_dir" "peilv-$release_id.tar.gz" >/dev/null
@@ -569,7 +631,7 @@ fs.writeFileSync(process.env.MIGRATION_PLAN,rows.join("\n")+"\n",{mode:0o600});
 NODE
 }
 read_ledger_versions() {
-  docker exec local-data-postgres-1 sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select version from schema_migrations order by version"'
+  docker exec local-data-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select version from schema_migrations order by version"'
 }
 validate_ledger_against_plan() {
   local ledger_file declared_file
@@ -581,19 +643,27 @@ validate_ledger_against_plan() {
   comm -23 <(sort -u "$ledger_file") "$declared_file" | grep -q . && { printf 'Migration ledger contains versions unknown to verified manifest\n' >&2; return 1; }
   return 0
 }
+verify_migration_cas() {
+  local ledger contract
+  ledger="$(mktemp)"; register_temp_file "$ledger"
+  read_ledger_versions >"$ledger"
+  contract="$(node /usr/local/libexec/peilv/migration-contract.mjs "$release_dir/migrations/manifest.json" "$ledger")"
+  CAS_JSON="$contract" EXPECTED_LEDGER="$expected_migration_ledger_digest" EXPECTED_PLAN="$expected_pending_plan_digest" node -e 'const c=JSON.parse(process.env.CAS_JSON);if(c.unknown.length||c.migrationLedgerDigest!==process.env.EXPECTED_LEDGER||c.pendingPlanDigest!==process.env.EXPECTED_PLAN)throw new Error("Migration ledger or pending plan CAS drift")'
+}
 current_pending_plan() {
   local migration version migration_sha rollback_safe ledger_mode alias already_applied
   while IFS=$'\t' read -r migration version migration_sha rollback_safe ledger_mode; do
     aliases=("$version"); [[ "$migration" == "0001_production_baseline.sql" ]] && aliases+=("0001_canonical_baseline")
     already_applied=0
     for alias in "${aliases[@]}"; do
-      if docker exec local-data-postgres-1 sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$alias" | grep -Fxq 1; then already_applied=1; break; fi
+      if docker exec local-data-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$alias" | grep -Fxq 1; then already_applied=1; break; fi
     done
     (( already_applied == 1 )) || printf '%s\t%s\t%s\n' "$migration" "$version" "$migration_sha"
   done <"$migration_plan"
 }
 build_migration_plan
 validate_ledger_against_plan
+verify_migration_cas
 verified_plan_sha="$(sha256sum "$migration_plan" | awk '{print $1}')"
 pending_plan_before="$(current_pending_plan)"
 mapfile -t migrations < <(awk -F '\t' '{print $1}' "$migration_plan")
@@ -603,7 +673,7 @@ while IFS=$'\t' read -r migration version migration_sha rollback_safe ledger_mod
   aliases=("$version"); [[ "$migration" == "0001_production_baseline.sql" ]] && aliases+=("0001_canonical_baseline")
   already_applied=0
   for alias in "${aliases[@]}"; do
-    if docker exec local-data-postgres-1 sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$alias" | grep -Fxq 1; then already_applied=1; break; fi
+    if docker exec local-data-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$alias" | grep -Fxq 1; then already_applied=1; break; fi
   done
   if (( already_applied == 0 )); then pending_versions+=("$migration"); pending_version_names+=("$version"); fi
 done <"$migration_plan"
@@ -624,6 +694,7 @@ register_temp_file "$openresty_http_backup"
 if [[ -f "$openresty_http_config" ]]; then cp -a "$openresty_http_config" "$openresty_http_backup"; else rm -f "$openresty_http_backup"; fi
 
 # Prove a disk-backed, hash-identical, read-only copy before any production write, backup, stop, or migration.
+assert_preflight_not_expired
 candidate_stage="$(candidate_prepare_stage "$release_dir" "$release_id" "$release_verifier")"
 "$release_verifier" --tree "$candidate_stage" >/dev/null
 candidate_started_at="$(date --iso-8601=seconds)"
@@ -637,6 +708,7 @@ stop_candidate
 build_migration_plan
 [[ "$(sha256sum "$migration_plan" | awk '{print $1}')" == "$verified_plan_sha" ]] || { printf 'Verified migration plan changed after candidate validation\n' >&2; exit 1; }
 validate_ledger_against_plan
+verify_migration_cas
 [[ "$(current_pending_plan)" == "$pending_plan_before" ]] || { printf 'Pending migration file/version/SHA set changed after candidate validation\n' >&2; exit 1; }
 
 # Classify rollback safety only after candidate success, before production is touched.
@@ -665,10 +737,13 @@ done
 check_current_application 5000
 check_preupgrade_https_edge
 
+assert_preflight_not_expired
 write_transaction_state maintenance_entering
 transaction_started=1
-systemctl stop peilv-dispatch.timer peilv-reconcile.timer
-timers_stopped=1
+dispatch_timer_stopped=1
+systemctl stop peilv-dispatch.timer
+reconcile_timer_stopped=1
+systemctl stop peilv-reconcile.timer
 systemctl reset-failed peilv-dispatch.service peilv-reconcile.service
 wait_for_inactive peilv-dispatch.service
 wait_for_inactive peilv-reconcile.service
@@ -695,6 +770,7 @@ applied=()
 build_migration_plan
 [[ "$(sha256sum "$migration_plan" | awk '{print $1}')" == "$verified_plan_sha" ]] || { printf 'Verified migration plan changed before migration execution\n' >&2; exit 1; }
 validate_ledger_against_plan
+verify_migration_cas
 [[ "$(current_pending_plan)" == "$pending_plan_before" ]] || { printf 'Pending migration file/version/SHA set changed before migration execution\n' >&2; exit 1; }
 migration_started=1
 (( incompatible_migration_pending == 1 )) && incompatible_migration_started=1
@@ -706,7 +782,7 @@ validate_ledger_against_plan
 remaining_pending=()
 while IFS=$'\t' read -r migration version migration_sha rollback_safe ledger_mode; do
   aliases=("$version"); [[ "$migration" == "0001_production_baseline.sql" ]] && aliases+=("0001_canonical_baseline")
-  found=0; for alias in "${aliases[@]}"; do docker exec local-data-postgres-1 sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$alias" | grep -Fxq 1 && { found=1; break; }; done
+  found=0; for alias in "${aliases[@]}"; do docker exec local-data-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select 1 from schema_migrations where version = '\''$1'\''"' sh "$alias" | grep -Fxq 1 && { found=1; break; }; done
   (( found == 1 )) || remaining_pending+=("$migration")
 done <"$migration_plan"
 (( ${#remaining_pending[@]} == 0 )) || { printf 'Migration pending set changed or remains incomplete after execution\n' >&2; exit 1; }
@@ -748,15 +824,10 @@ ss -lntH 'sport = :5000' | awk 'NF && $4 !~ /^(127\.0\.0\.1|\[::1\]):5000$/ { ex
 check_formal_application 5000
 check_secure_cookie_probe
 
-systemctl start peilv-reconcile.service
-[[ "$(systemctl show peilv-reconcile.service -p Result --value)" == "success" ]]
-systemctl start peilv-reconcile.timer
-systemctl start peilv-dispatch.service
-[[ "$(systemctl show peilv-dispatch.service -p Result --value)" == "success" ]]
-systemctl start peilv-dispatch.timer
-
-[[ "$(systemctl is-active peilv-reconcile.timer)" == "active" ]]
-[[ "$(systemctl is-active peilv-dispatch.timer)" == "active" ]]
+run_oneshot_and_wait peilv-reconcile.service
+run_oneshot_and_wait peilv-dispatch.service
+restore_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"
+restore_unit_state peilv-dispatch.timer "$original_dispatch_timer_state"
 LEDGER_PATH="$base/deployment-ledger.json" RELEASE_ID="$release_id" PREVIOUS_RELEASE="$old_release_id" REQUEST_ID="$request_id" node <<'NODE'
 const fs = require("node:fs");
 const path = process.env.LEDGER_PATH;
@@ -769,14 +840,13 @@ const temporary = `${path}.next`;
 fs.writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o640 });
 fs.renameSync(temporary, path);
 NODE
-completed=1
 rm -f "$transaction_state"
 node -e 'const fs=require("node:fs");const fd=fs.openSync("/var/lib/peilv","r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}'
 [[ -z "$openresty_backup" ]] || rm -f "$openresty_backup"
 rm -f "$rendered_openresty"
 
-rm -f "$archive" "$checksum" || printf 'Warning: incoming artifact cleanup failed\n' >&2
-RESULT_PATH="/tmp/deployment-$request_id.json" RELEASE_ID="$release_id" PREVIOUS_RELEASE="$old_release_id" BACKUP="$backup" BACKUP_SHA="$backup_sha" APPLIED="$(printf '%s\n' "${applied[@]}")" REQUEST_ID="$request_id" node <<'NODE'
+rm -f "$archive" "$checksum" "$external_manifest" || printf 'Warning: incoming artifact cleanup failed\n' >&2
+RESULT_PATH="$result_path" RELEASE_ID="$release_id" PREVIOUS_RELEASE="$old_release_id" BACKUP="$backup" BACKUP_SHA="$backup_sha" APPLIED="$(printf '%s\n' "${applied[@]}")" REQUEST_ID="$request_id" node <<'NODE'
 const migrations = (process.env.APPLIED || "").split("\n").filter(Boolean);
 const result = {
   schemaVersion: 1,
@@ -789,8 +859,10 @@ const result = {
   appliedMigrations: migrations,
   completedAt: new Date().toISOString(),
 };
-require("node:fs").writeFileSync(process.env.RESULT_PATH, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o644 });
+const fs=require("node:fs"),temporary=`${process.env.RESULT_PATH}.next`;fs.writeFileSync(temporary, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });fs.renameSync(temporary,process.env.RESULT_PATH);
 NODE
+"$operation_ledger" finish "$operation_root" "$request_id" succeeded "$result_path"
+completed=1
 printf 'Deployment completed\n'
 printf 'Release: %s\n' "$release_dir"
 printf 'Previous release: %s\n' "$old_release"

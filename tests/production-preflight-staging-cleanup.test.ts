@@ -68,15 +68,21 @@ describe("production preflight upload guard dynamic fixtures", () => {
 });
 
 describe("production preflight staging static contracts", () => {
-  it("keeps restricted SSH and narrowed sudo contracts without changing host configuration", async () => {
+  it("keeps restricted SSH fixture semantics and narrowed sudo contracts without storing a credential fixture", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "preflight-authorized-keys-"));
+    temporaryDirectories.push(directory);
+    const authorizedKeysPath = path.join(directory, "authorized_keys");
+    await writeFile(authorizedKeysPath, "# generated non-sensitive test fixture\n# restrict disables forwarding, PTY, user rc and X11\nrestrict ssh-ed25519 TEST_PUBLIC_KEY preflight-test\n");
     const [authorizedKeys, sudoers, control] = await Promise.all([
-      readFile(new URL("../infra/deploy/peilv-audit-authorized_keys", import.meta.url), "utf8"),
+      readFile(authorizedKeysPath, "utf8"),
       readFile(new URL("../infra/deploy/peilv-sudoers", import.meta.url), "utf8"),
       readFile(new URL("../infra/deploy/peilv-control", import.meta.url), "utf8"),
     ]);
-    expect(authorizedKeys).toMatch(/^#.*\n#.*\nrestrict ssh-ed25519 /);
+    expect(authorizedKeys).toMatch(/^#.*\n#.*\nrestrict ssh-ed25519 TEST_PUBLIC_KEY /);
+    expect(authorizedKeys).not.toMatch(/(?:^|,)(?:port-forwarding|agent-forwarding|x11-forwarding|pty|user-rc)(?:,|\s)/m);
     expect(sudoers).toContain("peilv-audit ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control preflight *");
-    expect(control).toContain("peilv-audit:preflight:10)");
+    expect(control).toContain("peilv-audit:preflight:11)");
+    expect(control).toContain("peilv-audit:preflight:12)");
   });
 
   it("uses no-clobber publication, bounded capacity, structured transfer errors, and secondary cleanup", async () => {
@@ -101,6 +107,17 @@ describe("production preflight staging static contracts", () => {
     expect(workflow).toContain('"$nlink" == 1 && "$size" == "$bytes"');
     expect(workflow).toContain('"$device" == "$(stat -c \'%d\' -- /tmp)"');
     expect(workflow).toContain("stat -c '%F|%U|%a|%h|%s|%d' -- \"$archive\"");
+  });
+
+  it("binds the validated external manifest digest into the remote preflight identity", async () => {
+    const script = await readFile(new URL("../scripts/production-preflight.sh", import.meta.url), "utf8");
+    expect(workflow).toContain('echo "EXTERNAL_MANIFEST_SHA=$(sha256sum "$external"');
+    expect(workflow).toContain('"$MIGRATIONS" "$EXTERNAL_MANIFEST_SHA" "$remote_archive"');
+    expect(workflow).toContain('peilv-control preflight "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"');
+    expect(script).toContain('external_manifest_sha="${9:?$usage}"');
+    expect(script).toContain('[[ ! "$external_manifest_sha" =~ ^[0-9a-f]{64}$ ]]');
+    expect(script).toContain('EXTERNAL_MANIFEST_SHA="$external_manifest_sha"');
+    expect(script).not.toContain('sha256sum "$external_manifest"');
   });
 
   it("dynamically refuses duplicate request publication without replacing or removing it", async () => {

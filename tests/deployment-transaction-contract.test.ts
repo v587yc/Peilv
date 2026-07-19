@@ -24,10 +24,12 @@ describe("production deployment transaction contract", () => {
   it("carries an explicit maintenance-window confirmation through the approved control path", async () => {
     const workflow = await read(".github/workflows/deploy-approved-production.yml");
     const control = await read("infra/deploy/peilv-control");
-    expect(workflow).toContain("--maintenance-window-confirmed");
-    expect(control).toContain("peilv-deploy:deploy:6)");
-    expect(control).toContain('[[ "$6" == "--maintenance-window-confirmed" ]]');
-    expect(control).toContain('deploy-production.sh "$2" "$3" "$4" "$5" "$6"');
+    expect(workflow).toContain("maintenance_window_confirmed:");
+    expect(workflow).toContain("default: false");
+    expect(control).toContain("peilv-deploy:deploy-v3:9)");
+    expect(control).toContain("peilv-deploy:deploy-v3:10)");
+    expect(control).toContain('[[ "${10}" == "--maintenance-window-confirmed" ]]');
+    expect(control).toContain('deploy-production.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"');
   });
   it("rejects only an occupied target release path, allowing a quarantined ID to be unpacked again", async () => {
     const deploy = await read("scripts/deploy-production.sh");
@@ -49,8 +51,9 @@ describe("production deployment transaction contract", () => {
     const validator = await read("scripts/validate-deploy-preflight.mjs");
     expect(validator).toContain('result.requestId !== env.REQUEST_ID');
     expect(workflow).not.toContain('$PROD_HOST:/tmp/peilv-preflight-result');
-    expect(workflow).toContain('result.name !== `preflight-result-${process.env.REQUEST_ID}`');
-    expect(workflow).toContain('candidate.name !== `peilv-candidate-${sourceRunId}-${sourceAttempt}`');
+    const identityValidator = await read("scripts/validate-production-deploy-identity.mjs");
+    expect(identityValidator).toContain('result?.name !== `preflight-result-${expected.requestId}`');
+    expect(identityValidator).toContain('candidate?.name !== `peilv-candidate-${sourceRunId}-${sourceAttempt}`');
     expect(workflow).toContain('node scripts/validate-deploy-preflight.mjs "$external" "$result"');
   });
   it("extracts one new release tree, verifies it, and starts one candidate", async () => {
