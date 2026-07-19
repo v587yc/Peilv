@@ -135,12 +135,22 @@ jobs:
           REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -Eeuo pipefail
-          failure_code=ARTIFACT_DOWNLOAD_FAILED
-          trap 'status=$?; node scripts/preflight-result-v1.mjs blocked candidate-validation "$failure_code" "$status" preflight-result.json; exit "$status"' ERR
-          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
+          artifact_name="peilv-candidate-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+          candidate_dir="release-artifacts/$artifact_name"
+          archive="$candidate_dir/peilv-$RELEASE_ID.tar.gz"
           checksum="$archive.sha256"
-          external="release-artifacts/release-manifest-$RELEASE_ID.json"
-          [[ -f "$archive" && -f "$checksum" && -f "$external" ]]
+          external="$candidate_dir/release-manifest-$RELEASE_ID.json"
+          failure_code=ARTIFACT_LAYOUT_INVALID
+          trap 'status=$?; node scripts/preflight-result-v1.mjs blocked candidate-validation "$failure_code" "$status" preflight-result.json; exit "$status"' ERR
+          set +e
+          node scripts/validate-artifact-layout.mjs release-artifacts "$artifact_name" \
+            "peilv-$RELEASE_ID.tar.gz" "peilv-$RELEASE_ID.tar.gz.sha256" "release-manifest-$RELEASE_ID.json"
+          layout_status=$?
+          set -e
+          if (( layout_status != 0 )); then
+            (( layout_status == 21 )) && failure_code=ARTIFACT_CONTENT_MISSING
+            exit "$layout_status"
+          fi
           failure_code=CHECKSUM_INVALID
           archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
           [[ "$(awk 'NR == 1 {print $1}' "$checksum")" == "$archive_sha" ]]
@@ -217,8 +227,10 @@ jobs:
           if (!Array.isArray(migrations.migrations) || migrations.migrations.length === 0) throw new Error("Migration manifest is empty");
           NODE
           echo "ARCHIVE_SHA=$archive_sha" >> "$GITHUB_ENV"
+          echo "CANDIDATE_DIR=$candidate_dir" >> "$GITHUB_ENV"
           migrations="$(node scripts/preflight-result-v1.mjs manifest-migrations "$external")"
           echo "MIGRATIONS=$migrations" >> "$GITHUB_ENV"
+          node scripts/preflight-result-v1.mjs blocked ssh-configuration SSH_CONFIGURATION_PENDING 1 preflight-result.json
       - name: Configure read-only SSH
         id: ssh-configuration
         if: steps.candidate-validation.outcome == 'success'
@@ -246,7 +258,10 @@ jobs:
           PROD_USER: ${{ secrets.PROD_AUDIT_USER }}
         run: |
           set -Eeuo pipefail
-          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
+          artifact_name="peilv-candidate-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+          candidate_dir="release-artifacts/$artifact_name"
+          [[ "$CANDIDATE_DIR" == "$candidate_dir" ]]
+          archive="$candidate_dir/peilv-$RELEASE_ID.tar.gz"
           remote_archive="/tmp/peilv-preflight-$REQUEST_ID.tar.gz"
           set +e
           timeout 90s scp -i ~/.ssh/audit_key -P "$PROD_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes "$archive" "$PROD_USER@$PROD_HOST:$remote_archive" 2>transfer-stderr.log

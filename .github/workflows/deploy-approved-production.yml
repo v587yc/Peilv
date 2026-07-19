@@ -51,8 +51,12 @@ jobs:
     timeout-minutes: 45
     environment: production
     steps:
+      - name: Check out trusted workflow helpers
+        uses: actions/checkout@v4
       - name: Validate immutable identities
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
@@ -71,6 +75,23 @@ jobs:
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RELEASE_ID" == "r${SOURCE_RUN_ID}-a${SOURCE_RUN_ATTEMPT}-${COMMIT_SHA:0:12}" ]]
           [[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          source_run_json="$(gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID")"
+          preflight_run_json="$(gh api "repos/$GH_REPO/actions/runs/$PREFLIGHT_RUN_ID")"
+          candidate_artifact_json="$(gh api "repos/$GH_REPO/actions/artifacts/$SOURCE_ARTIFACT_ID")"
+          preflight_artifact_json="$(gh api "repos/$GH_REPO/actions/artifacts/$PREFLIGHT_ARTIFACT_ID")"
+          SOURCE_RUN_JSON="$source_run_json" PREFLIGHT_RUN_JSON="$preflight_run_json" CANDIDATE_ARTIFACT_JSON="$candidate_artifact_json" PREFLIGHT_ARTIFACT_JSON="$preflight_artifact_json" node - <<'NODE'
+          const source = JSON.parse(process.env.SOURCE_RUN_JSON);
+          const preflight = JSON.parse(process.env.PREFLIGHT_RUN_JSON);
+          const candidate = JSON.parse(process.env.CANDIDATE_ARTIFACT_JSON);
+          const result = JSON.parse(process.env.PREFLIGHT_ARTIFACT_JSON);
+          const sourceRunId = Number(process.env.SOURCE_RUN_ID);
+          const sourceAttempt = Number(process.env.SOURCE_RUN_ATTEMPT);
+          const preflightRunId = Number(process.env.PREFLIGHT_RUN_ID);
+          if (source.event !== "push" || source.head_branch !== "main" || source.status !== "completed" || source.conclusion !== "success" || source.run_attempt !== sourceAttempt || source.head_sha !== process.env.COMMIT_SHA) throw new Error("Source run identity mismatch");
+          if (preflight.name !== "Production preflight" || preflight.event !== "workflow_dispatch" || preflight.status !== "completed" || preflight.conclusion !== "success" || preflight.head_sha !== process.env.COMMIT_SHA) throw new Error("Preflight run identity mismatch");
+          if (candidate.expired || candidate.name !== `peilv-candidate-${sourceRunId}-${sourceAttempt}` || candidate.workflow_run?.id !== sourceRunId || candidate.workflow_run?.head_sha !== process.env.COMMIT_SHA) throw new Error("Candidate artifact identity mismatch");
+          if (result.expired || result.name !== `preflight-result-${process.env.REQUEST_ID}` || result.workflow_run?.id !== preflightRunId || result.workflow_run?.head_sha !== process.env.COMMIT_SHA) throw new Error("Preflight artifact identity mismatch");
+          NODE
       - name: Download exact candidate
         uses: actions/download-artifact@v4
         with:
@@ -95,40 +116,25 @@ jobs:
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
           set -Eeuo pipefail
-          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
+          artifact_name="peilv-candidate-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+          candidate_dir="release-artifacts/$artifact_name"
+          preflight_artifact_name="preflight-result-${REQUEST_ID}"
+          preflight_dir="preflight-artifacts/$preflight_artifact_name"
+          archive="$candidate_dir/peilv-$RELEASE_ID.tar.gz"
           checksum="$archive.sha256"
-          external="release-artifacts/release-manifest-$RELEASE_ID.json"
-          result="preflight-artifacts/preflight-result.json"
-          [[ -f "$archive" && -f "$checksum" && -f "$external" && -f "$result" ]]
+          external="$candidate_dir/release-manifest-$RELEASE_ID.json"
+          result="$preflight_dir/preflight-result.json"
+          node scripts/validate-artifact-layout.mjs release-artifacts "$artifact_name" \
+            "peilv-$RELEASE_ID.tar.gz" "peilv-$RELEASE_ID.tar.gz.sha256" "release-manifest-$RELEASE_ID.json"
+          node scripts/validate-artifact-layout.mjs preflight-artifacts "$preflight_artifact_name" \
+            preflight-result.json preflight.md
           actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
           [[ "$(awk 'NR == 1 {print $1}' "$checksum")" == "$actual_sha" ]]
-          readarray -t result_values < <(EXTERNAL="$external" RESULT="$result" RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" SOURCE_ARTIFACT_ID="$SOURCE_ARTIFACT_ID" ACTUAL_SHA="$actual_sha" REQUEST_ID="$REQUEST_ID" node - <<'NODE'
-          const fs = require("node:fs");
-          const manifest = JSON.parse(fs.readFileSync(process.env.EXTERNAL, "utf8"));
-          const result = JSON.parse(fs.readFileSync(process.env.RESULT, "utf8"));
-          const expected = {
-            releaseId: process.env.RELEASE_ID,
-            commitSha: process.env.COMMIT_SHA,
-            sourceRunId: Number(process.env.SOURCE_RUN_ID),
-            sourceRunAttempt: Number(process.env.SOURCE_RUN_ATTEMPT),
-            sourceArtifactId: Number(process.env.SOURCE_ARTIFACT_ID),
-            archiveSha256: process.env.ACTUAL_SHA,
-          };
-          if (manifest.releaseId !== expected.releaseId || manifest.commitSha !== expected.commitSha || manifest.sourceRunId !== expected.sourceRunId || manifest.sourceRunAttempt !== expected.sourceRunAttempt || manifest.archiveSha256 !== expected.archiveSha256) throw new Error("Candidate manifest mismatch");
-          if (result.schemaVersion !== 1 || result.status !== "passed" || result.blockers?.length) throw new Error("Preflight did not pass");
-          if (result.requestId !== process.env.REQUEST_ID) throw new Error("Preflight requestId mismatch");
-          for (const [key, value] of Object.entries(expected)) if (result.candidate?.[key] !== value) throw new Error(`Preflight ${key} mismatch`);
-          if (result.candidate?.headCommitSha !== undefined && result.candidate.headCommitSha !== expected.commitSha) throw new Error("Preflight headCommitSha mismatch");
-          if (!/^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$/.test(result.currentRelease || "")) throw new Error("Expected current release is invalid");
-          if (typeof result.validUntil !== "string" || !Number.isFinite(Date.parse(result.validUntil))) throw new Error("Preflight validUntil is missing or invalid");
-          if (Date.parse(result.validUntil) <= Date.now()) throw new Error("Preflight expired");
-          console.log(result.candidate.archiveSha256);
-          console.log(result.currentRelease);
-          NODE
-          )
+          readarray -t result_values < <(RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" SOURCE_ARTIFACT_ID="$SOURCE_ARTIFACT_ID" ACTUAL_SHA="$actual_sha" REQUEST_ID="$REQUEST_ID" node scripts/validate-deploy-preflight.mjs "$external" "$result")
           [[ "${#result_values[@]}" -eq 2 ]]
           echo "ARCHIVE_SHA=${result_values[0]}" >> "$GITHUB_ENV"
           echo "EXPECTED_CURRENT=${result_values[1]}" >> "$GITHUB_ENV"
+          echo "CANDIDATE_DIR=$candidate_dir" >> "$GITHUB_ENV"
       - name: Configure deployment SSH
         env:
           SSH_KEY: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
@@ -147,7 +153,10 @@ jobs:
           PROD_USER: ${{ secrets.PROD_DEPLOY_USER }}
         run: |
           set -Eeuo pipefail
-          archive="release-artifacts/peilv-$RELEASE_ID.tar.gz"
+          artifact_name="peilv-candidate-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}"
+          candidate_dir="release-artifacts/$artifact_name"
+          [[ "$CANDIDATE_DIR" == "$candidate_dir" ]]
+          archive="$candidate_dir/peilv-$RELEASE_ID.tar.gz"
           checksum="$archive.sha256"
           scp -i ~/.ssh/deploy_key -P "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \

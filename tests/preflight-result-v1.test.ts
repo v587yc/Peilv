@@ -25,7 +25,7 @@ function passed() {
   return {
     schemaVersion: 1, status: "passed", requestId: env.REQUEST_ID,
     candidate: { ...candidateFromEnvironment(env), archiveSha256: "b".repeat(64) },
-    currentRelease: `r99-a1-${"c".repeat(12)}`, checks: [], migrations: { applied: [], pending: [], unknown: [] }, blockers: [],
+    currentRelease: `r99-a1-${"c".repeat(12)}`, checks: [{ name: "current_release", status: "passed" }], migrations: { applied: [], pending: [], unknown: [] }, blockers: [],
     checkedAt: new Date().toISOString(), validUntil: new Date(Date.now() + 60_000).toISOString(),
   };
 }
@@ -51,10 +51,13 @@ describe("preflight result v1 failure matrix", () => {
     ["source run", "candidate-validation", "SOURCE_RUN_INVALID"],
     ["artifact identity", "candidate-validation", "ARTIFACT_IDENTITY_INVALID"],
     ["artifact download", "candidate-validation", "ARTIFACT_DOWNLOAD_FAILED"],
+    ["artifact layout", "candidate-validation", "ARTIFACT_LAYOUT_INVALID"],
+    ["artifact content", "candidate-validation", "ARTIFACT_CONTENT_MISSING"],
     ["checksum", "candidate-validation", "CHECKSUM_INVALID"],
     ["manifest missing", "candidate-validation", "MANIFEST_INVALID"],
     ["manifest non-json", "candidate-validation", "MANIFEST_INVALID"],
     ["ssh key", "ssh-configuration", "SSH_CONFIGURATION_FAILED"],
+    ["ssh pending", "ssh-configuration", "SSH_CONFIGURATION_PENDING"],
     ["ssh host key", "ssh-configuration", "SSH_CONFIGURATION_FAILED"],
     ["scp", "production-inspection", "SSH_TRANSFER_FAILED"],
     ["remote exit", "production-inspection", "REMOTE_COMMAND_FAILED"],
@@ -136,5 +139,22 @@ describe("preflight result v1 failure matrix", () => {
     const workflow = await readFile(workflowPath, "utf8");
     expect(workflow).toContain("(( transfer_status == 124 )) && code=REMOTE_TIMEOUT");
     expect(workflow).toMatch(/Timed out waiting for peilv systemd jobs to finish[\s\S]*?exit 124[\s\S]*?remote_status == 124[\s\S]*?REMOTE_TIMEOUT 124/);
+  });
+
+  it("advances candidate success before SSH and keeps remote failures structured and redacted", async () => {
+    const workflow = await readFile(workflowPath, "utf8");
+    const candidateSuccess = workflow.indexOf("SSH_CONFIGURATION_PENDING 1 preflight-result.json");
+    const ssh = workflow.indexOf("Configure read-only SSH");
+    expect(candidateSuccess).toBeGreaterThan(-1);
+    expect(candidateSuccess).toBeLessThan(ssh);
+    for (const marker of ["SSH_CONFIGURATION_FAILED", "SSH_TRANSFER_FAILED", "REMOTE_COMMAND_FAILED", "REMOTE_NON_JSON"]) {
+      expect(workflow).toContain(marker);
+    }
+    for (const code of ["SSH_CONFIGURATION_FAILED", "SSH_TRANSFER_FAILED", "REMOTE_COMMAND_FAILED", "REMOTE_NON_JSON"] as const) {
+      const phase = code === "SSH_CONFIGURATION_FAILED" ? "ssh-configuration" : "production-inspection";
+      const result = createBlockedResult({ phase, code, exitCode: 1, env });
+      expect(validateResult(result)).toBe(true);
+      expect(JSON.stringify(result)).not.toMatch(/secret|hostname|stderr|\/opt\/|sudo|command=/i);
+    }
   });
 });

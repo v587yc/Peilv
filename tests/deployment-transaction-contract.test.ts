@@ -46,8 +46,12 @@ describe("production deployment transaction contract", () => {
   it("binds the approved preflight result to the deployment request in the runner", async () => {
     const workflow = await read(".github/workflows/deploy-approved-production.yml");
     expect(workflow).toContain('REQUEST_ID: ${{ inputs.request_id }}');
-    expect(workflow).toContain('result.requestId !== process.env.REQUEST_ID');
+    const validator = await read("scripts/validate-deploy-preflight.mjs");
+    expect(validator).toContain('result.requestId !== env.REQUEST_ID');
     expect(workflow).not.toContain('$PROD_HOST:/tmp/peilv-preflight-result');
+    expect(workflow).toContain('result.name !== `preflight-result-${process.env.REQUEST_ID}`');
+    expect(workflow).toContain('candidate.name !== `peilv-candidate-${sourceRunId}-${sourceAttempt}`');
+    expect(workflow).toContain('node scripts/validate-deploy-preflight.mjs "$external" "$result"');
   });
   it("extracts one new release tree, verifies it, and starts one candidate", async () => {
     const deploy = await read("scripts/deploy-production.sh");
