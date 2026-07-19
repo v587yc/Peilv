@@ -94,6 +94,22 @@ describe("chart wrapper", () => {
     )
   })
 
+  it("renders a zero tooltip value instead of treating it as empty", async () => {
+    const container = render(
+      <ChartContainer config={{ sales: { label: "Sales", color: "#22c55e" } }}>
+        <ChartTooltipContent
+          active
+          label="sales"
+          payload={[{ dataKey: "sales", name: "sales", value: 0, color: "#22c55e" }]}
+        />
+      </ChartContainer>,
+    )
+
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+
+    expect(container.textContent).toContain("0")
+  })
+
   it("renders custom legend content and filters empty payloads", async () => {
     const container = render(
       <ChartContainer config={{ sales: { label: "Sales", color: "#22c55e" } }}>
