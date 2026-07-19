@@ -92,15 +92,36 @@ describe.skipIf(!databaseUrl)("automation task real PostgreSQL concurrency", () 
     pool.on("error", (error: Error & { code?: string }) => { if (error.code !== "57P01") unexpectedErrors.push(error); });
     try {
       await prepare(pool);
-      const results = await Promise.all(Array.from({ length: 100 }, (_, index) => pool.query<{ id: string }>(
-        "SELECT id FROM public.ensure_automation_task($1::jsonb)",
-        [JSON.stringify(task(`task-${index}`, "same-key", { winner: 0 }))],
-      )));
-      const ids = results.flatMap((result) => result.rows.map((row) => row.id));
-      expect(new Set(ids).size).toBe(1);
-      expect((await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM automation_tasks")).rows[0].count).toBe("1");
-      const stored = (await pool.query<{ payload: Record<string, unknown> }>("SELECT payload FROM automation_tasks WHERE id=$1", [ids[0]])).rows[0].payload;
-      expect(stored).toEqual({ winner: 0 });
+      const clients = await Promise.all(Array.from({ length: 100 }, () => pool.connect()));
+      try {
+        const backendPids = await Promise.all(clients.map(async (client) => {
+          const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+          return result.rows[0].pid;
+        }));
+        expect(new Set(backendPids).size).toBe(100);
+
+        let arrived = 0;
+        let release!: () => void;
+        const allArrived = new Promise<void>((resolve) => { release = resolve; });
+        const requests = clients.map((client, index) => (async () => {
+          arrived += 1;
+          if (arrived === 100) release();
+          await allArrived;
+          return client.query<{ id: string }>(
+            "SELECT id FROM public.ensure_automation_task($1::jsonb)",
+            [JSON.stringify(task(`task-${index}`, "same-key", { winner: 0 }))],
+          );
+        })());
+        const results = await Promise.all(requests);
+        expect(arrived).toBe(100);
+        const ids = results.flatMap((result) => result.rows.map((row) => row.id));
+        expect(new Set(ids).size).toBe(1);
+        expect((await clients[0].query<{ count: string }>("SELECT count(*)::text AS count FROM automation_tasks")).rows[0].count).toBe("1");
+        const stored = (await clients[0].query<{ payload: Record<string, unknown> }>("SELECT payload FROM automation_tasks WHERE id=$1", [ids[0]])).rows[0].payload;
+        expect(stored).toEqual({ winner: 0 });
+      } finally {
+        clients.forEach((client) => client.release());
+      }
     } finally {
       await closeEphemeralDatabase(pool, admin, dbName, unexpectedErrors);
     }

@@ -28,6 +28,8 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+          --health-start-period 5s
+          --name ci-postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,6 +39,18 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@9.0.0 --activate
+      - name: Assert ephemeral PostgreSQL capacity
+        run: |
+          docker exec ci-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET max_connections = 200"
+          docker restart ci-postgres
+          for attempt in {1..30}; do
+            if docker exec ci-postgres pg_isready -U postgres -d postgres; then break; fi
+            sleep 1
+          done
+          max_connections="$(docker exec ci-postgres psql -U postgres -d postgres -Atc 'SHOW max_connections')"
+          test "$max_connections" -ge 120
+          printf 'ephemeral PostgreSQL max_connections=%s\n' "$max_connections"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Check types
