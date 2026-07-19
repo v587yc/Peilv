@@ -1,0 +1,3 @@
+# Replace the placeholder with the dedicated audit public key when provisioning.
+# `restrict` disables forwarding, agent/X11 forwarding, PTY allocation and user rc.
+restrict ssh-ed25519 REPLACE_WITH_PRODUCTION_AUDIT_PUBLIC_KEY peilv-production-audit

@@ -21,4 +21,16 @@ describe("production preflight shell syntax", () => {
       stderr: "",
     });
   });
+
+  it("keeps workflow embedded remote shells parseable", async () => {
+    const workflow = await readFile(new URL("../.github/workflows/production-preflight.yml", import.meta.url), "utf8");
+    const blocks = ["CAPACITY", "PUBLISH", "CLEANUP", "REMOTE"].map(label => {
+      const match = workflow.match(new RegExp(`<<'${label}'[^\\n]*\\r?\\n([\\s\\S]*?)\\r?\\n {10}${label}`));
+      return match?.[1];
+    }).filter((block): block is string => Boolean(block));
+    expect(blocks).toHaveLength(4);
+    for (const block of blocks) {
+      await expect(exec("bash", ["-n", "-c", block.replace(/^ {10}/gm, "")], { cwd: process.cwd() })).resolves.toMatchObject({ stderr: "" });
+    }
+  });
 });

@@ -51,7 +51,7 @@ Playwright 使用 `playwright.config.ts` 在 `127.0.0.1:3100` 启动独立生产
 
 生产发布改为两个手动按钮，避免没有 GitHub Environment 审批功能时误发布：
 
-1. 先运行 `Production preflight`：只构建发布包并只读检查服务器，绝不修改生产环境。完成后在 Summary 里查看 `Release ID`、`Release SHA-256`、当前版本、回退版本和待执行迁移。
+1. 先运行 `Production preflight`：执行 non-disruptive transient staging。它会在受限临时路径短暂上传、校验并展开候选，运行隔离探针后全路径清理；不会停止服务、迁移、切换版本或写入生产 release。完成后在 Summary 里查看 `Release ID`、`Release SHA-256`、当前版本、回退版本和待执行迁移。
 2. 确认预检没问题后，再运行 `Deploy approved production`：把上一步 Summary 里的 `Release ID` 和 `Release SHA-256` 填进去，才会真正上传、备份、迁移、5001 候选检查并原子切换。
 
 详细约束和回滚步骤以 `PRODUCTION_DEPLOYMENT.md` 为准。

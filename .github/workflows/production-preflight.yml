@@ -231,7 +231,7 @@ jobs:
           migrations="$(node scripts/preflight-result-v1.mjs manifest-migrations "$external")"
           echo "MIGRATIONS=$migrations" >> "$GITHUB_ENV"
           node scripts/preflight-result-v1.mjs blocked ssh-configuration SSH_CONFIGURATION_PENDING 1 preflight-result.json
-      - name: Configure read-only SSH
+      - name: Configure restricted preflight SSH
         id: ssh-configuration
         if: steps.candidate-validation.outcome == 'success'
         continue-on-error: true
@@ -248,7 +248,7 @@ jobs:
       - name: Record SSH configuration failure
         if: steps.candidate-validation.outcome == 'success' && steps.ssh-configuration.outcome != 'success'
         run: node scripts/preflight-result-v1.mjs blocked ssh-configuration SSH_CONFIGURATION_FAILED 1 preflight-result.json
-      - name: Inspect production without changes
+      - name: Run non-disruptive transient production staging
         id: production-inspection
         if: steps.ssh-configuration.outcome == 'success'
         continue-on-error: true
@@ -263,8 +263,46 @@ jobs:
           [[ "$CANDIDATE_DIR" == "$candidate_dir" ]]
           archive="$candidate_dir/peilv-$RELEASE_ID.tar.gz"
           remote_archive="/tmp/peilv-preflight-$REQUEST_ID.tar.gz"
+          remote_upload="/tmp/.peilv-preflight-$REQUEST_ID.upload-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          archive_bytes="$(stat -c '%s' "$archive")"
+          remote_archive_published=0
+          ssh_base=(-i ~/.ssh/audit_key -p "$PROD_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes)
+          cleanup_remote_upload() {
+            timeout 30s ssh "${ssh_base[@]}" "$PROD_USER@$PROD_HOST" bash -s -- "$REQUEST_ID" "$remote_upload" "$remote_archive" "$remote_archive_published" <<'CLEANUP' >/dev/null 2>&1 || true
+          set -Eeuo pipefail
+          request_id="$1"; upload="$2"; archive="$3"; published="$4"
+          [[ "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          [[ "$upload" == "/tmp/.peilv-preflight-$request_id.upload-"* ]]
+          [[ "$archive" == "/tmp/peilv-preflight-$request_id.tar.gz" ]]
+          [[ "$published" == 0 || "$published" == 1 ]]
+          rm -f -- "$upload"
+          if [[ "$published" == 1 ]]; then rm -f -- "$archive"; fi
+          CLEANUP
+          }
+          trap cleanup_remote_upload EXIT HUP INT TERM
           set +e
-          timeout 90s scp -i ~/.ssh/audit_key -P "$PROD_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes "$archive" "$PROD_USER@$PROD_HOST:$remote_archive" 2>transfer-stderr.log
+          timeout 30s ssh "${ssh_base[@]}" "$PROD_USER@$PROD_HOST" bash -s -- "$REQUEST_ID" "$remote_upload" "$remote_archive" "$archive_bytes" <<'CAPACITY' 2>transfer-stderr.log
+          set -Eeuo pipefail
+          request_id="$1"; upload="$2"; archive="$3"; bytes="$4"
+          [[ "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          [[ "$upload" == "/tmp/.peilv-preflight-$request_id.upload-"* ]]
+          [[ "$archive" == "/tmp/peilv-preflight-$request_id.tar.gz" ]]
+          [[ "$bytes" =~ ^[1-9][0-9]*$ ]] && (( bytes <= 1073741824 ))
+          [[ ! -e "$upload" && ! -L "$upload" && ! -e "$archive" && ! -L "$archive" ]]
+          available="$(df -Pk /tmp | awk 'NR == 2 { print $4 * 1024 }')"
+          (( available >= bytes + 67108864 ))
+          CAPACITY
+          capacity_status=$?
+          set -e
+          if (( capacity_status != 0 )); then
+            cat transfer-stderr.log >&2; rm -f transfer-stderr.log
+            code=SSH_TRANSFER_FAILED; (( capacity_status == 124 )) && code=REMOTE_TIMEOUT
+            node scripts/preflight-result-v1.mjs blocked production-inspection "$code" "$capacity_status" preflight-result.json
+            exit "$capacity_status"
+          fi
+          rm -f transfer-stderr.log
+          set +e
+          timeout 90s scp -i ~/.ssh/audit_key -P "$PROD_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes "$archive" "$PROD_USER@$PROD_HOST:$remote_upload" 2>transfer-stderr.log
           transfer_status=$?
           set -e
           if (( transfer_status != 0 )); then
@@ -275,7 +313,40 @@ jobs:
           fi
           rm -f transfer-stderr.log
           set +e
-          timeout 10m ssh -i ~/.ssh/audit_key -p "$PROD_PORT" \
+          timeout 30s ssh "${ssh_base[@]}" "$PROD_USER@$PROD_HOST" bash -s -- "$REQUEST_ID" "$remote_upload" "$remote_archive" "$archive_bytes" <<'PUBLISH' 2>transfer-stderr.log
+          set -Eeuo pipefail
+          request_id="$1"; upload="$2"; archive="$3"; bytes="$4"
+          [[ "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          [[ "$upload" == "/tmp/.peilv-preflight-$request_id.upload-"* ]]
+          [[ "$archive" == "/tmp/peilv-preflight-$request_id.tar.gz" ]]
+          [[ "$bytes" =~ ^[1-9][0-9]*$ ]] && (( bytes <= 1073741824 ))
+          trap 'rm -f -- "$upload"' EXIT HUP INT TERM
+          [[ -f "$upload" && ! -L "$upload" ]]
+          IFS='|' read -r file_type owner mode nlink size device < <(stat -c '%F|%U|%a|%h|%s|%d' -- "$upload")
+          [[ "$file_type" == "regular file" && "$owner" == peilv-audit && "$mode" =~ ^[0-7]{3,4}$ ]]
+          (( (8#$mode & 0022) == 0 ))
+          [[ "$nlink" == 1 && "$size" == "$bytes" && "$device" == "$(stat -c '%d' -- /tmp)" ]]
+          chmod 0600 -- "$upload"
+          ln -- "$upload" "$archive"
+          rm -f -- "$upload"
+          IFS='|' read -r file_type owner mode nlink size device < <(stat -c '%F|%U|%a|%h|%s|%d' -- "$archive")
+          [[ "$file_type" == "regular file" && "$owner" == peilv-audit && "$mode" == 600 ]]
+          [[ "$nlink" == 1 && "$size" == "$bytes" && "$device" == "$(stat -c '%d' -- /tmp)" ]]
+          trap - EXIT HUP INT TERM
+          PUBLISH
+          publish_status=$?
+          set -e
+          if (( publish_status != 0 )); then
+            cat transfer-stderr.log >&2; rm -f transfer-stderr.log
+            code=SSH_TRANSFER_FAILED; (( publish_status == 124 )) && code=REMOTE_TIMEOUT
+            node scripts/preflight-result-v1.mjs blocked production-inspection "$code" "$publish_status" preflight-result.json
+            exit "$publish_status"
+          fi
+          rm -f transfer-stderr.log
+          remote_archive_published=1
+          : > "$RUNNER_TEMP/peilv-preflight-$REQUEST_ID.published"
+          set +e
+          timeout 10m ssh "${ssh_base[@]}" \
             -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
             bash -s -- "$RELEASE_ID" "$COMMIT_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_ARTIFACT_ID" "$ARCHIVE_SHA" "$REQUEST_ID" "$MIGRATIONS" "$remote_archive" <<'REMOTE' > remote-preflight.json 2>remote-stderr.log
@@ -301,7 +372,10 @@ jobs:
           exit 124
           REMOTE
           remote_status=$?
+          printf '%s\n' "$remote_status" > "$RUNNER_TEMP/peilv-preflight-$REQUEST_ID.exit-status"
           set -e
+          cleanup_remote_upload
+          trap - EXIT HUP INT TERM
           cat remote-stderr.log >&2; rm -f remote-stderr.log
           if (( remote_status == 124 )); then
             node scripts/preflight-result-v1.mjs blocked production-inspection REMOTE_TIMEOUT 124 preflight-result.json
@@ -322,6 +396,30 @@ jobs:
           node scripts/preflight-result-v1.mjs validate preflight-result.json
           status="$(node -e 'const fs=require("node:fs"),path=require("node:path");const r=JSON.parse(fs.readFileSync(path.resolve("preflight-result.json"),"utf8"));process.stdout.write(r.status)')"
           [[ "$status" == passed ]] || exit 2
+      - name: Secondary cleanup of transient production staging
+        if: always() && steps.ssh-configuration.outcome == 'success'
+        continue-on-error: true
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_PORT: ${{ secrets.PROD_PORT }}
+          PROD_USER: ${{ secrets.PROD_AUDIT_USER }}
+        run: |
+          set -Eeuo pipefail
+          remote_upload="/tmp/.peilv-preflight-$REQUEST_ID.upload-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          remote_archive="/tmp/peilv-preflight-$REQUEST_ID.tar.gz"
+          published=0
+          [[ ! -f "$RUNNER_TEMP/peilv-preflight-$REQUEST_ID.published" ]] || published=1
+          timeout 30s ssh -i ~/.ssh/audit_key -p "$PROD_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
+            "$PROD_USER@$PROD_HOST" bash -s -- "$REQUEST_ID" "$remote_upload" "$remote_archive" "$published" <<'CLEANUP'
+          set -Eeuo pipefail
+          request_id="$1"; upload="$2"; archive="$3"; published="$4"
+          [[ "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          [[ "$upload" == "/tmp/.peilv-preflight-$request_id.upload-"* ]]
+          [[ "$archive" == "/tmp/peilv-preflight-$request_id.tar.gz" ]]
+          [[ "$published" == 0 || "$published" == 1 ]]
+          rm -f -- "$upload"
+          if [[ "$published" == 1 ]]; then rm -f -- "$archive"; fi
+          CLEANUP
       - name: Finalize preflight report
         if: always()
         run: |
