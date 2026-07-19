@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const root = new URL("../", import.meta.url);
-const read = (path: string) => readFile(new URL(path, root), "utf8");
+const read = async (path: string) => (await readFile(new URL(path, root), "utf8")).replace(/\r\n?/g, "\n");
 const executableLines = (script: string): string[] => script.split(String.fromCharCode(10)).map(line => line.trim()).filter(line => line && !line.startsWith("#"));
 const candidateStart = (script: string): number => script.indexOf("candidate_start", script.indexOf("candidate_started_at="));
 
