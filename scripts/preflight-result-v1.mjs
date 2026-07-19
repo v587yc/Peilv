@@ -13,8 +13,11 @@ const SAFE_BLOCKERS = Object.freeze({
   SOURCE_RUN_INVALID: "Candidate source run validation failed",
   ARTIFACT_IDENTITY_INVALID: "Candidate artifact validation failed",
   ARTIFACT_DOWNLOAD_FAILED: "Candidate artifact download failed",
+  ARTIFACT_LAYOUT_INVALID: "Candidate artifact layout is invalid",
+  ARTIFACT_CONTENT_MISSING: "Candidate artifact content is missing",
   CHECKSUM_INVALID: "Candidate checksum validation failed",
   MANIFEST_INVALID: "Candidate manifest validation failed",
+  SSH_CONFIGURATION_PENDING: "Candidate checks passed; read-only SSH configuration is pending",
   SSH_CONFIGURATION_FAILED: "Read-only SSH configuration failed",
   SSH_TRANSFER_FAILED: "Production inspection transfer failed",
   REMOTE_COMMAND_FAILED: "Production inspection command failed",
@@ -89,7 +92,9 @@ export function normalizeRemoteResult(remote, env = process.env) {
   if (remote.status === "passed") {
     if (!RELEASE_ID.test(remote.currentRelease || "")) throw new Error("Invalid current release");
     if (!Array.isArray(remote.blockers) || remote.blockers.length !== 0) throw new Error("Passed result contains blockers");
-    if (!Array.isArray(remote.checks) || !remote.migrations || !["applied", "pending", "unknown"].every(key => Array.isArray(remote.migrations[key]))) throw new Error("Invalid inspection details");
+    if (!Array.isArray(remote.checks) || remote.checks.length === 0 || remote.checks.some(check => !check || typeof check.name !== "string" || check.status !== "passed") ||
+        !remote.migrations || !["applied", "pending", "unknown"].every(key => Array.isArray(remote.migrations[key]))) throw new Error("Invalid inspection details");
+    if (!validIso(remote.checkedAt) || Date.parse(remote.checkedAt) > Date.now() + 5 * 60_000) throw new Error("Invalid checkedAt");
     if (!validIso(remote.validUntil) || Date.parse(remote.validUntil) <= Date.now()) throw new Error("Invalid validUntil");
     return { ...remote, phase: "production-inspection", code: "OK", exitCode: 0 };
   }
@@ -110,7 +115,10 @@ export function validateResult(result) {
   }
   return result.code === "OK" && result.exitCode === 0 && Array.isArray(result.blockers) && result.blockers.length === 0 &&
     nullableString(result.requestId, UUID) !== null && candidateIsValid(result.candidate) &&
-    RELEASE_ID.test(result.currentRelease || "") && validIso(result.validUntil) && Date.parse(result.validUntil) > Date.now();
+    RELEASE_ID.test(result.currentRelease || "") && Array.isArray(result.checks) && result.checks.length > 0 &&
+    result.checks.every(check => check && typeof check.name === "string" && check.status === "passed") &&
+    validIso(result.checkedAt) && Date.parse(result.checkedAt) <= Date.now() + 5 * 60_000 &&
+    validIso(result.validUntil) && Date.parse(result.validUntil) > Date.now() && Date.parse(result.validUntil) > Date.parse(result.checkedAt);
 }
 
 function candidateIsValid(candidate) {
