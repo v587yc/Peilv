@@ -106,7 +106,7 @@ install -d -o root -g root -m 0700 "$verified_tree"
 if [[ "$measured_archive_sha" != "$archive_sha" ]]; then printf 'Measured preflight archive SHA does not match candidate\n' >&2; exit 1; fi
 /usr/local/libexec/peilv/verify-release.sh --archive "$private_archive" "$measured_archive_sha" "$verified_tree" "peilv-$release_id.tar.gz" >/dev/null
 /usr/local/libexec/peilv/verify-release.sh --tree "$verified_tree" >/dev/null
-verified_migration_csv="$(node -e 'const m=require(process.argv[1]);process.stdout.write(m.migrations.map(x=>`${x.file}=${x.version}`).join(","))' "$verified_tree/migrations/manifest.json")"
+verified_migration_csv="$(node -e 'const fs=require("node:fs"),path=require("node:path");const m=JSON.parse(fs.readFileSync(path.resolve(process.argv[1]),"utf8"));process.stdout.write(m.migrations.map(x=>`${x.file}=${x.version}`).join(","))' "$verified_tree/migrations/manifest.json")"
 if [[ "$migration_csv" != "$verified_migration_csv" ]]; then printf 'Migration list does not match the verified release manifest\n' >&2; exit 1; fi
 verify_installed_curl_secret_helper() {
   local expected

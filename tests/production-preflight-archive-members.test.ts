@@ -13,7 +13,7 @@ const temporaryDirectories: string[] = [];
 
 beforeAll(async () => {
   const workflow = await readFile(workflowPath, "utf8");
-  const match = workflow.match(/python3 - "\$archive" verified-release <<'PY'\n([\s\S]*?)\n {10}PY/);
+  const match = workflow.match(/python3 - "\$archive" verified-release <<'PY'\r?\n([\s\S]*?)\r?\n {10}PY/);
   expect(match, "embedded archive member selector").not.toBeNull();
   selectorSource = match![1].replace(/^ {10}/gm, "");
 
