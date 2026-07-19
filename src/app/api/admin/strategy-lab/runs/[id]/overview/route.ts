@@ -1,0 +1,2 @@
+import { runIdSchema,strategyLabAdminGet } from "@/features/strategy-lab/admin-query-route";
+export async function GET(request:Request,context:{params:Promise<{id:string}>}){return strategyLabAdminGet(request,async(service,requestId)=>{const {id}=await context.params;const parsed=runIdSchema.safeParse(id);if(!parsed.success)throw new (await import("@/features/strategy-lab/admin-query-service")).StrategyLabQueryError("validation");return service.overview(requestId,parsed.data);});}

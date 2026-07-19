@@ -87,6 +87,12 @@ describe("odds snapshot persistence", () => {
       "crown_live",
     ]);
     expect(new Set(inserted.odds_snapshots.map((row) => row.idempotency_key)).size).toBe(8);
+    expect(inserted.odds_snapshots[0]).toMatchObject({
+      hash_version: "canonical-json-v2",
+      content_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      canonical_content_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(inserted.odds_snapshots[0].content_hash).toBe(inserted.odds_snapshots[0].canonical_content_hash);
     expect(inserted.odds_snapshots[0].odds).toMatchObject({
       matchId: "123",
       companies: [{ companyId: "3" }],
@@ -101,5 +107,41 @@ describe("odds snapshot persistence", () => {
       marketType: "europe_1x2",
       snapshotType: "odds",
     });
+  });
+
+  it("writes canonical content while separate captures of identical content remain distinct", async () => {
+    const batches: Record<string, unknown>[][] = [];
+    const supabase = { from(table: string) { return { async insert(rows: Record<string, unknown>[]) { if (table === "odds_snapshots") batches.push(rows); return { error: null }; } }; } } as unknown as SupabaseClient;
+    const input = { matchId: "same", matchDate: "20260718", sourceObservedAt: "2026-07-18T00:00:00.000Z", payload: { oddsData: { z: "末", companies: [], a: { y: 2, x: "原样中文" } } } };
+    await appendOddsSnapshots(supabase, input);
+    await appendOddsSnapshots(supabase, input);
+    expect(batches).toHaveLength(2);
+    expect(batches[0][0].odds).toEqual({ a: { x: "原样中文", y: 2 }, companies: [], z: "末" });
+    expect(Object.keys(batches[0][0].odds as object)).toEqual(["a", "companies", "z"]);
+    expect(batches[0][0].content_hash).toBe(batches[1][0].content_hash);
+    expect(batches[0][0].canonical_content_hash).toBe(batches[1][0].canonical_content_hash);
+    expect(batches[0][0].idempotency_key).not.toBe(batches[1][0].idempotency_key);
+  });
+
+  it.each([
+    ["undefined", undefined], ["NaN", Number.NaN], ["Infinity", Number.POSITIVE_INFINITY],
+    ["BigInt", BigInt(1)], ["function", () => undefined], ["symbol", Symbol("private")],
+  ])("rejects illegal %s payloads before writes without leaking payload or hashes", async (_label, illegal) => {
+    let writes = 0;
+    const supabase = { from() { return { async insert() { writes += 1; return { error: null }; } }; } } as unknown as SupabaseClient;
+    const secret = "ODDS-PAYLOAD-MUST-NOT-LEAK";
+    let error: unknown;
+    try { await appendOddsSnapshots(supabase, { matchId: "bad", matchDate: "20260718", payload: { oddsData: { companies: [], secret, illegal } } }); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(TypeError);
+    expect(writes).toBe(0);
+    expect(String(error)).not.toContain(secret);
+    expect(String(error)).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  it("rejects cyclic and nonplain payloads before writes", async () => {
+    const cyclic: Record<string, unknown> = { companies: [] }; cyclic.self = cyclic;
+    const supabase = { from() { return { async insert() { throw new Error("must not write"); } }; } } as unknown as SupabaseClient;
+    await expect(appendOddsSnapshots(supabase, { matchId: "cycle", matchDate: "20260718", payload: { oddsData: cyclic } })).rejects.toBeInstanceOf(TypeError);
+    await expect(appendOddsSnapshots(supabase, { matchId: "date", matchDate: "20260718", payload: { oddsData: { companies: [], bad: new Date() } } })).rejects.toBeInstanceOf(TypeError);
   });
 });

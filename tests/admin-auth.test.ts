@@ -5,6 +5,7 @@ import {
   authorizeAdminRequest,
   createAdminSession,
   isSameOriginMutation,
+  timingSafeSecretEqual,
   verifyAdminSession,
   verifyAdminToken,
 } from "@/lib/admin-auth";
@@ -19,7 +20,7 @@ function restore(name: "ADMIN_API_TOKEN" | "INTERNAL_API_SECRET", value: string 
 
 beforeEach(() => {
   process.env.ADMIN_API_TOKEN = "test-admin-token";
-  process.env.INTERNAL_API_SECRET = "test-internal-secret";
+  process.env.INTERNAL_API_SECRET = "Test_Internal_Secret_0123456789AB";
 });
 
 afterEach(() => {
@@ -28,6 +29,10 @@ afterEach(() => {
 });
 
 describe("admin authentication", () => {
+  it("compares secrets through a constant-size timing-safe digest", () => {
+    expect(timingSafeSecretEqual("bootstrap-secret", "bootstrap-secret")).toBe(true);
+    expect(timingSafeSecretEqual("x", "a-much-longer-bootstrap-secret")).toBe(false);
+  });
   it("compares the configured token exactly", () => {
     expect(verifyAdminToken("test-admin-token")).toBe(true);
     expect(verifyAdminToken("test-admin-tokee")).toBe(false);
@@ -45,41 +50,43 @@ describe("admin authentication", () => {
     expect(verifyAdminSession(session, now + (ADMIN_SESSION_MAX_AGE_SECONDS + 1) * 1000)).toBe(false);
   });
 
-  it("fails closed with 503 when admin auth is unconfigured", () => {
+  it("requires login when no session is supplied", async () => {
     delete process.env.ADMIN_API_TOKEN;
     delete process.env.INTERNAL_API_SECRET;
 
-    const result = authorizeAdminRequest(new Request("https://app.invalid/api/settings"));
-    expect(result).toEqual({ ok: false, status: 503, error: "管理员认证未配置" });
+    const result = await authorizeAdminRequest(new Request("https://app.invalid/api/settings"));
+    expect(result).toEqual({ ok: false, status: 401, error: "需要管理员登录" });
   });
 
-  it("accepts a valid session and rejects an invalid one", () => {
+  it("does not authorize legacy signed sessions as administrators", async () => {
     const session = createAdminSession();
-    const valid = authorizeAdminRequest(new Request("https://app.invalid/api/settings", {
+    const legacy = await authorizeAdminRequest(new Request("https://app.invalid/api/settings", {
       headers: { cookie: `${ADMIN_SESSION_COOKIE}=${session}` },
     }));
-    const invalid = authorizeAdminRequest(new Request("https://app.invalid/api/settings", {
+    const invalid = await authorizeAdminRequest(new Request("https://app.invalid/api/settings", {
       headers: { cookie: `${ADMIN_SESSION_COOKIE}=invalid` },
     }));
 
-    expect(valid).toEqual({
-      ok: true,
-      actor: { actorId: "single-team-admin", actorType: "admin" },
-    });
-    expect(invalid).toEqual({ ok: false, status: 401, error: "需要管理员登录" });
+    expect(legacy.ok).toBe(false);
+    expect(invalid).toMatchObject({ ok: false, status: expect.any(Number) });
   });
 
-  it("preserves the internal task channel without requiring an admin cookie", () => {
+  it("does not treat internal credentials as administrator credentials on management routes", async () => {
     delete process.env.ADMIN_API_TOKEN;
-    const result = authorizeAdminRequest(new Request("https://app.invalid/api/analysis/learn", {
+    const result = await authorizeAdminRequest(new Request("https://app.invalid/api/analysis/learn", {
       method: "POST",
-      headers: { "x-internal-api-secret": "test-internal-secret" },
+      headers: { "x-internal-api-secret": "Test_Internal_Secret_0123456789AB" },
     }));
 
-    expect(result).toEqual({
-      ok: true,
-      actor: { actorId: "internal-task", actorType: "internal" },
-    });
+    expect(result).toEqual({ ok: false, status: 403, error: "内部任务无权访问此接口" });
+  });
+
+  it("recognizes internal credentials only on an exact allowlisted route and method", async () => {
+    const result = await authorizeAdminRequest(new Request("https://app.invalid/api/automation/compensate", {
+      method: "POST",
+      headers: { "x-internal-api-secret": "Test_Internal_Secret_0123456789AB" },
+    }));
+    expect(result).toEqual({ ok: true, actor: { actorId: "internal-task", actorType: "internal" } });
   });
 
   it("requires same-origin browser mutations", () => {

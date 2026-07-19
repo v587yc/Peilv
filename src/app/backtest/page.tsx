@@ -113,11 +113,30 @@ export default function BacktestPage() {
   // Poll job status
   const pollJob = useCallback(async (jobId: string) => {
     try {
-      const res = await fetch(`/api/backtest?id=${jobId}`);
+      const res = await fetch("/api/admin/backtests", { cache: "no-store" });
       const data = await res.json();
-      if (data.success && data.job) {
-        setJob(data.job);
-        if (data.job.status !== "running") {
+      const item = Array.isArray(data.items) ? data.items.find((candidate: { id?: unknown }) => candidate.id === jobId) : null;
+      if (data.success && item) {
+        const nextJob: BacktestJob = {
+          id: item.id,
+          status: item.status,
+          startDate: item.start_date,
+          endDate: item.end_date,
+          currentDate: item.current_date || item.start_date,
+          totalDates: item.total_dates || 0,
+          processedDates: item.processed_dates || 0,
+          totalMatches: item.total_matches || 0,
+          analyzedMatches: item.analyzed_matches || 0,
+          verifiedMatches: item.verified_matches || 0,
+          correctMatches: item.correct_matches || 0,
+          accuracy: item.accuracy || "0%",
+          log: Array.isArray(item.log) ? item.log : [],
+          result: item.result || undefined,
+          startedAt: item.started_at,
+          endedAt: item.ended_at || undefined,
+        };
+        setJob(nextJob);
+        if (nextJob.status !== "running") {
           setPolling(false);
         }
       }
@@ -153,13 +172,14 @@ export default function BacktestPage() {
     setPolling(false);
 
     try {
-      const res = await fetch("/api/backtest", {
+      const res = await fetch("/api/admin/backtests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          startDate,
-          endDate,
-          maxMatches: maxMatches || 0,
+          targetId: "backtest.start",
+          reason: "回测页面创建回测任务",
+          idempotencyKey: `backtest:start:${crypto.randomUUID()}`,
+          payload: { startDate, endDate, maxMatches: maxMatches || 0 },
         }),
       });
       const data = await res.json();

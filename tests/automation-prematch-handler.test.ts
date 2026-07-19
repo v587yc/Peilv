@@ -48,7 +48,7 @@ function context(): StepExecutionContext {
 }
 
 beforeEach(() => {
-  process.env.INTERNAL_API_SECRET = "internal-test-secret";
+  process.env.INTERNAL_API_SECRET = "Test_Internal_Secret_0123456789AB";
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-07-11T04:31:00.000Z"));
 });

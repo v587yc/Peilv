@@ -1,0 +1,93 @@
+name: Rollback production
+run-name: Rollback ${{ inputs.expected_current_release_id }} to ${{ inputs.target_release_id }} · ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_release_id:
+        description: Installed target release ID
+        required: true
+        type: string
+      expected_current_release_id:
+        description: Current release for compare-and-swap
+        required: true
+        type: string
+      request_id:
+        description: Control-plane request UUID
+        required: true
+        type: string
+      reason:
+        description: Human rollback reason
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: peilv-production
+  cancel-in-progress: false
+
+jobs:
+  rollback-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Validate bounded rollback inputs
+        env:
+          TARGET_RELEASE: ${{ inputs.target_release_id }}
+          EXPECTED_CURRENT: ${{ inputs.expected_current_release_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$TARGET_RELEASE" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]]
+          [[ "$EXPECTED_CURRENT" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]]
+          [[ "$TARGET_RELEASE" != "$EXPECTED_CURRENT" ]]
+          [[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          [[ "${#REASON}" -ge 10 && "${#REASON}" -le 300 ]]
+          reason_b64url="$(printf '%s' "$REASON" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+          [[ "$reason_b64url" =~ ^[A-Za-z0-9_-]{4,700}$ ]]
+          echo "REASON_B64URL=$reason_b64url" >> "$GITHUB_ENV"
+      - name: Configure rollback SSH
+        env:
+          SSH_KEY: ${{ secrets.PROD_ROLLBACK_SSH_KEY }}
+          SSH_HOST_KEY: ${{ secrets.PROD_SSH_HOST_KEY }}
+        run: |
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/rollback_key
+          printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/rollback_key ~/.ssh/known_hosts
+      - name: Execute code-only rollback
+        env:
+          TARGET_RELEASE: ${{ inputs.target_release_id }}
+          EXPECTED_CURRENT: ${{ inputs.expected_current_release_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_PORT: ${{ secrets.PROD_PORT }}
+          PROD_USER: ${{ secrets.PROD_ROLLBACK_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/rollback_key -p "$PROD_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$PROD_USER@$PROD_HOST" \
+            "sudo -n /usr/local/sbin/peilv-control rollback '$TARGET_RELEASE' '$EXPECTED_CURRENT' '$REQUEST_ID' '$REASON_B64URL'" \
+            | tee rollback-summary.txt
+          scp -i ~/.ssh/rollback_key -P "$PROD_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$PROD_USER@$PROD_HOST:/tmp/rollback-$REQUEST_ID.json" rollback-result.json
+          ssh -i ~/.ssh/rollback_key -p "$PROD_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$PROD_USER@$PROD_HOST" "rm -f '/tmp/rollback-$REQUEST_ID.json'"
+          node -e 'const r=require("./rollback-result.json"); if (r.schemaVersion !== 1 || r.status !== "succeeded" || r.targetReleaseId !== process.env.TARGET_RELEASE || r.previousReleaseId !== process.env.EXPECTED_CURRENT || r.databaseRestored !== false || r.migrationsRun !== false) process.exit(1);'
+          cat rollback-summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload structured rollback result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-result-${{ inputs.request_id }}
+          path: |
+            rollback-result.json
+            rollback-summary.txt
+          if-no-files-found: error
+          retention-days: 30

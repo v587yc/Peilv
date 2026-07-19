@@ -13,6 +13,11 @@ import {
   type MarketVerification,
 } from "@/lib/verification/market-service";
 import { summarizeBenchmark } from "@/lib/analysis/strategy";
+import { isInternalRequest } from "@/lib/internal-auth";
+
+function rejectInternal(request: Request) {
+  return isInternalRequest(request) ? NextResponse.json({ error: "内部任务无权访问此接口" }, { status: 403 }) : null;
+}
 
 interface ReportRow {
   matchId: string;
@@ -100,6 +105,7 @@ function legacyDateKey(date: string): string {
 
 // GET: fetch report by date, or list available dates, or get trend data
 export async function GET(request: Request) {
+  const denial = rejectInternal(request); if (denial) return denial;
   try {
     const { searchParams } = new URL(request.url);
     const reportDate = searchParams.get("date");
@@ -194,6 +200,7 @@ export async function GET(request: Request) {
 
 // POST: generate AI prediction report from prediction_results + match_odds
 export async function POST(request: Request) {
+  const denial = rejectInternal(request); if (denial) return denial;
   try {
     const { searchParams } = new URL(request.url);
     const predDate = normalizeDateKey(searchParams.get("predDate") || new Date().toISOString().slice(0, 10).replace(/-/g, ""));

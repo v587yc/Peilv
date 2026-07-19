@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { sendFeishuText } from "@/app/api/feishu/_helpers";
+import { sendFeishuText } from "@/lib/integrations/feishu/notifier";
 import {
   AUTOMATION_DEFINITIONS,
   beijingParts,

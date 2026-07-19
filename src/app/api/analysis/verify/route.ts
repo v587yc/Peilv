@@ -23,6 +23,7 @@ function filterFocused<T extends { league: string }>(rows: T[] | null | undefine
 }
 
 export async function PATCH(request: NextRequest) {
+  if (isInternalRequest(request)) return NextResponse.json({ error: "内部任务无权访问此接口" }, { status: 403 });
   try {
     const body = await request.json();
     const { matchId, matchDate, market, isCorrect } = body;
@@ -34,7 +35,10 @@ export async function PATCH(request: NextRequest) {
     const { data: existing, error: selectError } = await supabase.from("prediction_results")
       .select("*")
       .eq("match_id", matchId).eq("match_date", matchDate).maybeSingle();
-    if (selectError) return NextResponse.json({ error: selectError.message }, { status: 500 });
+    if (selectError) {
+      console.error("[Verify] Prediction lookup failed:", selectError);
+      return NextResponse.json({ error: "预测记录加载失败" }, { status: 500 });
+    }
     if (!existing) return NextResponse.json({ error: "未找到对应预测记录" }, { status: 404 });
 
     const now = new Date().toISOString();
@@ -42,7 +46,10 @@ export async function PATCH(request: NextRequest) {
     const update = buildManualVerificationUpdate(existing, market, isCorrect, now, actor);
     const { data: updatedRows, error } = await supabase.from("prediction_results").update(update)
       .eq("match_id", matchId).eq("match_date", matchDate).select("*");
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      console.error("[Verify] Manual update failed:", error);
+      return NextResponse.json({ error: "手动验证保存失败" }, { status: 500 });
+    }
     const updated = updatedRows?.[0] ? { ...existing, ...updatedRows[0] } : { ...existing, ...update };
     const [{ data: dateRows }, focused] = await Promise.all([
       supabase.from("prediction_results").select("*").eq("match_date", matchDate),
@@ -63,7 +70,8 @@ export async function PATCH(request: NextRequest) {
       stats: { markets: stats },
     });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "手动验证失败" }, { status: 500 });
+    console.error("[Verify] Manual verification failed:", error);
+    return NextResponse.json({ error: "手动验证失败" }, { status: 500 });
   }
 }
 
@@ -81,6 +89,7 @@ function proxyEvidence(oddsRow: Record<string, unknown> | undefined, market: "ha
 }
 
 export async function GET(request: NextRequest) {
+  if (isInternalRequest(request)) return NextResponse.json({ error: "内部任务无权访问此接口" }, { status: 403 });
   try {
     const startDate = request.nextUrl.searchParams.get("startDate");
     const endDate = request.nextUrl.searchParams.get("endDate") || startDate;
@@ -93,7 +102,10 @@ export async function GET(request: NextRequest) {
     if (!focused) return NextResponse.json({ error: "关注联赛白名单不可用" }, { status: 503 });
     const table = source === "backtest" ? "prediction_results_backtest" : "prediction_results";
     const { data: raw, error } = await supabase.from(table).select("*").gte("match_date", startDate).lte("match_date", endDate!);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      console.error("[Verify] Prediction query failed:", error);
+      return NextResponse.json({ error: "验证数据加载失败" }, { status: 500 });
+    }
     const predictions = filterFocused(raw as PredictionVerificationRow[], focused);
     const ids = [...new Set(predictions.map(row => row.match_id))];
 

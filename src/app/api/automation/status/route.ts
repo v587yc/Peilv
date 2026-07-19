@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { beijingParts } from "@/lib/automation/definitions";
 import { createAutomationService } from "@/lib/automation/service";
 import type { AutomationTaskType } from "@/lib/automation/types";
+import { getInternalAppBaseUrl } from "@/lib/internal-app-base-url";
 
 const DAILY_TASK_TYPES: AutomationTaskType[] = [
   "odds-fetch",
@@ -16,7 +17,7 @@ export async function GET(request: NextRequest) {
     if (!/^\d{8}$/.test(dateKey)) {
       return NextResponse.json({ success: false, error: "date必须是YYYYMMDD格式" }, { status: 400 });
     }
-    const { repository } = createAutomationService(request.nextUrl.origin);
+    const { repository } = createAutomationService(getInternalAppBaseUrl());
     const tasks = await repository.list({ dateKey, taskTypes: DAILY_TASK_TYPES, limit: 20 });
     const statusTasks = tasks.map((task) => ({
       id: task.id,
@@ -46,8 +47,7 @@ export async function GET(request: NextRequest) {
       { success: true, dateKey, tasks: statusTasks },
       { headers: { "Cache-Control": "no-store" } },
     );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "任务状态查询失败";
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+  } catch {
+    return NextResponse.json({ success: false, error: "任务状态查询失败" }, { status: 500 });
   }
 }

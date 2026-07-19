@@ -15,6 +15,21 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 5s
+          --name ci-postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,16 +39,31 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@9.0.0 --activate
+      - name: Assert ephemeral PostgreSQL capacity
+        run: |
+          docker exec ci-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET max_connections = 200"
+          docker restart ci-postgres
+          for attempt in {1..30}; do
+            if docker exec ci-postgres pg_isready -U postgres -d postgres; then break; fi
+            sleep 1
+          done
+          max_connections="$(docker exec ci-postgres psql -U postgres -d postgres -Atc 'SHOW max_connections')"
+          test "$max_connections" -ge 120
+          printf 'ephemeral PostgreSQL max_connections=%s\n' "$max_connections"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Run unit tests
-        run: pnpm exec vitest run
       - name: Check types
         run: pnpm ts-check
       - name: Lint
         run: pnpm lint
       - name: Build
         run: pnpm build
+      - name: Run unit tests
+        env:
+          AUTOMATION_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+          AUTOMATION_TEST_DATABASE_ACK: ephemeral
+        run: pnpm exec vitest run
       - name: Check server bundle
         run: node --check dist/server.js
       - name: Install Playwright Chromium
@@ -42,9 +72,16 @@ jobs:
         run: pnpm test:e2e
       - name: Create and verify release artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          release_id="$(date -u +%Y%m%dT%H%M%SZ)"
-          bash scripts/create-release.sh "$release_id"
+          release_id="r${RUN_ID}-a${RUN_ATTEMPT}-${COMMIT_SHA:0:12}"
+          bash scripts/create-release.sh \
+            "$release_id" "$COMMIT_SHA" "$REPOSITORY_ID" "$REPOSITORY" "$RUN_ID" "$RUN_ATTEMPT"
           bash scripts/verify-release.sh \
             "release-artifacts/peilv-$release_id.tar.gz" \
             "release-artifacts/peilv-$release_id.tar.gz.sha256"
@@ -52,12 +89,13 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: peilv-${{ github.sha }}
+          name: peilv-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             release-artifacts/*.tar.gz
             release-artifacts/*.tar.gz.sha256
+            release-artifacts/release-manifest-*.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
       - name: Upload Playwright diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

@@ -4,8 +4,8 @@ import { parse } from 'url';
 import next from 'next';
 
 const dev = process.env.COZE_PROJECT_ENV !== 'PROD';
-const hostname = process.env.HOSTNAME || 'localhost';
-const port = parseInt(process.env.PORT || '5000', 10);
+const hostname = process.env.HOSTNAME || '127.0.0.1';
+const port = parseInt(process.env.PORT || process.env.DEPLOY_RUN_PORT || '5000', 10);
 
 // Create Next.js app
 const app = next({ dev, hostname, port });
@@ -26,7 +26,7 @@ app.prepare().then(() => {
     console.error(err);
     process.exit(1);
   });
-  server.listen(port, () => {
+  server.listen(port, hostname, () => {
     console.log(
       `> Server listening at http://${hostname}:${port} as ${
         dev ? 'development' : process.env.COZE_PROJECT_ENV

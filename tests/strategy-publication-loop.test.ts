@@ -91,7 +91,7 @@ describe("T-08 dynamic weights and strategy publication loop", () => {
     ];
   });
 
-  it("retires the old version, publishes learned weights, and serves them to later analysis", async () => {
+  it("retires the legacy publication entry without mutating strategy state", async () => {
     const effectiveFrom = "2026-07-10T00:00:00.000Z";
     const publishResponse = await publishStrategy(new NextRequest("http://local/api/strategy/strategy-learned/publish", {
       method: "POST",
@@ -99,16 +99,12 @@ describe("T-08 dynamic weights and strategy publication loop", () => {
       body: JSON.stringify({ effectiveFrom }),
     }), { params: Promise.resolve({ version: "strategy-learned" }) });
 
-    expect(publishResponse.status).toBe(200);
-    expect(store.strategies[0]).toMatchObject({ status: "retired", retired_at: effectiveFrom });
-    expect(store.strategies[1]).toMatchObject({
-      status: "published",
-      effective_from: effectiveFrom,
-      retired_at: null,
-    });
+    expect(publishResponse.status).toBe(410);
+    expect(store.strategies[0]).toMatchObject({ status: "published" });
+    expect(store.strategies[1]).toMatchObject({ status: "draft" });
     expect(store.patterns).toEqual([
-      expect.objectContaining({ status: "retired", retired_at: effectiveFrom }),
-      expect.objectContaining({ status: "published", retired_at: null }),
+      expect.objectContaining({ status: "published" }),
+      expect.objectContaining({ status: "draft" }),
     ]);
 
     const loadResponse = await getStrategy(new NextRequest(
@@ -116,11 +112,10 @@ describe("T-08 dynamic weights and strategy publication loop", () => {
     ));
     const payload = await loadResponse.json();
     expect(payload.strategy).toMatchObject({
-      strategyVersion: "strategy-learned",
-      weightsVersion: "strategy-learned:weights",
-      modelVersion: "model-learned",
-      rules: { confidenceGate: "wilson-95-lower>=0.5" },
+      strategyVersion: "strategy-old",
+      weightsVersion: "strategy-old:weights",
+      modelVersion: "model-old",
     });
-    expect(payload.strategy.weights.indicator_water_direction).toBeCloseTo(0.5, 10);
+    expect(payload.strategy.weights.indicator_water_direction).toBeCloseTo(10 / 17, 10);
   });
 });

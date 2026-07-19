@@ -2,6 +2,7 @@
  * OpenAI-compatible LLM client
  * Supports config from database (app_settings) with env var fallback
  */
+import { safeOutboundFetch } from "@/lib/safe-fetch";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -27,6 +28,9 @@ interface LLMConfig {
   baseUrl: string;
   model: string;
 }
+
+export const LLM_DEFAULT_BASE_URL = "https://api.openai.com/v1";
+export const LLM_DEFAULT_MODEL = "gpt-4o-mini";
 
 // Cached config from database
 let cachedConfig: LLMConfig | null = null;
@@ -69,8 +73,8 @@ async function loadLLMConfig(): Promise<LLMConfig> {
       if (settings.llm_api_key) {
         cachedConfig = {
           apiKey: settings.llm_api_key,
-          baseUrl: (settings.llm_base_url || "https://api.openai.com/v1").replace(/\/+$/, ""),
-          model: settings.llm_model || "gpt-4o-mini",
+          baseUrl: (settings.llm_base_url || LLM_DEFAULT_BASE_URL).replace(/\/+$/, ""),
+          model: settings.llm_model || LLM_DEFAULT_MODEL,
         };
         configCacheTime = now;
         return cachedConfig;
@@ -82,8 +86,8 @@ async function loadLLMConfig(): Promise<LLMConfig> {
 
   // Fallback to env vars
   const apiKey = process.env.LLM_API_KEY || "";
-  const baseUrl = (process.env.LLM_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
-  const model = process.env.LLM_MODEL || "gpt-4o-mini";
+  const baseUrl = (process.env.LLM_BASE_URL || LLM_DEFAULT_BASE_URL).replace(/\/+$/, "");
+  const model = process.env.LLM_MODEL || LLM_DEFAULT_MODEL;
 
   if (!apiKey) {
     throw new Error("LLM API Key 未配置。请在 /test-ai 页面填写，或设置 LLM_API_KEY 环境变量。");
@@ -103,7 +107,7 @@ export async function llmInvoke(
 ): Promise<LLMResponse> {
   const { apiKey, baseUrl, model } = await loadLLMConfig();
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+  const res = await safeOutboundFetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -115,7 +119,7 @@ export async function llmInvoke(
       temperature: options?.temperature ?? 0.3,
       ...(options?.max_tokens ? { max_tokens: options.max_tokens } : {}),
     }),
-  });
+  }, "llm");
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
@@ -137,7 +141,7 @@ export async function* llmStream(
 ): AsyncGenerator<StreamChunk> {
   const { apiKey, baseUrl, model } = await loadLLMConfig();
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+  const res = await safeOutboundFetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -150,7 +154,7 @@ export async function* llmStream(
       stream: true,
       ...(options?.max_tokens ? { max_tokens: options.max_tokens } : {}),
     }),
-  });
+  }, "llm");
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
@@ -196,7 +200,7 @@ async function openAIWebSearch(
 ): Promise<{ title: string; snippet: string; url: string }[] | null> {
   try {
     const { apiKey, baseUrl, model } = await loadLLMConfig();
-    const res = await fetch(`${baseUrl}/responses`, {
+    const res = await safeOutboundFetch(`${baseUrl}/responses`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -208,7 +212,7 @@ async function openAIWebSearch(
         tools: [{ type: "web_search" }],
         max_output_tokens: 500,
       }),
-    });
+    }, "llm");
 
     if (!res.ok) return null;
 
@@ -271,7 +275,7 @@ export async function webSearch(
   }
 
   try {
-    const res = await fetch(`${searchBaseUrl}`, {
+    const res = await safeOutboundFetch(`${searchBaseUrl}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -281,7 +285,7 @@ export async function webSearch(
         query,
         max_results: maxResults,
       }),
-    });
+    }, "search");
 
     if (!res.ok) return openAIWebSearch(query, maxResults);
 

@@ -79,13 +79,22 @@ function Get-RelativeProjectPath {
 
     $fullRoot = [IO.Path]::GetFullPath($projectRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     $fullSource = [IO.Path]::GetFullPath($SourcePath)
-    return $fullSource.Substring($fullRoot.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $rootPrefix = $fullRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $fullSource.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    return $fullSource.Substring($rootPrefix.Length)
 }
 
 function Copy-DistributionFile {
     param([string]$SourcePath)
 
     $relativePath = Get-RelativeProjectPath -SourcePath $SourcePath
+    if (-not $relativePath) {
+        return
+    }
+
     foreach ($prefix in $excludedPrefixes) {
         if ($relativePath.StartsWith($prefix, $true, [Globalization.CultureInfo]::InvariantCulture)) {
             return

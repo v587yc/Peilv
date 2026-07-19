@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
+import { isInternalRequest } from "@/lib/internal-auth";
+
+function rejectInternal(request: Request) {
+  return isInternalRequest(request) ? NextResponse.json({ error: "内部任务无权访问此接口" }, { status: 403 }) : null;
+}
 
 // GET: fetch by date, or list available dates
 export async function GET(request: Request) {
+  const denial = rejectInternal(request); if (denial) return denial;
   try {
     const { searchParams } = new URL(request.url);
     const dateKey = searchParams.get("date");
@@ -41,6 +47,7 @@ export async function GET(request: Request) {
 
 // POST: save prediction JSON for a specific date
 export async function POST(request: Request) {
+  const denial = rejectInternal(request); if (denial) return denial;
   try {
     const body = await request.json();
     const jsonStr = body.data || "";
@@ -64,6 +71,7 @@ export async function POST(request: Request) {
 
 // DELETE: remove a date's prediction
 export async function DELETE(request: Request) {
+  const denial = rejectInternal(request); if (denial) return denial;
   try {
     const { searchParams } = new URL(request.url);
     const dateKey = searchParams.get("date");

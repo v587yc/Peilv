@@ -12,16 +12,33 @@ let verificationColumnsMigrationSql: string;
 let matchT30MigrationSql: string;
 let settlementMigrationSql: string;
 let weightedLearningMigrationSql: string;
+let managementReceiptsMigrationSql: string;
+let adminIdentityMigrationSql: string;
+let adminIdentityGuardrailsMigrationSql: string;
+let adminLoginRateLimitMigrationSql: string;
+let adminLoginReservationsMigrationSql: string;
+let adminUserConcurrencyMigrationSql: string;
+let adminLoginUniformMigrationSql: string;
+let adminLifecycleAuditMigrationSql: string;
+let atomicBacktestClaimMigrationSql: string;
+let commandRecoveryMigrationSql: string;
+let commandAuditLeaseMigrationSql: string;
+let ownerFencingMigrationSql: string;
 let databases: PGlite[] = [];
 
 async function createDatabase() {
   const database = new PGlite();
   databases.push(database);
+  await database.exec(`
+    CREATE ROLE service_role NOLOGIN;
+    CREATE ROLE anon NOLOGIN;
+    CREATE ROLE authenticated NOLOGIN;
+  `);
   return database;
 }
 
 beforeAll(async () => {
-  [setupSql, migrationSql, freshnessMigrationSql, analyzedAtMigrationSql, verificationColumnsMigrationSql, matchT30MigrationSql, settlementMigrationSql, weightedLearningMigrationSql] = await Promise.all([
+  [setupSql, migrationSql, freshnessMigrationSql, analyzedAtMigrationSql, verificationColumnsMigrationSql, matchT30MigrationSql, settlementMigrationSql, weightedLearningMigrationSql, managementReceiptsMigrationSql, adminIdentityMigrationSql, adminIdentityGuardrailsMigrationSql, adminLoginRateLimitMigrationSql, adminLoginReservationsMigrationSql, adminUserConcurrencyMigrationSql, adminLoginUniformMigrationSql, adminLifecycleAuditMigrationSql, atomicBacktestClaimMigrationSql, commandRecoveryMigrationSql, commandAuditLeaseMigrationSql, ownerFencingMigrationSql] = await Promise.all([
     readFile(`${projectRoot}/setup-database.sql`, "utf8"),
     readFile(`${projectRoot}/migrations/0001_production_baseline.sql`, "utf8"),
     readFile(`${projectRoot}/migrations/0002_match_odds_freshness.sql`, "utf8"),
@@ -30,6 +47,18 @@ beforeAll(async () => {
     readFile(`${projectRoot}/migrations/0005_match_t30_analysis.sql`, "utf8"),
     readFile(`${projectRoot}/migrations/0006_market_settlement_evidence.sql`, "utf8"),
     readFile(`${projectRoot}/migrations/0007_weighted_learning_samples.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0008_management_command_receipts.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0009_admin_identity.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0010_admin_identity_guardrails.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0011_admin_login_rate_limit.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0012_admin_login_reservations.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0013_admin_user_optimistic_concurrency.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0014_admin_login_uniform_reservations.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0015_admin_lifecycle_strong_audit.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0016_atomic_backtest_claim.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0017_management_command_recovery_states.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0018_command_audit_and_backtest_leases.sql`, "utf8"),
+    readFile(`${projectRoot}/migrations/0019_backtest_owner_fenced_persistence.sql`, "utf8"),
   ]);
 });
 
@@ -54,11 +83,11 @@ describe("PostgreSQL schema bootstrap", () => {
           'prediction_results_backtest', 'learned_patterns', 'learned_patterns_backtest',
           'strategy_versions', 'automation_tasks', 'automation_task_steps',
           'odds_snapshots', 'data_quality_records', 'audit_logs', 'match_results',
-          'migration_duplicate_archive', 'schema_migrations'
+           'migration_duplicate_archive', 'management_command_receipts', 'schema_migrations'
         ])
       ORDER BY table_name
     `);
-    expect(tables.rows.map(({ table_name }) => table_name)).toHaveLength(16);
+    expect(tables.rows.map(({ table_name }) => table_name)).toHaveLength(17);
 
     const requiredColumns = await database.query<{ table_name: string; column_name: string }>(`
       SELECT table_name, column_name
@@ -129,7 +158,7 @@ describe("PostgreSQL schema bootstrap", () => {
     await expect(database.exec(`
       INSERT INTO prediction_data(date_key, json_content) VALUES ('20260230', '{}')
     `)).rejects.toThrow();
-  });
+  }, 15_000);
 
   it("enforces idempotent upserts for the core natural keys", async () => {
     const database = await createDatabase();
@@ -189,7 +218,217 @@ describe("PostgreSQL schema bootstrap", () => {
       odds_count: 1,
       odds_content: '{"revision":2}',
     });
-  });
+  }, 15_000);
+});
+
+describe("management command receipts migration", () => {
+  it("enforces one canonical command per action and idempotency key", async () => {
+    const database = await createDatabase();
+    await database.exec(setupSql);
+    await database.exec(managementReceiptsMigrationSql);
+    await database.exec(`INSERT INTO management_command_receipts(action,idempotency_key,request_hash) VALUES ('strategy.publish','same-key','hash-a')`);
+    await expect(database.exec(`INSERT INTO management_command_receipts(action,idempotency_key,request_hash) VALUES ('strategy.publish','same-key','hash-b')`)).rejects.toThrow();
+  }, 15_000);
+});
+
+describe("backtest lease recovery migration", () => {
+  it("applies 0015 through 0019 in order from the real 0014 baseline with fenced RPC ACLs", async () => {
+    const database = await createDatabase();
+    await database.exec(setupSql);
+    await database.exec(`DELETE FROM schema_migrations WHERE version >= '0015';`);
+    for (const sql of [adminLifecycleAuditMigrationSql, atomicBacktestClaimMigrationSql, commandRecoveryMigrationSql, commandAuditLeaseMigrationSql, ownerFencingMigrationSql]) await database.exec(sql);
+
+    const versions = await database.query<{ version: string }>(`SELECT version FROM schema_migrations WHERE version >= '0015' ORDER BY version`);
+    expect(versions.rows.map(row => row.version)).toEqual([
+      "0015_admin_lifecycle_strong_audit", "0016_atomic_backtest_claim", "0017_management_command_recovery_states",
+      "0018_command_audit_and_backtest_leases", "0019_backtest_owner_fenced_persistence",
+    ]);
+    const functions = await database.query<{ name: string; search_path: string; public_execute: boolean; service_execute: boolean }>(`
+      SELECT p.proname name, COALESCE(array_to_string(p.proconfig, ','), '') search_path,
+        has_function_privilege('public', p.oid, 'EXECUTE') public_execute,
+        has_function_privilege('service_role', p.oid, 'EXECUTE') service_execute
+      FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='public' AND p.proname IN ('heartbeat_backtest_job','persist_claimed_backtest_job','record_management_command_effect_result')
+      ORDER BY p.proname
+    `);
+    expect(functions.rows).toHaveLength(3);
+    for (const fn of functions.rows) {
+      expect(fn.search_path).toMatch(/search_path=public(, pg_temp)?/);
+      expect(fn.public_execute).toBe(false);
+      expect(fn.service_execute).toBe(true);
+    }
+  }, 30_000);
+
+  it("claims, loses a worker, reclaims the expired lease, and admits a new claim", async () => {
+    const database = await createDatabase();
+    await database.exec(setupSql);
+    await database.exec(commandAuditLeaseMigrationSql);
+    const job = (id: string, owner: string, expires: string) => JSON.stringify({ id, current_step: "queued", start_date: "20260101", end_date: "20260101", current_date: "20260101", total_dates: 1, lock_owner: owner, lock_expires_at: expires, started_at: "2026-01-01T00:00:00Z" }).replaceAll("'", "''");
+    const first = await database.query<{ result: { claimed: boolean } }>(`SELECT claim_backtest_job('${job("crashed", "worker-a", "2020-01-01T00:00:00Z")}'::jsonb, 1, false) result`);
+    expect(first.rows[0].result.claimed).toBe(true);
+    const blocked = await database.query<{ result: { claimed: boolean } }>(`SELECT claim_backtest_job('${job("blocked", "worker-b", "2099-01-01T00:00:00Z")}'::jsonb, 1, false) result`);
+    expect(blocked.rows[0].result.claimed).toBe(false);
+    const reclaimed = await database.query<{ count: number }>(`SELECT reconcile_expired_backtest_jobs(25) count`);
+    expect(reclaimed.rows[0].count).toBe(1);
+    const crashed = await database.query<{ status: string; lock_owner: string | null; lock_expires_at: string | null }>(`SELECT status, lock_owner, lock_expires_at::text FROM backtest_jobs WHERE id='crashed'`);
+    expect(crashed.rows[0]).toMatchObject({ status: "error", lock_owner: null, lock_expires_at: null });
+    const second = await database.query<{ result: { claimed: boolean } }>(`SELECT claim_backtest_job('${job("replacement", "worker-c", "2099-01-01T00:00:00Z")}'::jsonb, 1, false) result`);
+    expect(second.rows[0].result.claimed).toBe(true);
+    const heartbeat = await database.query<{ ok: boolean }>(`SELECT heartbeat_backtest_job('replacement','worker-c',60) ok`);
+    expect(heartbeat.rows[0].ok).toBe(true);
+    const wrongOwnerFailure = await database.query<{ ok: boolean }>(`SELECT fail_claimed_backtest_job('replacement','worker-x','failed') ok`);
+    expect(wrongOwnerFailure.rows[0].ok).toBe(false);
+  }, 20_000);
+
+  it("fences stale worker persistence after lease ownership changes", async () => {
+    const database = await createDatabase();
+    await database.exec(setupSql);
+    await database.exec(commandAuditLeaseMigrationSql);
+    await database.exec(ownerFencingMigrationSql);
+    const initial = JSON.stringify({ id: "fenced", current_step: "queued", start_date: "20260101", end_date: "20260101", current_date: "20260101", total_dates: 1, lock_owner: "worker-a", lock_expires_at: "2099-01-01T00:00:00Z", started_at: "2026-01-01T00:00:00Z" }).replaceAll("'", "''");
+    await database.query(`SELECT claim_backtest_job('${initial}'::jsonb, 1, false)`);
+    await database.exec(`UPDATE backtest_jobs SET lock_owner='worker-b' WHERE id='fenced'`);
+    const stale = await database.query<{ ok: boolean }>(`SELECT persist_claimed_backtest_job('{"id":"fenced","status":"done","current_step":"stale","current_date":"20260101"}'::jsonb,'worker-a') ok`);
+    const owner = await database.query<{ ok: boolean }>(`SELECT persist_claimed_backtest_job('{"id":"fenced","status":"done","current_step":"completed","current_date":"20260101"}'::jsonb,'worker-b') ok`);
+    expect(stale.rows[0].ok).toBe(false);
+    expect(owner.rows[0].ok).toBe(true);
+    const row = await database.query<{ status: string; current_step: string; lock_owner: string | null }>(`SELECT status,current_step,lock_owner FROM backtest_jobs WHERE id='fenced'`);
+    expect(row.rows[0]).toEqual({ status: "done", current_step: "completed", lock_owner: null });
+  }, 20_000);
+
+  it("rejects every stale-owner state and current_date write while allowing the current owner", async () => {
+    const database = await createDatabase();
+    await database.exec(setupSql);
+    await database.exec(commandAuditLeaseMigrationSql);
+    await database.exec(ownerFencingMigrationSql);
+    const initial = JSON.stringify({ id: "owner-matrix", current_step: "queued", start_date: "20260101", end_date: "20260103", current_date: "20260101", total_dates: 3, lock_owner: "owner-a", lock_expires_at: "2099-01-01T00:00:00Z", started_at: "2026-01-01T00:00:00Z" }).replaceAll("'", "''");
+    await database.query(`SELECT claim_backtest_job('${initial}'::jsonb, 1, false)`);
+    await database.exec(`UPDATE backtest_jobs SET lock_owner='owner-b' WHERE id='owner-matrix'`);
+    for (const [status, step] of [["running", "progress"], ["done", "done"], ["error", "error"], ["timed_out", "timed_out"], ["cancelled", "cancelled"]] as const) {
+      const payload = JSON.stringify({ id: "owner-matrix", status, current_step: step, current_date: "20260103", processed_dates: 3 }).replaceAll("'", "''");
+      const result = await database.query<{ ok: boolean }>(`SELECT persist_claimed_backtest_job('${payload}'::jsonb,'owner-a') ok`);
+      expect(result.rows[0].ok, status).toBe(false);
+    }
+    const unchanged = await database.query<{ status: string; current_date: string; lock_owner: string }>(`SELECT status,"current_date",lock_owner FROM backtest_jobs WHERE id='owner-matrix'`);
+    expect(unchanged.rows[0]).toEqual({ status: "running", current_date: "20260101", lock_owner: "owner-b" });
+    const accepted = await database.query<{ ok: boolean }>(`SELECT persist_claimed_backtest_job('{"id":"owner-matrix","status":"done","current_step":"completed","current_date":"20260103","processed_dates":3}'::jsonb,'owner-b') ok`);
+    expect(accepted.rows[0].ok).toBe(true);
+    const terminal = await database.query<{ status: string; current_date: string; lock_owner: string | null; lock_expires_at: string | null }>(`SELECT status,"current_date",lock_owner,lock_expires_at::text FROM backtest_jobs WHERE id='owner-matrix'`);
+    expect(terminal.rows[0]).toEqual({ status: "done", current_date: "20260103", lock_owner: null, lock_expires_at: null });
+  }, 20_000);
+});
+
+describe("administrator identity migration chain", () => {
+  async function authenticationSchemaSnapshot(database: PGlite) {
+    const columns = await database.query<{ table_name: string; column_name: string; data_type: string; is_nullable: string }>(`
+      SELECT table_name, column_name, data_type, is_nullable
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name IN ('admin_users', 'admin_sessions', 'admin_login_rate_limits', 'admin_login_attempt_buckets', 'admin_login_attempt_reservations')
+      ORDER BY table_name, ordinal_position
+    `);
+    const constraints = await database.query<{ table_name: string; constraint_name: string; constraint_type: string }>(`
+      SELECT table_name, constraint_name, constraint_type
+      FROM information_schema.table_constraints
+      WHERE table_schema = 'public' AND table_name IN ('admin_users', 'admin_sessions', 'admin_login_rate_limits', 'admin_login_attempt_buckets', 'admin_login_attempt_reservations')
+      ORDER BY table_name, constraint_name
+    `);
+    const indexes = await database.query<{ tablename: string; indexname: string; indexdef: string }>(`
+      SELECT tablename, indexname, indexdef
+      FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename IN ('admin_users', 'admin_sessions', 'admin_login_rate_limits', 'admin_login_attempt_buckets', 'admin_login_attempt_reservations')
+      ORDER BY tablename, indexname
+    `);
+    const rls = await database.query<{ relname: string; relrowsecurity: boolean }>(`
+      SELECT relname, relrowsecurity
+      FROM pg_class
+      WHERE relnamespace = 'public'::regnamespace AND relname IN ('admin_users', 'admin_sessions', 'admin_login_rate_limits', 'admin_login_attempt_buckets', 'admin_login_attempt_reservations')
+      ORDER BY relname
+    `);
+    const functions = await database.query<{ proname: string; arguments: string; security_definer: boolean; return_type: string }>(`
+      SELECT proname, pg_get_function_identity_arguments(oid) AS arguments,
+             prosecdef AS security_definer, pg_get_function_result(oid) AS return_type
+      FROM pg_proc
+      WHERE pronamespace = 'public'::regnamespace
+        AND proname IN ('bootstrap_first_admin', 'update_admin_user_guarded', 'check_admin_login_rate_limit', 'record_admin_login_failure', 'clear_admin_login_failures', 'reserve_admin_login_attempt', 'settle_admin_login_attempt', 'cleanup_admin_login_attempts', 'reserve_admin_login_attempt_v2', 'settle_admin_login_attempt_v2')
+      ORDER BY proname
+    `);
+    return { columns: columns.rows, constraints: constraints.rows, indexes: indexes.rows, rls: rls.rows, functions: functions.rows };
+  }
+
+  it("applies immutable 0009 tables before 0010 guardrail RPCs", async () => {
+    const database = await createDatabase();
+    await database.exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, description TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+
+    await database.exec(adminIdentityMigrationSql);
+    await database.exec(adminIdentityMigrationSql);
+    const tablesAfter0009 = await database.query<{ table_name: string }>(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name IN ('admin_users', 'admin_sessions')
+      ORDER BY table_name
+    `);
+    expect(tablesAfter0009.rows.map(row => row.table_name)).toEqual(['admin_sessions', 'admin_users']);
+    const functionsAfter0009 = await database.query<{ proname: string }>(`
+      SELECT proname FROM pg_proc
+      WHERE pronamespace = 'public'::regnamespace
+        AND proname IN ('bootstrap_first_admin', 'update_admin_user_guarded')
+    `);
+    expect(functionsAfter0009.rows).toEqual([]);
+
+    await database.exec(adminIdentityGuardrailsMigrationSql);
+    await database.exec(adminIdentityGuardrailsMigrationSql);
+    const functionsAfter0010 = await database.query<{ proname: string }>(`
+      SELECT proname FROM pg_proc
+      WHERE pronamespace = 'public'::regnamespace
+        AND proname IN ('bootstrap_first_admin', 'update_admin_user_guarded')
+      ORDER BY proname
+    `);
+    expect(functionsAfter0010.rows.map(row => row.proname)).toEqual(['bootstrap_first_admin', 'update_admin_user_guarded']);
+    await database.exec(adminLoginRateLimitMigrationSql);
+    await database.exec(adminLoginRateLimitMigrationSql);
+    await database.exec(adminLoginReservationsMigrationSql);
+    await database.exec(adminLoginReservationsMigrationSql);
+    await database.exec(adminUserConcurrencyMigrationSql);
+    await database.exec(adminUserConcurrencyMigrationSql);
+    await database.exec(adminLoginUniformMigrationSql);
+    await database.exec(adminLoginUniformMigrationSql);
+    const versions = await database.query<{ version: string }>(`
+      SELECT version FROM schema_migrations
+      WHERE version IN ('0009_admin_identity', '0010_admin_identity_guardrails', '0011_admin_login_rate_limit', '0012_admin_login_reservations', '0013_admin_user_optimistic_concurrency', '0014_admin_login_uniform_reservations')
+      ORDER BY version
+    `);
+    expect(versions.rows.map(row => row.version)).toEqual(['0009_admin_identity', '0010_admin_identity_guardrails', '0011_admin_login_rate_limit', '0012_admin_login_reservations', '0013_admin_user_optimistic_concurrency', '0014_admin_login_uniform_reservations']);
+  }, 15_000);
+
+  it("matches setup and the complete migration chain for critical authentication objects", async () => {
+    const setupDatabase = await createDatabase();
+    await setupDatabase.exec(setupSql);
+    const migratedDatabase = await createDatabase();
+    await migratedDatabase.exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, description TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await migratedDatabase.exec(adminIdentityMigrationSql);
+    await migratedDatabase.exec(adminIdentityGuardrailsMigrationSql);
+    await migratedDatabase.exec(adminLoginRateLimitMigrationSql);
+    await migratedDatabase.exec(adminLoginReservationsMigrationSql);
+    await migratedDatabase.exec(adminUserConcurrencyMigrationSql);
+    await migratedDatabase.exec(adminLoginUniformMigrationSql);
+
+    expect(await authenticationSchemaSnapshot(migratedDatabase)).toEqual(await authenticationSchemaSnapshot(setupDatabase));
+  }, 20_000);
+
+  it("enforces identity constraints after the complete chain", async () => {
+    const database = await createDatabase();
+    await database.exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, description TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await database.exec(adminIdentityMigrationSql);
+    await database.exec(adminIdentityGuardrailsMigrationSql);
+    await database.exec(adminLoginRateLimitMigrationSql);
+    await database.exec(adminLoginReservationsMigrationSql);
+    await database.exec(adminUserConcurrencyMigrationSql);
+    await database.exec(adminLoginUniformMigrationSql);
+    await database.exec(`INSERT INTO admin_users(id,username,display_name,password_hash,role) VALUES ('00000000-0000-0000-0000-000000000001','root.admin','Root','scrypt$hash','super_admin')`);
+    await expect(database.exec(`INSERT INTO admin_users(id,username,display_name,password_hash,role) VALUES ('00000000-0000-0000-0000-000000000002','ROOT.ADMIN','Other','scrypt$hash','operator')`)).rejects.toThrow();
+    await expect(database.exec(`INSERT INTO admin_users(id,username,display_name,password_hash,role) VALUES ('00000000-0000-0000-0000-000000000003','bad.role','Bad','scrypt$hash','owner')`)).rejects.toThrow();
+    await database.exec(`INSERT INTO admin_sessions(token_hash,admin_user_id,role,username,expires_at) VALUES ('${"a".repeat(64)}','00000000-0000-0000-0000-000000000001','super_admin','root.admin',NOW()+INTERVAL '1 day')`);
+    await expect(database.exec(`INSERT INTO admin_sessions(token_hash,admin_user_id,role,username,expires_at) VALUES ('${"a".repeat(64)}','00000000-0000-0000-0000-000000000001','super_admin','root.admin',NOW()+INTERVAL '1 day')`)).rejects.toThrow();
+  }, 15_000);
 });
 
 describe("match odds freshness migration", () => {
@@ -266,7 +505,7 @@ describe("match odds freshness migration", () => {
     expect(columns.rows.map(row => row.column_name)).toEqual([
       "source", "source_observed_at", "write_token",
     ]);
-  });
+  }, 15_000);
 });
 
 describe("prediction analyzed-at migration", () => {
@@ -528,7 +767,7 @@ describe("market settlement evidence migration", () => {
       probability_output: null,
       probability_quality_status: "unavailable",
     });
-  });
+  }, 15_000);
 
   it("allows the same learned pattern in both markets", async () => {
     const database = await createDatabase();

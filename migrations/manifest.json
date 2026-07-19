@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "migrations": [
+    {
+      "file": "0001_production_baseline.sql",
+      "version": "0001_production_baseline",
+      "sha256": "8dfa4d6f1d828d127deb35855d23df286be0f4b889e605928807c16ef54d0ee8",
+      "codeRollbackSafe": false
+    },
+    {
+      "file": "0002_match_odds_freshness.sql",
+      "version": "0002_match_odds_freshness",
+      "sha256": "c24a1a422cfe4bece77752aee4fb4fc90d9221cb0a40307187a1a4b4076f08af",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0003_prediction_analyzed_at.sql",
+      "version": "0003_prediction_analyzed_at",
+      "sha256": "c5562bf8d2943d40c462267bad61a79bb6f99a07fe7eaf32de27d4ca13e85d16",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0004_prediction_verification_columns.sql",
+      "version": "0004_prediction_verification_columns",
+      "sha256": "24bdf145a69f0a5d783eefb0b5618df37f3f61a1588fa039ef5b49622f2d3f7d",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0005_match_t30_analysis.sql",
+      "version": "0005_match_t30_analysis",
+      "sha256": "e5ccb6e94c2044ebcba898c6aa834a20fedd2ef9f17d1313fced83bc7a8bc344",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0006_market_settlement_evidence.sql",
+      "version": "0006_market_settlement_evidence",
+      "sha256": "e1a6dd809e318d632df4ec29751d6a68f0d475f85ac796e39cf0b96567b8c519",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0007_weighted_learning_samples.sql",
+      "version": "0007_weighted_learning_samples",
+      "sha256": "aff8a665a9c8726591dc745d887c1201c28b816c0bf5d3d4220055c39282e429",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0008_management_command_receipts.sql",
+      "version": "0008_management_command_receipts",
+      "sha256": "e3313540ff22cf714e54b777653603e0802ee0243ae52d0627917e3bc270a7c0",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0009_admin_identity.sql",
+      "version": "0009_admin_identity",
+      "sha256": "d63b40313022fe40fb29384edb732fc792fe5097a19a5abe45ca30a0481cc4fe",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0010_admin_identity_guardrails.sql",
+      "version": "0010_admin_identity_guardrails",
+      "sha256": "f2d3e0292061501ed192548935bfaaff991a57fb2becbaa0758e4ac891002797",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0011_admin_login_rate_limit.sql",
+      "version": "0011_admin_login_rate_limit",
+      "sha256": "0745a42cb845f65891c5dcf4363663a0054af890b468fe3be268fdac78c2a7b0",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0012_admin_login_reservations.sql",
+      "version": "0012_admin_login_reservations",
+      "sha256": "e520657b9596c5432019aac1729daebeccacb478249c31672eaf0508e0f09dc7",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0013_admin_user_optimistic_concurrency.sql",
+      "version": "0013_admin_user_optimistic_concurrency",
+      "sha256": "10436330154f105dff161fd45f478c7c4a700540c18aa06b8006159f635c2d30",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0014_admin_login_uniform_reservations.sql",
+      "version": "0014_admin_login_uniform_reservations",
+      "sha256": "f2e0ed63418ce11f77c9fc827e8d21acf7bcb0459919d1a1cffa456456382471",
+      "codeRollbackSafe": false
+    },
+    {
+      "file": "0015_admin_lifecycle_strong_audit.sql",
+      "version": "0015_admin_lifecycle_strong_audit",
+      "sha256": "da40745ea47a93d1917eb11b4ea01798d676235221f2d9c49d6f3e658bd75f2e",
+      "codeRollbackSafe": false
+    },
+    {
+      "file": "0016_atomic_backtest_claim.sql",
+      "version": "0016_atomic_backtest_claim",
+      "sha256": "3b93252628157ccbe778a69729423f37e259289c0218ca69aa24b8e9af822358",
+      "codeRollbackSafe": false
+    },
+    {
+      "file": "0017_management_command_recovery_states.sql",
+      "version": "0017_management_command_recovery_states",
+      "sha256": "ef1a7971dab7e0dbd191a3ef73c71afdc0dbbe3c907ab20085ecff0b6c9b5fe9",
+      "codeRollbackSafe": false
+    },
+    {
+      "file": "0018_command_audit_and_backtest_leases.sql",
+      "version": "0018_command_audit_and_backtest_leases",
+      "sha256": "74132c15ee025445055322c924ab47b4a15b73ff82643002b2238f62d104a65c",
+      "codeRollbackSafe": false
+    },
+    {
+      "file": "0019_backtest_owner_fenced_persistence.sql",
+      "version": "0019_backtest_owner_fenced_persistence",
+      "sha256": "b175114979f9891af798bb6e38865584eaeee87e7e09e99cda0e459cba630ec6",
+      "codeRollbackSafe": false
+    },
+    {
+      "file": "0020_strategy_lab_fact_model.sql",
+      "version": "0020_strategy_lab_fact_model",
+      "sha256": "491563fd80f1de7bff5cca98aac1c5d11aa7fb5f02d85ad9616ebfbe64edc012",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0021_strategy_lab_policy_and_artifacts.sql",
+      "version": "0021_strategy_lab_policy_and_artifacts",
+      "sha256": "59f7dd81e3bcd957a08c96204bab985dedea6cf7045195f4d909d72d738aa632",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0022_strategy_lab_snapshot_provider.sql",
+      "version": "0022_strategy_lab_snapshot_provider",
+      "sha256": "614dc4a2877f86a78ac4ee21899b7ed3a84f0d8577e0ce020fb56dbf1181010b",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0023_strategy_lab_trusted_settlement.sql",
+      "version": "0023_strategy_lab_trusted_settlement",
+      "sha256": "155a26d3c8291c7534f7c0652b5b1cbba5748f79169d87bee420432bb5f916eb",
+      "codeRollbackSafe": true
+    },
+    {
+      "file": "0024_automation_task_idempotent_ensure.sql",
+      "version": "0024_automation_task_idempotent_ensure",
+      "sha256": "8f7ddb4714a4bc0a61bdd0ddc2d38814a23a086e7f5aa7c81eaf09338b63feff",
+      "codeRollbackSafe": true
+    }
+  ]
+}

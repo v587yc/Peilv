@@ -38,7 +38,7 @@ vi.mock("@/lib/llm", () => ({
   })),
 }));
 
-vi.mock("@/app/api/feishu/_helpers", () => ({
+vi.mock("@/lib/integrations/feishu/notifier", () => ({
   sendFeishuAIAnalysis: vi.fn(async () => undefined),
 }));
 
@@ -105,7 +105,7 @@ describe("learned indicator weights", () => {
     mocks.enqueueT30.mockReset();
     mocks.enqueueT30.mockResolvedValue(null);
     mocks.predictionSaveError = null;
-    process.env.INTERNAL_API_SECRET = "test-secret";
+    process.env.INTERNAL_API_SECRET = "Test_Internal_Secret_0123456789AB";
   });
 
   it("clamps invalid values and normalizes all indicator weights", async () => {
@@ -272,16 +272,17 @@ describe("learned indicator weights", () => {
     }) as never);
 
     expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ success: false, error: "分析完成但保存预测失败" });
     expect(mocks.enqueueT30).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
-  it("T-09 writes a backtest prediction only to the run-scoped backtest table", async () => {
+  it("rejects direct internal backtest access at the public analysis boundary", async () => {
     const response = await POST(new Request("https://app.invalid/api/analysis", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-internal-api-secret": "test-secret",
+        "x-internal-api-secret": "Test_Internal_Secret_0123456789AB",
       },
       body: JSON.stringify({
         matchId: "backtest-match",
@@ -297,13 +298,8 @@ describe("learned indicator weights", () => {
       }),
     }) as never);
 
-    expect(response.status).toBe(200);
-    expect(mocks.upsertTables).toEqual(["prediction_results_backtest"]);
-    expect(mocks.upserts[0]).toMatchObject({
-      match_id: "backtest-match",
-      run_id: "run-isolated",
-      source: "backtest",
-    });
+    expect(response.status).toBe(403);
+    expect(mocks.upsertTables).not.toContain("prediction_results_backtest");
     expect(mocks.upsertTables).not.toContain("prediction_results");
     expect(mocks.upsertTables).not.toContain("learned_patterns");
     expect(mocks.enqueueT30).not.toHaveBeenCalled();
