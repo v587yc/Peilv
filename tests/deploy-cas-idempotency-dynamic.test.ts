@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -14,19 +14,54 @@ const manifest = { schemaVersion: 1, migrations: [
   { file: "0002_change.sql", version: "0002_change", sha256: "2".repeat(64), codeRollbackSafe: false },
 ] };
 
-async function ledgerFixture(prefix: string) {
+function adaptLedgerOwnerContractForTest(source: string, expectedFileUid?: number) {
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const fileUid = expectedFileUid ?? uid;
+  const rootOwnerContract = "stat.uid!==0||stat.gid!==0)))throw new Error(\"Unsafe operation ledger root\")";
+  const fileOwnerContract = "stat.uid!==0||stat.gid!==0)))throw new Error(\"Unsafe operation ledger file\")";
+  expect(source.match(/stat\.uid!==0\|\|stat\.gid!==0/g)).toHaveLength(2);
+  expect(source).toContain(rootOwnerContract);
+  expect(source).toContain(fileOwnerContract);
+  return source
+    .replace(rootOwnerContract, `stat.uid!==${uid}||stat.gid!==${gid})))throw new Error(\"Unsafe operation ledger root\")`)
+    .replace(fileOwnerContract, `stat.uid!==${fileUid}||stat.gid!==${gid})))throw new Error(\"Unsafe operation ledger file\")`);
+}
+
+async function ledgerFixture(prefix: string, expectedFileUid?: number) {
   const base = await mkdtemp(path.join(os.tmpdir(), prefix));
   const root = path.join(base, "operations");
   const fs = await import("node:fs/promises");
   await fs.mkdir(root, { mode: 0o700 });
   await fs.chmod(root, 0o700);
-  const uid = process.getuid?.() ?? 0;
-  const gid = process.getgid?.() ?? 0;
-  const source = (await readFile("scripts/deploy-operation-ledger.mjs", "utf8"))
-    .replace("stat.uid!==0||stat.gid!==0", `stat.uid!==${uid}||stat.gid!==${gid}`);
+  const source = adaptLedgerOwnerContractForTest(
+    await readFile("scripts/deploy-operation-ledger.mjs", "utf8"),
+    expectedFileUid,
+  );
   const script = path.join(base, "deploy-operation-ledger.mjs");
-  await writeFile(script, source);
+  await writeFile(script, source, { mode: 0o600 });
+  await fs.chmod(script, 0o600);
+  const rootStat = await lstat(root);
+  expect(rootStat.isDirectory()).toBe(true);
+  expect(rootStat.isSymbolicLink()).toBe(false);
+  if (process.platform !== "win32") {
+    expect(rootStat.mode & 0o777).toBe(0o700);
+    expect(rootStat.uid).toBe(process.getuid?.() ?? 0);
+    expect(rootStat.gid).toBe(process.getgid?.() ?? 0);
+  }
   return { root, script, fs };
+}
+
+async function expectSafeRegularFile(file: string) {
+  const stat = await lstat(file);
+  expect(stat.isFile()).toBe(true);
+  expect(stat.isSymbolicLink()).toBe(false);
+  expect(stat.nlink).toBe(1);
+  if (process.platform !== "win32") {
+    expect(stat.mode & 0o777).toBe(0o600);
+    expect(stat.uid).toBe(process.getuid?.() ?? 0);
+    expect(stat.gid).toBe(process.getgid?.() ?? 0);
+  }
 }
 
 describe("migration CAS and deploy request idempotency", () => {
@@ -52,8 +87,10 @@ describe("migration CAS and deploy request idempotency", () => {
     const json = JSON.stringify(identity);
     await expect(exec(process.execPath, [script, "check", root, request, json])).resolves.toMatchObject({ stdout: "new\n" });
     await expect(exec(process.execPath, [script, "claim", root, request, json])).resolves.toMatchObject({ stdout: "claimed\n" });
+    await expectSafeRegularFile(path.join(root, `${request}.json`));
     await expect(exec(process.execPath, [script, "check", root, request, json])).rejects.toMatchObject({ code: 1 });
-    const result = path.join(root, "result.json"); await writeFile(result, JSON.stringify({ schemaVersion: 1, status: "succeeded", requestId: request, releaseId: identity.releaseId }));
+    const result = path.join(root, "result.json"); await writeFile(result, JSON.stringify({ schemaVersion: 1, status: "succeeded", requestId: request, releaseId: identity.releaseId }), { mode: 0o600 }); await chmod(result, 0o600);
+    await expectSafeRegularFile(result);
     await exec(process.execPath, [script, "finish", root, request, "succeeded", result]);
     await expect(exec(process.execPath, [script, "check", root, request, json])).resolves.toMatchObject({ stdout: "replay\n" });
     await expect(exec(process.execPath, [script, "check", root, request, JSON.stringify({ ...identity, archiveSha256: "e".repeat(64) })])).rejects.toMatchObject({ code: 1 });
@@ -66,6 +103,7 @@ describe("migration CAS and deploy request idempotency", () => {
   it("moves a host-restart running request to manual assessment without replay", async () => {
     const {root,script}=await ledgerFixture("deploy-recover-");const json=JSON.stringify(identity);
     await exec(process.execPath,[script,"claim",root,request,json]);await exec(process.execPath,[script,"recover-running",root,request]);
+    await expectSafeRegularFile(path.join(root,`${request}.json`));
     const operation=JSON.parse((await exec(process.execPath,[script,"status",root,request])).stdout);
     expect(operation).toMatchObject({status:"manual-assessment",result:{reason:"host-restart-running-operation"}});
     await expect(exec(process.execPath,[script,"check",root,request,json])).rejects.toBeDefined();
@@ -82,7 +120,24 @@ describe("migration CAS and deploy request idempotency", () => {
     const json=JSON.stringify(identity), operation=path.join(root,`${request}.json`);
     await exec(process.execPath,[script,"claim",root,request,json]);
     await fs.link(operation,path.join(root,"second-link"));
+    expect((await lstat(operation)).nlink).toBe(2);
     await expect(exec(process.execPath,[script,"status",root,request])).rejects.toBeDefined();
+  });
+
+  it.runIf(process.platform !== "win32")("rejects operation files with unsafe mode", async () => {
+    const {root,script}=await ledgerFixture("deploy-mode-");
+    const json=JSON.stringify(identity),operation=path.join(root,`${request}.json`);
+    await exec(process.execPath,[script,"claim",root,request,json]);
+    await chmod(operation,0o640);
+    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation ledger file")});
+  });
+
+  it.runIf(process.platform !== "win32")("rejects operation files owned by an unexpected uid", async () => {
+    const uid=process.getuid?.() ?? 0;
+    const {root,script}=await ledgerFixture("deploy-owner-",uid+1);
+    const json=JSON.stringify(identity);
+    await expect(exec(process.execPath,[script,"claim",root,request,json])).resolves.toMatchObject({stdout:"claimed\n"});
+    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation ledger file")});
   });
 
   it("rejects symlink durable operation files by lstat contract", async () => {
