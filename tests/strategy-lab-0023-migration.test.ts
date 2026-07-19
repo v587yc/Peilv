@@ -49,16 +49,22 @@ describe("0023 trusted settlement migration", () => {
       "quote_handicap_raw","quote_handicap_quarter_units","quote_selected_water","quote_selected_water_millionths"]) expect(names.has(name)).toBe(true);
   });
 
-  it("composes the fresh setup with the exact canonical 0023 migration", async () => {
+  it("composes fresh setup with canonical 0023 while 0024 remains registered", async () => {
     const db = new PGlite(); databases.push(db);
+    await db.exec(`
+      CREATE ROLE service_role NOLOGIN;
+      CREATE ROLE anon NOLOGIN;
+      CREATE ROLE authenticated NOLOGIN;
+    `);
     await db.exec(await read("setup-database.sql"));
     await db.exec(await read("migrations/0023_strategy_lab_trusted_settlement.sql"));
-    const contract = await db.query<{ table_exists: boolean; revision_trigger: boolean; settlement_trigger: boolean; ledger: boolean }>(`
+    const contract = await db.query<{ table_exists: boolean; revision_trigger: boolean; settlement_trigger: boolean; ledger: boolean; automation_ledger: boolean }>(`
       SELECT to_regclass('public.strategy_lab_match_result_revisions') IS NOT NULL AS table_exists,
         EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.strategy_lab_match_result_revisions'::regclass AND tgname='strategy_lab_match_result_revisions_append_only') AS revision_trigger,
         EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.strategy_lab_settlements'::regclass AND tgname='strategy_lab_settlements_validate_trusted') AS settlement_trigger,
-        EXISTS(SELECT 1 FROM schema_migrations WHERE version='0023_strategy_lab_trusted_settlement') AS ledger`);
-    expect(contract.rows[0]).toEqual({ table_exists:true, revision_trigger:true, settlement_trigger:true, ledger:true });
+        EXISTS(SELECT 1 FROM schema_migrations WHERE version='0023_strategy_lab_trusted_settlement') AS ledger,
+        EXISTS(SELECT 1 FROM schema_migrations WHERE version='0024_automation_task_idempotent_ensure') AS automation_ledger`);
+    expect(contract.rows[0]).toEqual({ table_exists:true, revision_trigger:true, settlement_trigger:true, ledger:true, automation_ledger:true });
     const security=await db.query<{ relrowsecurity:boolean; relforcerowsecurity:boolean }>("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid='public.strategy_lab_match_result_revisions'::regclass");
     expect(security.rows[0]).toEqual({ relrowsecurity:true, relforcerowsecurity:true });
   }, 20_000);

@@ -29,6 +29,11 @@ let databases: PGlite[] = [];
 async function createDatabase() {
   const database = new PGlite();
   databases.push(database);
+  await database.exec(`
+    CREATE ROLE service_role NOLOGIN;
+    CREATE ROLE anon NOLOGIN;
+    CREATE ROLE authenticated NOLOGIN;
+  `);
   return database;
 }
 
@@ -230,7 +235,7 @@ describe("backtest lease recovery migration", () => {
   it("applies 0015 through 0019 in order from the real 0014 baseline with fenced RPC ACLs", async () => {
     const database = await createDatabase();
     await database.exec(setupSql);
-    await database.exec(`CREATE ROLE service_role; CREATE ROLE anon; CREATE ROLE authenticated; DELETE FROM schema_migrations WHERE version >= '0015';`);
+    await database.exec(`DELETE FROM schema_migrations WHERE version >= '0015';`);
     for (const sql of [adminLifecycleAuditMigrationSql, atomicBacktestClaimMigrationSql, commandRecoveryMigrationSql, commandAuditLeaseMigrationSql, ownerFencingMigrationSql]) await database.exec(sql);
 
     const versions = await database.query<{ version: string }>(`SELECT version FROM schema_migrations WHERE version >= '0015' ORDER BY version`);

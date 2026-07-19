@@ -138,6 +138,12 @@
       "version": "0023_strategy_lab_trusted_settlement",
       "sha256": "155a26d3c8291c7534f7c0652b5b1cbba5748f79169d87bee420432bb5f916eb",
       "codeRollbackSafe": true
+    },
+    {
+      "file": "0024_automation_task_idempotent_ensure.sql",
+      "version": "0024_automation_task_idempotent_ensure",
+      "sha256": "8f7ddb4714a4bc0a61bdd0ddc2d38814a23a086e7f5aa7c81eaf09338b63feff",
+      "codeRollbackSafe": true
     }
   ]
 }

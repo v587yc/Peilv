@@ -82,18 +82,17 @@ export class SupabaseAutomationRepository implements AutomationRepository {
       updated_at: now,
     };
 
-    const inserted = await this.client.from("automation_tasks").insert(row).select("*").maybeSingle();
-    let taskRow = inserted.data as DbRecord | null;
-    if (inserted.error) {
-      if (inserted.error.code !== "23505") throw new Error(inserted.error.message);
-      const existing = await this.client
-        .from("automation_tasks")
-        .select("*")
-        .eq("idempotency_key", key)
-        .maybeSingle();
-      if (existing.error || !existing.data) throw new Error(existing.error?.message || "幂等任务查询失败");
-      taskRow = existing.data as DbRecord;
+    const ensuredTask = await this.client.rpc("ensure_automation_task", {
+      p_task: row,
+    });
+    if (ensuredTask.error) {
+      if (ensuredTask.error.code === "P0001" && ensuredTask.error.details === "IDEMPOTENCY_PAYLOAD_CONFLICT") {
+        throw new Error("IDEMPOTENCY_PAYLOAD_CONFLICT");
+      }
+      throw new Error(ensuredTask.error.message);
     }
+    const taskRows = Array.isArray(ensuredTask.data) ? ensuredTask.data : [];
+    const taskRow = (taskRows[0] || null) as DbRecord | null;
     if (!taskRow) throw new Error("任务创建失败");
 
     let task = taskFromRow(taskRow);
