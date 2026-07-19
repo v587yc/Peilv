@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { AlertCircle, Loader2, LogOut, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,6 @@ import { ADMIN_ROLE_LABELS, useAdminSession } from "./admin-session-context";
 
 export function AdminHeader() {
   const pathname = usePathname();
-  const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState("");
   const { user, loading } = useAdminSession();
@@ -31,8 +30,7 @@ export function AdminHeader() {
     try {
       const response = await fetch("/api/auth/session", { method: "DELETE" });
       if (!response.ok) throw new Error("退出失败");
-      router.replace("/login");
-      router.refresh();
+      window.location.replace("/login");
     } catch {
       setLogoutError("退出失败，请重试");
       setLoggingOut(false);
