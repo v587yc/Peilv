@@ -144,7 +144,7 @@ describe("preflight result v1 failure matrix", () => {
   it("advances candidate success before SSH and keeps remote failures structured and redacted", async () => {
     const workflow = await readFile(workflowPath, "utf8");
     const candidateSuccess = workflow.indexOf("SSH_CONFIGURATION_PENDING 1 preflight-result.json");
-    const ssh = workflow.indexOf("Configure read-only SSH");
+    const ssh = workflow.indexOf("Configure restricted preflight SSH");
     expect(candidateSuccess).toBeGreaterThan(-1);
     expect(candidateSuccess).toBeLessThan(ssh);
     for (const marker of ["SSH_CONFIGURATION_FAILED", "SSH_TRANSFER_FAILED", "REMOTE_COMMAND_FAILED", "REMOTE_NON_JSON"]) {

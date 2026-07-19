@@ -125,9 +125,9 @@ scripts/reconcile-automation.sh
 
 4. 计算 SHA-256，上传后在服务器再次计算并比对。
 
-## 5. 发布前只读检查
+## 5. 发布前 non-disruptive transient staging
 
-后续同步不需要重新探索代码，但必须执行以下最小只读检查：
+后续同步不需要重新探索代码。preflight 不停止服务、不迁移、不切换 release，但并非严格只读：它会在 `/tmp`、root 私有 incoming/tree 和隔离 probe runtime 中创建有界临时对象，并在成功、失败及信号退出时清理。必须执行以下最小检查：
 
 ```bash
 readlink -f /opt/peilv/current
@@ -498,14 +498,14 @@ systemctl list-timers peilv-reconcile.timer peilv-dispatch.timer --no-pager
 仓库包含两条工作流：
 
 - `.github/workflows/ci.yml`：每次 push/PR 自动运行测试、类型检查、ESLint、生产构建、Playwright E2E 和无密钥制品验证；不会连接生产服务器。
-- `.github/workflows/production-preflight.yml`：仅允许手动触发，只接受成功的 `main` push 所生成的不可变候选制品，并通过绑定 `production` Environment 的只读 SSH Job 检查服务器；不会上传制品到生产目录，也不会停止服务、备份、迁移或切换。
+- `.github/workflows/production-preflight.yml`：仅允许手动触发，只接受成功的 `main` push 所生成的不可变候选制品，并通过绑定 `production` Environment 的受限 SSH Job 执行 non-disruptive transient staging；会短暂写入受限 staging 路径，但不会写入生产 release、停止服务、备份、迁移或切换。
 - `.github/workflows/deploy-approved-production.yml`：仅允许手动触发；用户把预检 Summary 中的 `Release ID` 与 `Release SHA-256` 填入后，才执行上传和生产发布。
 
 自动发布仍以本文第 1–15 节为约束：
 
 1. `scripts/create-release.sh` 使用白名单生成制品，替代禁止用于生产的 `scripts/create-distribution.ps1`。
 2. `scripts/verify-release.sh` 在 GitHub runner 和服务器分别校验 SHA-256、成员白名单、必需文件和凭据特征。
-3. `scripts/production-preflight.sh` 执行第 5 节只读检查，并在 GitHub Job Summary 中报告第 6 节要求的信息。
+3. `scripts/production-preflight.sh` 执行第 5 节 transient staging 与检查，并在 GitHub Job Summary 中报告第 6 节要求的信息。兼容上传路径固定为 `/tmp/peilv-preflight-<request-id>.tar.gz`；root 在读取前验证 canonical request 绑定、regular/non-symlink、`peilv-audit` owner、非 group/world writable、单硬链接、非空且不超过 1 GiB、与 `/tmp` 同 device。上传、私有 archive/tree 和 probe runtime 均由 trap 清理。
 4. `scripts/deploy-production.sh` 在审批后执行第 7–12 节的自动化基线检查；第 13.2–13.3 节的双市场与官方赛果闭环仍需在发布后单独验证。新服务启动失败时只自动切回旧 release，不自动恢复数据库；迁移执行中失败时保持应用与 timer 停止，等待数据库评估。
 5. 数据库恢复始终按照第 14.2 节单独确认后人工执行。
 
@@ -516,3 +516,5 @@ GitHub 配置：
 - 生产部署设置并发锁，同一时间只能运行一个发布。
 
 服务器使用 `peilv-audit` 与 `peilv-deploy` 两个专用 SSH 账号，通过 root-owned `/usr/local/sbin/peilv-control` 进入固定预检或部署命令。GitHub 不保存 root 密码、1Panel 密码、管理员令牌、数据库密码或共享环境文件内容。
+
+`peilv-audit` 的 `authorized_keys` 当前契约必须以 `restrict` 开头，sudoers 仅允许调用参数收敛的 `peilv-control preflight`。本轮只静态验证仓库模板，不自动修改服务器配置。把参数改为 stdin 并配合 forced-command、从而完全取消通用远端 shell，是后续独立升级项，不在本轮兼容修复中实施。

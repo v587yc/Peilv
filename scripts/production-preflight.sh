@@ -58,9 +58,31 @@ openresty_http_config=/opt/1panel/www/conf.d/peilv-http.conf
 openresty_root_config=/opt/1panel/www/sites/pb.aixid.cc/proxy/root.conf
 candidate_stage_root=/var/lib/peilv/candidate-stage
 internal_secret_file="$base/shared/credentials/internal-api-secret"
+PEILV_PREFLIGHT_ARCHIVE_MAX_BYTES=1073741824
+PEILV_PREFLIGHT_UPLOAD=""
 temp_files=()
 register_temp_file() { temp_files+=("$1"); }
-cleanup_temp_files() { local path; for path in "${temp_files[@]:-}"; do [[ -z "$path" ]] && continue; if [[ -d "$path" && ! -L "$path" ]]; then rm -rf --one-file-system -- "$path"; else rm -f -- "$path"; fi; done; }
+preflight_upload_cleanup() { if [[ -n "${PEILV_PREFLIGHT_UPLOAD:-}" ]]; then rm -f -- "$PEILV_PREFLIGHT_UPLOAD"; fi; }
+# BEGIN PREFLIGHT_UPLOAD_GUARD
+preflight_upload_validate() {
+  local request_id="$1" candidate="$2" expected_path basename_value file_type owner mode nlink size device tmp_device
+  [[ "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || { printf 'Preflight request ID is invalid\n' >&2; return 1; }
+  expected_path="/tmp/peilv-preflight-$request_id.tar.gz"
+  basename_value="$(basename -- "$candidate")"
+  [[ "$candidate" =~ ^/tmp/peilv-preflight-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tar\.gz$ ]] && PEILV_PREFLIGHT_UPLOAD="$candidate"
+  [[ "$candidate" == "$expected_path" && "$basename_value" == "peilv-preflight-$request_id.tar.gz" ]] || { printf 'Preflight archive path is not canonical for the request\n' >&2; return 1; }
+  [[ -e "$candidate" && ! -L "$candidate" ]] || { printf 'Preflight archive is missing or is a symlink\n' >&2; return 1; }
+  IFS='|' read -r file_type owner mode nlink size device < <(stat -c '%F|%U|%a|%h|%s|%d' -- "$candidate")
+  tmp_device="$(stat -c '%d' -- /tmp)"
+  [[ "$file_type" == "regular file" ]] || { printf 'Preflight archive is not a regular file\n' >&2; return 1; }
+  [[ "$owner" == peilv-audit ]] || { printf 'Preflight archive owner is invalid\n' >&2; return 1; }
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] && (( (8#$mode & 0022) == 0 )) || { printf 'Preflight archive mode is group/world writable\n' >&2; return 1; }
+  [[ "$nlink" == 1 ]] || { printf 'Preflight archive link count is invalid\n' >&2; return 1; }
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size > 0 && size <= PEILV_PREFLIGHT_ARCHIVE_MAX_BYTES )) || { printf 'Preflight archive size is outside the accepted range\n' >&2; return 1; }
+  [[ "$device" == "$tmp_device" ]] || { printf 'Preflight archive is not on the /tmp device\n' >&2; return 1; }
+}
+# END PREFLIGHT_UPLOAD_GUARD
+cleanup_temp_files() { local path; preflight_upload_cleanup; for path in "${temp_files[@]:-}"; do [[ -z "$path" ]] && continue; if [[ -d "$path" && ! -L "$path" ]]; then rm -rf --one-file-system -- "$path"; else rm -f -- "$path"; fi; done; }
 trap cleanup_temp_files EXIT
 trap 'cleanup_temp_files; exit 129' HUP
 trap 'cleanup_temp_files; exit 130' INT
@@ -71,10 +93,7 @@ verify_installed_release_verifier() {
   "$trusted_verifier_helper" "$trusted_verifier_sha_file" /usr/local/libexec/peilv
 }
 measured_archive_sha=""
-if [[ "$uploaded_archive" != "/tmp/peilv-preflight-$request_id.tar.gz" || ! -f "$uploaded_archive" || -L "$uploaded_archive" ]]; then
-  printf 'Preflight archive path is invalid\n' >&2
-  exit 1
-fi
+preflight_upload_validate "$request_id" "$uploaded_archive"
 verify_installed_release_verifier || { printf 'Trusted host release verifier is not correctly installed\n' >&2; exit 1; }
 [[ -f "$candidate_stage_helper" && ! -L "$candidate_stage_helper" && "$(stat -c '%U:%G:%a:%h' "$candidate_stage_helper")" == root:root:755:1 ]] || { printf 'Trusted candidate staging helper is not correctly installed\n' >&2; exit 1; }
 # shellcheck source=/usr/local/libexec/peilv/candidate-stage.sh
@@ -82,6 +101,8 @@ source "$candidate_stage_helper"
 source "$deployment_budget_helper"
 [[ "$CANDIDATE_STAGE_ROOT" == "$candidate_stage_root" ]] || { printf 'Candidate staging root is not fixed\n' >&2; exit 1; }
 
+exec 8>"/run/lock/peilv-preflight-$request_id.lock"
+if ! flock -n 8; then printf 'This preflight request is already running\n' >&2; exit 1; fi
 exec 9>/run/lock/peilv-deploy.lock
 if ! flock -n 9; then printf 'Another server-side deployment or preflight is running\n' >&2; exit 1; fi
 archive_kib=$(( ($(stat -c '%s' "$uploaded_archive") + 1023) / 1024 ))
@@ -102,6 +123,7 @@ register_temp_file "$verified_tree"
 install -d -o root -g root -m 0700 "$verified_incoming_dir"
 [[ ! -L "$verified_incoming_dir" && "$(stat -c '%U:%G:%a' "$verified_incoming_dir")" == root:root:700 ]]
 measured_archive_sha="$(node "$private_copy_helper" "$uploaded_archive" "$private_archive")"
+preflight_upload_validate "$request_id" "$uploaded_archive"
 install -d -o root -g root -m 0700 "$verified_tree"
 if [[ "$measured_archive_sha" != "$archive_sha" ]]; then printf 'Measured preflight archive SHA does not match candidate\n' >&2; exit 1; fi
 /usr/local/libexec/peilv/verify-release.sh --archive "$private_archive" "$measured_archive_sha" "$verified_tree" "peilv-$release_id.tar.gz" >/dev/null
