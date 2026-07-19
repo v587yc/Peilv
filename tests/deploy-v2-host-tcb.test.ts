@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -81,7 +81,10 @@ describe("deploy v3 host TCB exact-set contract", () => {
       if (kind === "extra") lines.push(`${"a".repeat(64)} unexpected`);
       if (kind === "basename-collision") lines.push(`${"a".repeat(64)} path/peilv-control`);
       if (kind === "bad-hash") lines[0] = `${"a".repeat(64)} peilv-control`;
-      if (kind === "bad-mode") await writeFile(path.join(root, "bad-mode"), "1");
+      if (kind === "bad-mode") {
+        if (process.platform === "win32") await writeFile(path.join(root, "bad-mode"), "1");
+        else await chmod(path.join(root, "libexec", "deploy-production.sh"), 0o600);
+      }
       if (["missing", "duplicate", "extra", "basename-collision", "bad-hash"].includes(kind)) await writeFile(manifest, `${lines.join("\n")}\n`);
       if (kind === "symlink") { const target=path.join(root,"libexec","migration-contract.mjs"), real=`${target}.real`; await writeFile(real,"migration-contract.mjs\n"); await import("node:fs/promises").then(fs=>fs.rm(target)); await symlink(real,target); }
       if (kind === "nlink") await link(path.join(root,"libexec","migration-contract.mjs"),path.join(root,"libexec","second-link"));
