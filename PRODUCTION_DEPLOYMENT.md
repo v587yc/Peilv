@@ -64,7 +64,7 @@ pnpm build
 4. Next.js 生产构建成功。
 5. `.next/standalone/server.js`、`.next/BUILD_ID`、`.next/routes-manifest.json`、`.next/static` 和 `public` 齐全。
 6. 新增迁移有测试覆盖，且迁移文件可重复注册而不重复写入 `schema_migrations`。
-7. 迁移已按照 `migrations/manifest.json` 按序执行至当前最新版本 `0023_strategy_lab_trusted_settlement`，并完成 SQL SHA-256 校验；管理员身份迁移包含 `0009`–`0013`，`0012` 是原子登录 reservation，`0013` 是管理员更新 OCC，`0014`–`0019` 是登录/审计/回测恢复与 owner fence 的强化迁移，`0020`–`0023` 是 Strategy Lab 迁移。旧库不得跳过或乱序执行任何迁移。
+7. 迁移已按照 `migrations/manifest.json` 按序执行至当前最新版本 `0024_automation_task_idempotent_ensure`，并完成 SQL SHA-256 校验；管理员身份迁移包含 `0009`–`0013`，`0012` 是原子登录 reservation，`0013` 是管理员更新 OCC，`0014`–`0019` 是登录/回测恢复与 owner fence 的强化迁移，`0020`–`0023` 是 Strategy Lab 迁移，`0024` 是自动化任务原子幂等 ensure RPC。旧库不得跳过或乱序执行任何迁移。
 
 若只做紧急热修，可以先运行相关目标测试和 `pnpm ts-check`，但生产构建仍必须执行。
 
@@ -168,11 +168,11 @@ printf 'url = "http://127.0.0.1:5000/api/storage/health"\nfail\nsilent\nshow-err
 
 ### 5.1 首次超级管理员启用闭环
 
-数据库迁移必须按 `migrations/manifest.json` 顺序执行至当前最新版本 `0023_strategy_lab_trusted_settlement.sql`，完成迁移登记和校验后再启动应用。其中 `0012` 保证登录尝试 reservation 原子且有界，`0013` 保证管理员并发修改通过 OCC 检测冲突，`0014`–`0019` 提供统一登录 reservation、强审计、原子回测 claim、命令恢复、命令审计、回测租约和 owner fence，`0020`–`0023` 提供 Strategy Lab 的事实模型、策略制品、快照 provider 和 trusted settlement。若 `/api/auth/session` 返回 `initialized:false`，公网登录页只显示未初始化状态，不能在网页输入 bootstrap token。
+数据库迁移必须按 `migrations/manifest.json` 顺序执行至当前最新版本 `0024_automation_task_idempotent_ensure.sql`，完成迁移登记和校验后再启动应用。其中 `0012` 保证登录尝试 reservation 原子且有界，`0013` 保证管理员并发修改通过 OCC 检测冲突，`0014`–`0019` 提供统一登录 reservation、强审计、原子回测 claim、命令恢复、命令审计、回测租约和 owner fence，`0020`–`0023` 提供 Strategy Lab 的事实模型、策略制品、快照 provider 和 trusted settlement，`0024` 提供自动化任务原子幂等 ensure RPC。若 `/api/auth/session` 返回 `initialized:false`，公网登录页只显示未初始化状态，不能在网页输入 bootstrap token。
 
 ### 5.2 迁移后的代码回退边界
 
-代码回退必须读取并遵守 `migrations/manifest.json` 的 `codeRollbackSafe`。当前 `0001_production_baseline.sql` 以及 `0014`–`0019` 明确标记为 `codeRollbackSafe=false`；这些迁移应用后，禁止直接回退到 `0013` 或更早的旧代码。只能回退到 release manifest 兼容性检查通过、且与当前已应用 schema 相容的代码 release。该标记只约束代码 release 兼容性，不提供数据库降级能力；数据库只允许前向迁移。任何无法证明兼容性的回退都必须在切换前阻断，并保留当前 release、数据库备份和审计记录。
+代码回退必须读取并遵守 `migrations/manifest.json` 的 `codeRollbackSafe`。当前 `0001_production_baseline.sql` 以及 `0014`–`0019` 明确标记为 `codeRollbackSafe=false`；`0024_automation_task_idempotent_ensure.sql` 标记为 `true`，仅表示新增 RPC/schema 对旧 schema 兼容，不提供数据库降级能力。0024 之前的旧代码仍会走 `insert/catch 23505/select`，回退到旧代码会恢复 duplicate-key 日志；只有新代码已部署并验证后，才可按该标记进行代码回退。只能回退到 release manifest 兼容性检查通过、且与当前已应用 schema 相容的代码 release。数据库只允许前向迁移。任何无法证明兼容性的回退都必须在切换前阻断，并保留当前 release、数据库备份和审计记录。
 
 在当前生产 release 目录、加载受保护环境后执行 `node ./scripts/admin-bootstrap.mjs`。CLI 不接受 argv 参数；账号/显示名交互输入，密码隐藏输入，token 从受保护环境或隐藏输入读取。base URL 默认仅允许本机 loopback；若确需跨主机初始化，只允许 HTTPS，并需显式设置 `ADMIN_BOOTSTRAP_ALLOW_REMOTE_HTTPS=true` 确认受控安全边界，URL 本身不得包含凭据、查询参数或片段。CLI 成功后：
 

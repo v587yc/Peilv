@@ -163,11 +163,12 @@ migrations/0020_strategy_lab_fact_model.sql
 migrations/0021_strategy_lab_policy_and_artifacts.sql
 migrations/0022_strategy_lab_snapshot_provider.sql
 migrations/0023_strategy_lab_trusted_settlement.sql
+migrations/0024_automation_task_idempotent_ensure.sql
 ```
 
-迁移不会由应用启动过程自动执行。必须以 `migrations/manifest.json` 为唯一顺序和校验依据，按编号执行至当前最新版本 `0023_strategy_lab_trusted_settlement`，并检查 `schema_migrations` 已记录全部已执行版本。管理员账号、持久会话与 RBAC 依赖 `0009_admin_identity.sql`；`0010` 增加首位超级管理员及权限护栏；`0011` 增加持久登录限流；`0012` 用原子、有界 reservation 替代 check-record 竞态窗口；`0013` 为管理员变更增加基于 `updated_at` 前置条件的乐观并发控制（OCC）。`0014`–`0019` 继续收紧登录、生命周期审计、回测 claim、命令恢复、命令审计和 owner fence；`0020`–`0023` 建立 Strategy Lab 事实模型、策略制品、快照 provider 和 trusted settlement。
+迁移不会由应用启动过程自动执行。必须以 `migrations/manifest.json` 为唯一顺序和校验依据，按编号执行至当前最新版本 `0024_automation_task_idempotent_ensure`，并检查 `schema_migrations` 已记录全部已执行版本。管理员账号、持久会话与 RBAC 依赖 `0009_admin_identity.sql`；`0010` 增加首位超级管理员及权限护栏；`0011` 增加持久登录限流；`0012` 用原子、有界 reservation 替代 check-record 竞态窗口；`0013` 为管理员变更增加基于 `updated_at` 前置条件的乐观并发控制（OCC）。`0014`–`0019` 继续收紧登录、生命周期审计、回测 claim、命令恢复、命令审计和 owner fence；`0020`–`0023` 建立 Strategy Lab 事实模型、策略制品、快照 provider 和 trusted settlement；`0024` 提供自动化任务原子幂等 ensure RPC。
 
-回滚边界必须以 manifest 中的 `codeRollbackSafe` 为准：当前 `0001_production_baseline.sql` 以及 `0014`–`0019` 标记为 `codeRollbackSafe=false`。这些迁移应用后，禁止直接回退到不兼容的旧代码版本（尤其是 `0013` 或更早版本）；只能回退到通过 release manifest 兼容性检查、且与已应用 schema 相容的代码 release。`codeRollbackSafe=true` 也不代表可以回滚数据库迁移，数据库只执行前向迁移，不做页面级或脚本级降级。
+回滚边界必须以 manifest 中的 `codeRollbackSafe` 为准：当前 `0001_production_baseline.sql` 以及 `0014`–`0019` 标记为 `codeRollbackSafe=false`；`0024_automation_task_idempotent_ensure.sql` 标记为 `true`，仅表示新增 RPC 与 schema 向后兼容，不表示数据库可降级。0024 发布前的旧代码仍会使用 `insert/catch 23505/select`，回退旧代码可能恢复 duplicate-key 日志，因此应在应用 RPC 已部署并验证后再使用该兼容标记。只能回退到通过 release manifest 兼容性检查、且与已应用 schema 相容的代码 release。数据库只执行前向迁移，不做页面级或脚本级降级。
 
 Strategy Lab 的通用 migration/setup 只建立并强制默认拒绝的 RLS，不创建托管环境可能禁止创建的 LOGIN 角色。具备 `CREATEROLE`/对象所有权的受控环境需单独执行 `infra/local-data/sql/strategy-lab-roles.sql`；该脚本只创建无密码的 `NOLOGIN` 分组角色并安装最小 ACL/policy。运行时 LOGIN 必须由部署 secret 工具预创建，再仅授予 `strategy_lab_writer`（或只读场景的 `strategy_lab_reader`），禁止使用 `strategy_lab_owner`、超级用户或 `BYPASSRLS` DSN。当前 policy 的 `USING (true)` 边界仅适用于单租户 Strategy Lab，并且只绑定专用角色。
 

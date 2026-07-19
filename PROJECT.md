@@ -45,7 +45,7 @@ pnpm test:e2e             # 独立使用 127.0.0.1:3100
 数据库定义的可执行来源：
 
 1. `setup-database.sql`：新环境完整初始化基线。
-2. `migrations/manifest.json` 描述的全部迁移：已有环境必须按 manifest 顺序执行至当前版本 `0023_strategy_lab_trusted_settlement`，不得跳过或乱序。`0012` 提供原子登录 reservation，`0013` 提供管理员更新 OCC，`0014`–`0019` 提供登录/审计/回测恢复与 owner fence，`0020`–`0023` 提供 Strategy Lab 事实模型、策略制品、快照 provider 和 trusted settlement。
+2. `migrations/manifest.json` 描述的全部迁移：已有环境必须按 manifest 顺序执行至当前版本 `0024_automation_task_idempotent_ensure`，不得跳过或乱序。`0012` 提供原子登录 reservation，`0013` 提供管理员更新 OCC，`0014`–`0019` 提供登录/审计/回测恢复与 owner fence，`0020`–`0023` 提供 Strategy Lab 事实模型、策略制品、快照 provider 和 trusted settlement，`0024` 提供自动化任务原子幂等 ensure RPC。
 3. `src/storage/database/shared/schema.ts`：代码侧 Drizzle 模型，必须与 SQL 同步维护。
 
 `0001_production_baseline.sql` 会：
