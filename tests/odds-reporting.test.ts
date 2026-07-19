@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildOddsExportRows,
-  exportOddsWorkbook,
+  countOddsExportRows,
   fetchReport,
   fetchReportDates,
   fetchReportTrend,
@@ -97,13 +97,10 @@ describe("odds reporting boundary", () => {
         "进球数(初)大水": "0.89", "进球数(初)盘口": "2.25", "进球数(初)小水": "0.97",
       },
     ]);
+    expect(countOddsExportRows({
+      matches: [match], selectedLeagues: new Set(["英超"]), companyIds: new Set(["3", "4"]),
+      companyOdds: new Map([["m1", rows.map((_, index) => ({ companyId: index ? "4" : "3" })) as never]]),
+    })).toBe(2);
   });
 
-  it("orchestrates the same worksheet name and filename through an injected writer", () => {
-    const write = vi.fn();
-    exportOddsWorkbook([{ 联赛: "英超" }], "20260714", {
-      write,
-    });
-    expect(write).toHaveBeenCalledWith({ rows: [{ 联赛: "英超" }], sheetName: "赔率数据", filename: "赔率数据_20260714.xlsx" });
-  });
 });

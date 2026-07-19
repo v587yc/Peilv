@@ -189,9 +189,12 @@ export function buildOddsExportRows(input: {
   return rows;
 }
 
-export type WorkbookWriter = { write(input: { rows: ExportRow[]; sheetName: string; filename: string }): void };
-export function exportOddsWorkbook(rows: ExportRow[], dateRange: string, writer: WorkbookWriter): boolean {
-  if (rows.length === 0) return false;
-  writer.write({ rows, sheetName: "赔率数据", filename: `赔率数据_${dateRange}.xlsx` });
-  return true;
+export function countOddsExportRows(input: Pick<Parameters<typeof buildOddsExportRows>[0], "matches" | "selectedLeagues" | "companyIds" | "companyOdds">): number {
+  let count = 0;
+  for (const match of input.matches) {
+    if (input.selectedLeagues.size > 0 && !input.selectedLeagues.has(match.league)) continue;
+    const companies = (input.companyOdds.get(match.id) ?? []).filter(company => input.companyIds.has(company.companyId));
+    count += Math.max(1, companies.length);
+  }
+  return count;
 }

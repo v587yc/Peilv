@@ -9,8 +9,14 @@ export const VIRTUAL_SESSION_TOKENS: Record<SessionKind, string> = {
   revoked: "crow5-e2e-virtual-revoked-session-token",
 };
 export const VIRTUAL_INTERNAL_SECRET = "crow5_e2e_virtual_internal_secret_000000000000";
-export const APP_ORIGIN = process.env.BASE_URL || "http://127.0.0.1:3100";
-export const FAKE_DB_ORIGIN = "http://127.0.0.1:54329";
+function requiredInjectedOrigin(name: "PLAYWRIGHT_BASE_URL" | "PLAYWRIGHT_FAKE_DB_URL"): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} must be injected by playwright.config.ts`);
+  return new URL(value).origin;
+}
+
+export const APP_ORIGIN = requiredInjectedOrigin("PLAYWRIGHT_BASE_URL");
+export const FAKE_DB_ORIGIN = requiredInjectedOrigin("PLAYWRIGHT_FAKE_DB_URL");
 
 export async function useSession(context: BrowserContext, kind: SessionKind) {
   await context.clearCookies();

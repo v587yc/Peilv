@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { expect, test, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
 
-const baseURL = process.env.BASE_URL || "http://127.0.0.1:3100";
+const baseURL = process.env.PLAYWRIGHT_BASE_URL;
+if (!baseURL) throw new Error("PLAYWRIGHT_BASE_URL must be injected by playwright.config.ts");
 const sessionToken = "smoke-persistent-session";
 const fixtureCredentials = { username: "smoke.admin", password: "SmokePassword123!" };
 const capabilities = ["admin:view", "admin:configure", "admin:execute", "admin:dangerous", "admin:manage"];

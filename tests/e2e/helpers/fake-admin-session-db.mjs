@@ -1,7 +1,8 @@
 import { createHash, scryptSync } from "node:crypto";
 import { createServer } from "node:http";
 
-const port = Number(process.env.FAKE_ADMIN_DB_PORT || 54329);
+if (!process.env.FAKE_ADMIN_DB_PORT) throw new Error("FAKE_ADMIN_DB_PORT must be injected by playwright.config.ts");
+const port = Number(process.env.FAKE_ADMIN_DB_PORT);
 const VIRTUAL_TOKENS = {
   auditor: "crow5-e2e-virtual-auditor-session-token",
   operator: "crow5-e2e-virtual-operator-session-token",

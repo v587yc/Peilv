@@ -44,7 +44,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import "./odds.css";
-import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AIAnalysisResultPanel } from "./_components/ai-analysis-result-panel";
@@ -138,7 +137,7 @@ import {
 } from "@/features/odds/analysis-orchestrator";
 import {
   buildOddsExportRows,
-  exportOddsWorkbook,
+  countOddsExportRows,
   fetchReport,
   fetchReportDates,
   fetchReportTrend,
@@ -146,6 +145,7 @@ import {
   generateReport as requestGeneratedReport,
   runReportCommand,
 } from "@/features/odds/reporting";
+import { buildExcelExportDocument, decideExcelExportRows } from "@/features/odds/excel-export-document";
 import {
   createDebouncedLeagueSelectionSaver,
   fetchFocusedLeagues,
@@ -1540,28 +1540,47 @@ export default function OddsMonitorPage() {
     setScheduleError("");
   }, []);
 
-  // Export data to Excel
-  const exportToExcel = useCallback(() => {
+  const [excelExporting, setExcelExporting] = useState(false);
+  const excelExportingRef = useRef(false);
+
+  // Export data to Excel. ExcelJS is loaded only after this client-side click path starts.
+  const exportToExcel = useCallback(async () => {
+    if (excelExportingRef.current) return;
+    excelExportingRef.current = true;
+    setExcelExporting(true);
+    try {
     const companyOdds = new Map<string, CompanyOddsItem[]>();
     for (const [matchId, value] of dbCompanyOddsMap) companyOdds.set(matchId, Array.isArray(value.companies) ? value.companies : []);
+    const companyIds = new Set(dataCompanyIds);
+    const estimatedRows = countOddsExportRows({
+      matches: dataTabMatches,
+      selectedLeagues: dataSelectedLeagues,
+      companyIds,
+      companyOdds,
+    });
+    const decision = decideExcelExportRows(estimatedRows);
+    if (!decision.allowed) throw new Error(decision.message);
     const rows = buildOddsExportRows({
       matches: dataTabMatches,
       selectedLeagues: dataSelectedLeagues,
       scheduleMode: dataScheduleMode,
-      companyIds: new Set(dataCompanyIds),
+      companyIds,
       companyOdds,
       crownOpenOdds: crown12OddsFromDb,
       crownFinalOdds: crownLiveOddsFromDb,
     });
+    if (rows.length === 0) throw new Error("当前范围没有可导出的数据");
     const dateRange = dataDateEnd ? `${dataDate.replace(/-/g, "")}-${dataDateEnd.replace(/-/g, "")}` : (currentDbDate || "data");
-    exportOddsWorkbook(rows, dateRange, {
-      write({ rows: exportRows, sheetName, filename }) {
-        const worksheet = XLSX.utils.json_to_sheet(exportRows);
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-        XLSX.writeFile(workbook, filename);
-      },
-    });
+    const document = buildExcelExportDocument(rows, dateRange);
+    const { downloadExcelExport } = await import("@/features/odds/excel-export-client");
+    await downloadExcelExport(document);
+    } catch (error) {
+      console.error("[ExcelExport] Error:", error);
+      toast.error(error instanceof Error ? error.message : "Excel 导出失败，请重试");
+    } finally {
+      excelExportingRef.current = false;
+      setExcelExporting(false);
+    }
   }, [dataTabMatches, dataSelectedLeagues, dataScheduleMode, dbCompanyOddsMap, crownLiveOddsFromDb, crown12OddsFromDb, dataCompanyIds, dataDate, dataDateEnd, currentDbDate]);
 
   // Fetch schedule data; the feature layer owns decoding, aggregation and hot selection.
@@ -4692,10 +4711,12 @@ export default function OddsMonitorPage() {
                 </button>
               )}
               <button
-                className="text-[11px] text-green-400 hover:text-green-300"
-                onClick={() => exportToExcel()}
+                className={cn("text-[11px]", excelExporting ? "text-gray-500 cursor-wait" : "text-green-400 hover:text-green-300")}
+                onClick={exportToExcel}
+                disabled={excelExporting}
+                aria-busy={excelExporting}
               >
-                导出Excel
+                {excelExporting ? "导出中…" : "导出Excel"}
               </button>
               <span className="text-gray-700">|</span>
               <Popover>
