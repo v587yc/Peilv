@@ -1,16 +1,48 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+verify_deploy_v3_tcb() {
+  local manifest=/etc/peilv/trusted-deploy-v2.sha256 expected file extra target mode
+  local -A seen=()
+  [[ -f "$manifest" && ! -L "$manifest" && "$(stat -c '%U:%G:%a:%h' "$manifest")" == "root:root:644:1" ]] || return 1
+  while IFS=' ' read -r expected file extra; do
+    [[ -z "$extra" && "$expected" =~ ^[0-9a-f]{64}$ && -z "${seen[$file]+x}" ]] || return 1
+    case "$file" in
+      peilv-control) target=/usr/local/sbin/peilv-control; mode=755 ;;
+      deploy-production.sh|migration-contract.mjs|deploy-operation-ledger.mjs) target="/usr/local/libexec/peilv/$file"; mode=755 ;;
+      *) return 1 ;;
+    esac
+    [[ -f "$target" && ! -L "$target" && "$(stat -c '%U:%G:%a:%h' "$target")" == "root:root:$mode:1" ]] || return 1
+    [[ "$(sha256sum "$target" | awk '{print $1}')" == "$expected" ]] || return 1
+    seen["$file"]=1
+  done <"$manifest"
+  ((${#seen[@]} == 4)) || return 1
+  for file in peilv-control deploy-production.sh migration-contract.mjs deploy-operation-ledger.mjs; do [[ -n "${seen[$file]+x}" ]] || return 1; done
+}
+
 caller="${SUDO_USER:-}"
 command_name="${1:-}"
 
 case "$caller:$command_name:$#" in
-  peilv-audit:preflight:10)
-    exec /usr/local/libexec/peilv/production-preflight.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
+  peilv-audit:preflight:11)
+    exec /usr/local/libexec/peilv/production-preflight.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}"
     ;;
-  peilv-deploy:deploy:6)
-    [[ "$6" == "--maintenance-window-confirmed" ]] || { printf 'Maintenance window confirmation is required\n' >&2; exit 126; }
-    exec /usr/local/libexec/peilv/deploy-production.sh "$2" "$3" "$4" "$5" "$6"
+  peilv-audit:preflight:12)
+    [[ "${12}" == "--approved-current-unit-hotfix-transition" ]] || { printf 'Command is not permitted\n' >&2; exit 126; }
+    exec /usr/local/libexec/peilv/production-preflight.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}"
+    ;;
+  peilv-deploy:deploy-v3:9)
+    verify_deploy_v3_tcb || { printf 'Deploy v3 host TCB validation failed\n' >&2; exit 126; }
+    exec /usr/local/libexec/peilv/deploy-production.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+    ;;
+  peilv-deploy:deploy-v3:10)
+    verify_deploy_v3_tcb || { printf 'Deploy v3 host TCB validation failed\n' >&2; exit 126; }
+    [[ "${10}" == "--maintenance-window-confirmed" ]] || { printf 'Command is not permitted\n' >&2; exit 126; }
+    exec /usr/local/libexec/peilv/deploy-production.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
+    ;;
+  peilv-deploy:deploy-status-v1:2)
+    verify_deploy_v3_tcb || { printf 'Deploy v3 host TCB validation failed\n' >&2; exit 126; }
+    exec /usr/local/libexec/peilv/deploy-operation-ledger.mjs status /var/lib/peilv/deploy-operations "$2"
     ;;
   peilv-rollback:rollback:5)
     exec /usr/local/libexec/peilv/rollback-production.sh "$2" "$3" "$4" "$5"

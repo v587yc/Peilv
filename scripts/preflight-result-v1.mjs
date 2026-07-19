@@ -93,7 +93,9 @@ export function normalizeRemoteResult(remote, env = process.env) {
     if (!RELEASE_ID.test(remote.currentRelease || "")) throw new Error("Invalid current release");
     if (!Array.isArray(remote.blockers) || remote.blockers.length !== 0) throw new Error("Passed result contains blockers");
     if (!Array.isArray(remote.checks) || remote.checks.length === 0 || remote.checks.some(check => !check || typeof check.name !== "string" || check.status !== "passed") ||
-        !remote.migrations || !["applied", "pending", "unknown"].every(key => Array.isArray(remote.migrations[key]))) throw new Error("Invalid inspection details");
+        !remote.migrations || !["applied", "pending", "unknown"].every(key => Array.isArray(remote.migrations[key])) ||
+        (("migrationLedgerDigest" in remote.migrations || "pendingPlanDigest" in remote.migrations || "pendingAllCodeRollbackSafe" in remote.migrations) &&
+          (!SHA256.test(remote.migrations.migrationLedgerDigest || "") || !SHA256.test(remote.migrations.pendingPlanDigest || "") || typeof remote.migrations.pendingAllCodeRollbackSafe !== "boolean"))) throw new Error("Invalid inspection details");
     if (!validIso(remote.checkedAt) || Date.parse(remote.checkedAt) > Date.now() + 5 * 60_000) throw new Error("Invalid checkedAt");
     if (!validIso(remote.validUntil) || Date.parse(remote.validUntil) <= Date.now()) throw new Error("Invalid validUntil");
     return { ...remote, phase: "production-inspection", code: "OK", exitCode: 0 };
@@ -113,7 +115,9 @@ export function validateResult(result) {
     return result.exitCode !== 0 && Array.isArray(result.blockers) && result.blockers.length > 0 &&
       result.blockers.every(value => Object.values(SAFE_BLOCKERS).includes(value));
   }
-  return result.code === "OK" && result.exitCode === 0 && Array.isArray(result.blockers) && result.blockers.length === 0 &&
+  const migrationExtensionValid = !result.migrations || !("migrationLedgerDigest" in result.migrations || "pendingPlanDigest" in result.migrations || "pendingAllCodeRollbackSafe" in result.migrations) ||
+    (SHA256.test(result.migrations.migrationLedgerDigest || "") && SHA256.test(result.migrations.pendingPlanDigest || "") && typeof result.migrations.pendingAllCodeRollbackSafe === "boolean");
+  return result.code === "OK" && result.exitCode === 0 && migrationExtensionValid && Array.isArray(result.blockers) && result.blockers.length === 0 &&
     nullableString(result.requestId, UUID) !== null && candidateIsValid(result.candidate) &&
     RELEASE_ID.test(result.currentRelease || "") && Array.isArray(result.checks) && result.checks.length > 0 &&
     result.checks.every(check => check && typeof check.name === "string" && check.status === "passed") &&
@@ -123,11 +127,11 @@ export function validateResult(result) {
 
 function candidateIsValid(candidate) {
   if (!candidate || typeof candidate !== "object") return false;
-  const { releaseId, commitSha, sourceRunId, sourceRunAttempt, sourceArtifactId, archiveSha256 } = candidate;
+  const { releaseId, commitSha, sourceRunId, sourceRunAttempt, sourceArtifactId, archiveSha256, externalManifestSha256 } = candidate;
   return RELEASE_ID.test(releaseId || "") && SHA.test(commitSha || "") &&
     releaseId === `r${sourceRunId}-a${sourceRunAttempt}-${commitSha.slice(0, 12)}` &&
     [sourceRunId, sourceRunAttempt, sourceArtifactId].every(value => Number.isSafeInteger(value) && value > 0) &&
-    SHA256.test(archiveSha256 || "");
+    SHA256.test(archiveSha256 || "") && (externalManifestSha256 === undefined || SHA256.test(externalManifestSha256));
 }
 
 export function renderMarkdown(result) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-usage='Usage: production-preflight.sh <release-id> <commit-sha> <source-run-id> <source-run-attempt> <source-artifact-id> <archive-sha256> <request-id> <migration-csv> <uploaded-archive-path> [--approved-current-unit-hotfix-transition]'
+usage='Usage: production-preflight.sh <release-id> <commit-sha> <source-run-id> <source-run-attempt> <source-artifact-id> <archive-sha256> <request-id> <migration-csv> <external-manifest-sha256> <uploaded-archive-path> [--approved-current-unit-hotfix-transition]'
 release_id="${1:?$usage}"
 commit_sha="${2:?$usage}"
 source_run_id="${3:?$usage}"
@@ -10,8 +10,9 @@ source_artifact_id="${5:?$usage}"
 archive_sha="${6:?$usage}"
 request_id="${7:?$usage}"
 migration_csv="${8:-}"
-uploaded_archive="${9:?$usage}"
-transition_confirmation="${10:-}"
+external_manifest_sha="${9:?$usage}"
+uploaded_archive="${10:?$usage}"
+transition_confirmation="${11:-}"
 [[ -z "$transition_confirmation" || "$transition_confirmation" == --approved-current-unit-hotfix-transition ]] || { printf 'Unknown preflight option: %s\n' "$transition_confirmation" >&2; exit 1; }
 
 if [[ ! "$release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] ||
@@ -21,6 +22,7 @@ if [[ ! "$release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] ||
    [[ ! "$source_run_attempt" =~ ^[1-9][0-9]*$ ]] ||
    [[ ! "$source_artifact_id" =~ ^[1-9][0-9]*$ ]] ||
    [[ ! "$archive_sha" =~ ^[0-9a-f]{64}$ ]] ||
+   [[ ! "$external_manifest_sha" =~ ^[0-9a-f]{64}$ ]] ||
    [[ ! "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
   printf 'Invalid candidate provenance\n' >&2
   exit 1
@@ -376,10 +378,14 @@ for container in local-data-postgres-1 local-data-postgrest-1 local-data-gateway
   fi
 done
 
-mapfile -t applied_versions < <(
-  docker exec local-data-postgres-1 sh -lc \
-    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select version from schema_migrations order by applied_at, version;"' 2>/dev/null || true
-)
+ledger_query="$(mktemp)"; register_temp_file "$ledger_query"
+if docker exec local-data-postgres-1 sh -lc \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -Atc "select version from schema_migrations order by applied_at, version;"' >"$ledger_query" 2>/dev/null; then
+  mapfile -t applied_versions <"$ledger_query"
+else
+  applied_versions=()
+  check_blocked migration_ledger_query "Migration ledger query failed"
+fi
 
 if [[ -n "$migration_csv" ]]; then
   IFS=',' read -r -a migration_entries <<<"$migration_csv"
@@ -413,6 +419,19 @@ else
   check_passed migration_ledger
 fi
 latest_applied_version="$(printf '%s\n' "${applied_versions[@]}" | sort | awk 'NF{value=$0} END{print value}')"
+migration_contract_file="$(mktemp)"; register_temp_file "$migration_contract_file"
+printf '%s\n' "${applied_versions[@]}" >"$migration_contract_file"
+migration_contract_json="$(node "$verified_tree/scripts/migration-contract.mjs" "$verified_tree/migrations/manifest.json" "$migration_contract_file")" || check_blocked migration_contract "Canonical migration contract could not be calculated"
+if [[ -n "$migration_contract_json" ]]; then
+  migration_ledger_digest="$(MIGRATION_CONTRACT="$migration_contract_json" node -e 'process.stdout.write(JSON.parse(process.env.MIGRATION_CONTRACT).migrationLedgerDigest)')"
+  pending_plan_digest="$(MIGRATION_CONTRACT="$migration_contract_json" node -e 'process.stdout.write(JSON.parse(process.env.MIGRATION_CONTRACT).pendingPlanDigest)')"
+  pending_all_rollback_safe="$(MIGRATION_CONTRACT="$migration_contract_json" node -e 'process.stdout.write(String(JSON.parse(process.env.MIGRATION_CONTRACT).pendingAllCodeRollbackSafe))')"
+  mapfile -t applied_versions < <(MIGRATION_CONTRACT="$migration_contract_json" node -e 'for(const value of JSON.parse(process.env.MIGRATION_CONTRACT).applied)console.log(value)')
+  mapfile -t pending < <(MIGRATION_CONTRACT="$migration_contract_json" node -e 'for(const value of JSON.parse(process.env.MIGRATION_CONTRACT).pending)console.log(value)')
+  mapfile -t unknown < <(MIGRATION_CONTRACT="$migration_contract_json" node -e 'for(const value of JSON.parse(process.env.MIGRATION_CONTRACT).unknown)console.log(value)')
+else
+  migration_ledger_digest=""; pending_plan_digest=""; pending_all_rollback_safe="false"
+fi
 if verify_app_unit_contract "$current_app_unit" && verify_app_unit_contract "$installed_app_unit" && cmp -s "$installed_app_unit" "$current_app_unit"; then
   check_passed active_app_unit_release_binding
 elif approve_current_unit_hotfix_transition "$current_release" "$current_app_unit" "$installed_app_unit" "$candidate_app_unit" "${#pending[@]}" "${#unknown[@]}" "$latest_applied_version" "$listeners_5000"; then
@@ -509,12 +528,12 @@ join_lines() { local IFS=$'\n'; printf '%s' "$*"; }
 STATUS="$([[ ${#blockers[@]} -eq 0 ]] && printf passed || printf blocked)" \
 RELEASE_ID="$release_id" COMMIT_SHA="$commit_sha" SOURCE_RUN_ID="$source_run_id" \
 SOURCE_RUN_ATTEMPT="$source_run_attempt" SOURCE_ARTIFACT_ID="$source_artifact_id" \
-ARCHIVE_SHA="$measured_archive_sha" REQUEST_ID="$request_id" CURRENT_RELEASE="$current_release" \
+ARCHIVE_SHA="$measured_archive_sha" EXTERNAL_MANIFEST_SHA="$external_manifest_sha" REQUEST_ID="$request_id" CURRENT_RELEASE="$current_release" \
 TARGET_RELEASE="$target_release" BACKUP_PATH="$backup_path" OPT_AVAILABLE_KB="$opt_available_kb" \
 TRANSITION_APPROVED="$transition_approved" \
 CHECKS="$(join_lines "${checks[@]}")" BLOCKERS="$(join_lines "${blockers[@]}")" \
 PENDING="$(join_lines "${pending[@]}")" APPLIED="$(join_lines "${applied_versions[@]}")" \
-UNKNOWN="$(join_lines "${unknown[@]}")" VERIFIED_TREE="$verified_tree" node <<'NODE'
+UNKNOWN="$(join_lines "${unknown[@]}")" MIGRATION_LEDGER_DIGEST="$migration_ledger_digest" PENDING_PLAN_DIGEST="$pending_plan_digest" PENDING_ALL_ROLLBACK_SAFE="$pending_all_rollback_safe" VERIFIED_TREE="$verified_tree" node <<'NODE'
 const lines = key => (process.env[key] || "").split("\n").filter(Boolean);
 const checks = lines("CHECKS").map(value => {
   const separator = value.lastIndexOf("=");
@@ -536,6 +555,7 @@ const result = {
     sourceRunAttempt: Number(process.env.SOURCE_RUN_ATTEMPT),
     sourceArtifactId: Number(process.env.SOURCE_ARTIFACT_ID),
     archiveSha256: process.env.ARCHIVE_SHA,
+    externalManifestSha256: process.env.EXTERNAL_MANIFEST_SHA,
   },
   currentRelease: process.env.CURRENT_RELEASE || null,
   targetReleasePath: process.env.TARGET_RELEASE,
@@ -543,7 +563,7 @@ const result = {
   approvedCurrentUnitHotfixTransition: process.env.TRANSITION_APPROVED === "1",
   databaseBackupPath: process.env.BACKUP_PATH,
   checks,
-  migrations: { applied: lines("APPLIED"), pending: lines("PENDING"), unknown: lines("UNKNOWN") },
+  migrations: { applied: lines("APPLIED"), pending: lines("PENDING"), unknown: lines("UNKNOWN"), migrationLedgerDigest: process.env.MIGRATION_LEDGER_DIGEST || null, pendingPlanDigest: process.env.PENDING_PLAN_DIGEST || null, pendingAllCodeRollbackSafe: process.env.PENDING_ALL_ROLLBACK_SAFE === "true" },
   blockers: lines("BLOCKERS"),
   availableOptKiB: Number(process.env.OPT_AVAILABLE_KB),
   checkedAt: new Date().toISOString(),

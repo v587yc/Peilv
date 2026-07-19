@@ -227,6 +227,7 @@ jobs:
           if (!Array.isArray(migrations.migrations) || migrations.migrations.length === 0) throw new Error("Migration manifest is empty");
           NODE
           echo "ARCHIVE_SHA=$archive_sha" >> "$GITHUB_ENV"
+          echo "EXTERNAL_MANIFEST_SHA=$(sha256sum "$external" | awk '{print $1}')" >> "$GITHUB_ENV"
           echo "CANDIDATE_DIR=$candidate_dir" >> "$GITHUB_ENV"
           migrations="$(node scripts/preflight-result-v1.mjs manifest-migrations "$external")"
           echo "MIGRATIONS=$migrations" >> "$GITHUB_ENV"
@@ -349,12 +350,12 @@ jobs:
           timeout 10m ssh "${ssh_base[@]}" \
             -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
-            bash -s -- "$RELEASE_ID" "$COMMIT_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_ARTIFACT_ID" "$ARCHIVE_SHA" "$REQUEST_ID" "$MIGRATIONS" "$remote_archive" <<'REMOTE' > remote-preflight.json 2>remote-stderr.log
+            bash -s -- "$RELEASE_ID" "$COMMIT_SHA" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_ARTIFACT_ID" "$ARCHIVE_SHA" "$REQUEST_ID" "$MIGRATIONS" "$EXTERNAL_MANIFEST_SHA" "$remote_archive" <<'REMOTE' > remote-preflight.json 2>remote-stderr.log
           set -Eeuo pipefail
           for _ in {1..90}; do
             status=0
             stderr_file="$(mktemp)"
-            output="$(sudo -n /usr/local/sbin/peilv-control preflight "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" 2>"$stderr_file")" || status=$?
+            output="$(sudo -n /usr/local/sbin/peilv-control preflight "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" 2>"$stderr_file")" || status=$?
             if (( status == 0 )); then
               cat "$stderr_file" >&2; rm -f "$stderr_file"
               printf '%s\n' "$output"

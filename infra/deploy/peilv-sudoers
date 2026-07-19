@@ -2,5 +2,6 @@ Defaults:peilv-audit env_reset,use_pty
 Defaults:peilv-deploy env_reset,use_pty
 Defaults:peilv-rollback env_reset,use_pty
 peilv-audit ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control preflight *
-peilv-deploy ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control deploy *
+peilv-deploy ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control deploy-v3 *
+peilv-deploy ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control deploy-status-v1 *
 peilv-rollback ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control rollback *

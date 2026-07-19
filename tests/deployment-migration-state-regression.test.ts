@@ -64,7 +64,7 @@ describe("production migration manifest and state regressions", () => {
   it("quotes all state literals, validates a closed enum and preserves restoration failures", async () => {
     for (const name of ["scripts/deploy-production.sh", "scripts/rollback-production.sh", "scripts/production-preflight.sh"]) {
       const script = await read(name);
-      const shellConditionals = script.split(/\r?\n/).filter(line => line.includes("[[")).join("\n");
+      const shellConditionals = script.split(/\r?\n/).filter(line => line.includes("[[") && /active|inactive|failed|not-found|success/.test(line)).join("\n");
       expect(shellConditionals).not.toMatch(/==\s+(?:active|inactive|failed|not-found|success|true|false)(?:\s|\]\])/);
     }
     const deploy = await read("scripts/deploy-production.sh");
@@ -78,7 +78,7 @@ describe("production migration manifest and state regressions", () => {
 
   it("clears historical oneshot failures only after stopping timers and before fail-closed waits", async () => {
     const deploy = await read("scripts/deploy-production.sh");
-    const stop = deploy.indexOf("systemctl stop peilv-dispatch.timer peilv-reconcile.timer", deploy.indexOf("write_transaction_state maintenance_entering"));
+    const stop = deploy.indexOf("systemctl stop peilv-dispatch.timer", deploy.indexOf("write_transaction_state maintenance_entering"));
     const reset = deploy.indexOf("systemctl reset-failed peilv-dispatch.service peilv-reconcile.service", stop);
     const wait = deploy.indexOf("wait_for_inactive peilv-dispatch.service", reset);
     expect(stop).toBeGreaterThan(-1);
@@ -94,6 +94,42 @@ describe("production migration manifest and state regressions", () => {
     await writeFile(harness, `#!/usr/bin/env bash\nset -Eeuo pipefail\n${functions}\ndeclare -A states=([app]=inactive [timer]=active [broken]=inactive)\nsystemctl(){ local action=\"$1\" unit=\"$2\"; case \"$action\" in start) [[ \"$unit\" != broken ]] || return 9; states[$unit]=active;; stop) states[$unit]=inactive;; is-active) printf '%s\\n' \"\${states[$unit]}\";; *) return 1;; esac; }\nrestore_unit_state app active\n[[ \"\${states[app]}\" == active ]]\nrestore_unit_state timer inactive\n[[ \"\${states[timer]}\" == inactive ]]\nif restore_unit_state broken active; then exit 90; fi\nprintf 'recovery failure reported\\n' >&2\n`);
     const result = await exec("bash", [harness]);
     expect(result.stderr).toContain("recovery failure reported");
+  });
+
+  it.each([
+    ["active", "active"], ["active", "inactive"], ["inactive", "active"], ["inactive", "inactive"],
+  ])("preserves successful reconcile=%s dispatch=%s timer snapshots", async (reconcile, dispatch) => {
+    const script = await read("scripts/deploy-production.sh");
+    const functions = script.slice(script.indexOf("validate_unit_state()"), script.indexOf("create_probe_runtime()"));
+    const sandbox = await mkdtemp(join(tmpdir(), "peilv-timer-success-"));
+    const harness = join(sandbox, "timers.sh");
+    await writeFile(harness, `#!/usr/bin/env bash\nset -Eeuo pipefail\n${functions}\ndeclare -A states=([reconcile]=inactive [dispatch]=inactive)\nsystemctl(){ local action="$1" unit="$2"; case "$action" in start) states[$unit]=active;; stop) states[$unit]=inactive;; is-active) printf '%s\\n' "\${states[$unit]}";; *) return 1;; esac; }\nrestore_unit_state reconcile ${reconcile}\nrestore_unit_state dispatch ${dispatch}\n[[ "\${states[reconcile]}" == ${reconcile} ]]\n[[ "\${states[dispatch]}" == ${dispatch} ]]\n`);
+    await expect(exec("bash", [harness])).resolves.toMatchObject({ stdout: "", stderr: "" });
+  });
+
+  it.each([
+    ["active", "active"], ["active", "inactive"], ["inactive", "active"], ["inactive", "inactive"],
+  ])("failure rollback preserves reconcile=%s dispatch=%s timer snapshots", async (reconcile, dispatch) => {
+    const script = await read("scripts/deploy-production.sh");
+    const restore = script.slice(script.indexOf("if (( reconcile_timer_stopped == 1 )); then"), script.indexOf("printf 'Deployment failed.", script.indexOf("if (( reconcile_timer_stopped == 1 )); then")));
+    expect(restore).toContain('restore_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"');
+    expect(restore).toContain('restore_unit_state peilv-dispatch.timer "$original_dispatch_timer_state"');
+    expect(restore).not.toContain("systemctl start peilv-reconcile.timer");
+    expect(restore).not.toContain("systemctl start peilv-dispatch.timer");
+    const functions = script.slice(script.indexOf("validate_unit_state()"), script.indexOf("create_probe_runtime()"));
+    const sandbox = await mkdtemp(join(tmpdir(), "peilv-timer-failure-"));
+    const harness = join(sandbox, "timers.sh");
+    await writeFile(harness, `#!/usr/bin/env bash\nset -Eeuo pipefail\n${functions}\ndeclare -A states=([peilv-reconcile.timer]=inactive [peilv-dispatch.timer]=inactive)\nsystemctl(){ local action="$1" unit="$2"; case "$action" in start) states[$unit]=active;; stop) states[$unit]=inactive;; is-active) printf '%s\\n' "\${states[$unit]}";; *) return 1;; esac; }\noriginal_reconcile_timer_state=${reconcile}\noriginal_dispatch_timer_state=${dispatch}\nrestore_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"\nrestore_unit_state peilv-dispatch.timer "$original_dispatch_timer_state"\n[[ "\${states[peilv-reconcile.timer]}" == "$original_reconcile_timer_state" ]]\n[[ "\${states[peilv-dispatch.timer]}" == "$original_dispatch_timer_state" ]]\n`);
+    await expect(exec("bash", [harness])).resolves.toMatchObject({ stdout: "", stderr: "" });
+  });
+
+  it.each(["activating", "deactivating", "maintenance", ""])("fails closed on unknown original timer state %j", async state => {
+    const script = await read("scripts/deploy-production.sh");
+    const functions = script.slice(script.indexOf("validate_unit_state()"), script.indexOf("create_probe_runtime()"));
+    const sandbox = await mkdtemp(join(tmpdir(), "peilv-timer-unknown-"));
+    const harness = join(sandbox, "unknown.sh");
+    await writeFile(harness, `#!/usr/bin/env bash\nset -Eeuo pipefail\n${functions}\nsystemctl(){ return 90; }\nrestore_unit_state peilv-reconcile.timer '${state}'\n`);
+    await expect(exec("bash", [harness])).rejects.toMatchObject({ code: 1 });
   });
 
   it.each(["scripts/deploy-production.sh", "scripts/rollback-production.sh"])("fails closed on indeterminate inactive waits in %s", async name => {

@@ -36,13 +36,15 @@ describe("deploy existing release P0 regression", () => {
       script = script
         .replace("exec 9>/run/lock/peilv-deploy.lock", 'sandbox="$PEILV_TEST_SANDBOX"; exec 9>"$sandbox/deploy.lock"')
         .replace("base=/opt/peilv", 'base="$sandbox/opt/peilv"')
+        .replace("operation_ledger=/usr/local/libexec/peilv/deploy-operation-ledger.mjs", 'operation_ledger="$sandbox/operation-ledger"')
         .replaceAll("/usr/local/libexec/peilv/verify-release.sh", `printf 'extract\\n' >>"$sandbox/calls.log"; false #`)
         .replace("candidate_start \"$candidate_unit\"", `printf 'candidate\\n' >>"$sandbox/calls.log"; candidate_start "$candidate_unit"`)
         .replace("mv -T \"$release_dir\"", `printf 'mv\\n' >>"$sandbox/calls.log"; mv -T "$release_dir"`);
       const instrumented = path.join(sandbox, "deploy-production.sh");
+      await writeFile(path.join(sandbox, "operation-ledger"), "#!/usr/bin/env bash\n[[ \"$1\" == check ]] && printf 'new\\n' || exit 90\n", { mode: 0o700 });
       await writeFile(instrumented, script, { mode: 0o700 });
 
-      await expect(exec("bash", ["./deploy-production.sh", releaseId, sha, currentId, requestId], { cwd: sandbox, env: { ...process.env, PEILV_TEST_SANDBOX: "." } })).rejects.toMatchObject({ code: 1 });
+      await expect(exec("bash", ["./deploy-production.sh", releaseId, sha, "d".repeat(64), currentId, requestId, "2099-01-01T00:00:00Z", "b".repeat(64), "c".repeat(64)], { cwd: sandbox, env: { ...process.env, PEILV_TEST_SANDBOX: "." } })).rejects.toMatchObject({ code: 1 });
 
       const afterDir = await stat(release);
       const afterFile = await stat(sentinel);
