@@ -109,7 +109,53 @@ jobs:
           [[ "$(awk 'NR == 1 {print $2}' "$checksum")" == "peilv-$RELEASE_ID.tar.gz" || "$(awk 'NR == 1 {print $2}' "$checksum")" == "*peilv-$RELEASE_ID.tar.gz" ]]
           rm -rf verified-release
           mkdir verified-release
-          tar -xzf "$archive" -C verified-release ./release-manifest.json ./migrations/manifest.json
+          python3 - "$archive" verified-release <<'PY'
+          import pathlib
+          import tarfile
+          import sys
+
+          archive = pathlib.Path(sys.argv[1])
+          output = pathlib.Path(sys.argv[2])
+          targets = {
+              "release-manifest.json": {"release-manifest.json", "./release-manifest.json"},
+              "migrations/manifest.json": {"migrations/manifest.json", "./migrations/manifest.json"},
+          }
+          selected = {target: [] for target in targets}
+
+          with tarfile.open(archive, "r:gz") as value:
+              for member in value:
+                  name = member.name
+                  if not name or not name.isascii() or any(ord(character) < 0x21 or ord(character) > 0x7e for character in name):
+                      raise SystemExit("Unsupported archive member name")
+                  if "\\" in name or name.startswith("/"):
+                      raise SystemExit(f"Unsafe archive member path: {name}")
+                  if name in (".", "./") and member.isdir():
+                      continue
+                  normalized = name
+                  while normalized.startswith("./"):
+                      normalized = normalized[2:]
+                  parts = normalized.rstrip("/").split("/")
+                  if not normalized or any(part in ("", ".", "..") for part in parts):
+                      raise SystemExit(f"Unsafe archive member path: {name}")
+                  for target, allowed_names in targets.items():
+                      if name in allowed_names:
+                          selected[target].append(member)
+                      elif normalized == target or normalized.endswith("/" + target) or normalized.endswith(target):
+                          raise SystemExit(f"Ambiguous archive manifest member: {name}")
+
+              for target, members in selected.items():
+                  if len(members) != 1:
+                      raise SystemExit(f"Archive must contain exactly one allowed {target} member")
+                  member = members[0]
+                  if not member.isfile() or member.islnk() or member.issym():
+                      raise SystemExit(f"Archive manifest member is not a regular file: {member.name}")
+                  source = value.extractfile(member)
+                  if source is None:
+                      raise SystemExit(f"Archive manifest member is unreadable: {member.name}")
+                  destination = output / target
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  destination.write_bytes(source.read())
+          PY
           EXTERNAL_MANIFEST="$external" INTERNAL_MANIFEST="verified-release/release-manifest.json" MIGRATION_MANIFEST="verified-release/migrations/manifest.json" ARCHIVE_SHA="$archive_sha" RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" REPOSITORY="$REPOSITORY" REPOSITORY_ID="$REPOSITORY_ID" node - <<'NODE'
           const fs = require("node:fs");
           const external = JSON.parse(fs.readFileSync(process.env.EXTERNAL_MANIFEST, "utf8"));
