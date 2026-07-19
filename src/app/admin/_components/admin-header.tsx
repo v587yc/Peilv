@@ -30,6 +30,8 @@ export function AdminHeader() {
     try {
       const response = await fetch("/api/auth/session", { method: "DELETE" });
       if (!response.ok) throw new Error("退出失败");
+      await response.json();
+      sessionStorage.setItem("admin-explicit-logout", "1");
       window.location.replace("/login");
     } catch {
       setLogoutError("退出失败，请重试");
@@ -44,7 +46,7 @@ export function AdminHeader() {
         <BreadcrumbList>
           <BreadcrumbItem>
             {pathname === "/admin" ? <BreadcrumbPage>管理控制台</BreadcrumbPage> : (
-              <BreadcrumbLink asChild><Link href="/admin" prefetch={isStrategyLab ? false : undefined}>管理控制台</Link></BreadcrumbLink>
+              <BreadcrumbLink asChild><Link href="/admin" prefetch={false}>管理控制台</Link></BreadcrumbLink>
             )}
           </BreadcrumbItem>
           {pathname !== "/admin" ? (

@@ -43,6 +43,12 @@ function LoginForm() {
   }, [destination, replace]);
 
   useEffect(() => {
+    if (sessionStorage.getItem("admin-explicit-logout") === "1") {
+      sessionStorage.removeItem("admin-explicit-logout");
+      setInitialized(true);
+      setCheckingSession(false);
+      return;
+    }
     const controller = new AbortController();
     void checkSession(controller.signal);
     return () => controller.abort();

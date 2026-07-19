@@ -43,7 +43,7 @@ export function AdminSidebar() {
                     <SidebarMenuItem key={item.label}>
                       {item.available && item.href ? (
                         <SidebarMenuButton asChild isActive={pathname === item.href || (item.href !== "/admin" && pathname.startsWith(`${item.href}/`))} tooltip={item.label} className="h-9 transition-colors">
-                          <Link href={item.href} prefetch={pathname.startsWith("/admin/strategies/lab") ? false : undefined}>
+                          <Link href={item.href} prefetch={false}>
                             <Icon aria-hidden="true" />
                             <span>{item.label}</span>
                           </Link>

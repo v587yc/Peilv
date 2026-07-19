@@ -27,6 +27,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
   mocks.readAdminSession.mockResolvedValue({ configured: true, initialized: true, authenticated: false, user: null });
   mocks.createAdminSession.mockRejectedValue(new Error("账号或密码无效"));
 });
@@ -35,6 +36,7 @@ afterEach(() => {
   if (root) act(() => root?.unmount());
   root = null;
   document.body.replaceChildren();
+  sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -43,6 +45,18 @@ async function flush() {
 }
 
 describe("admin login page", () => {
+  it("consumes explicit logout state without repeating the revoked session probe", async () => {
+    sessionStorage.setItem("admin-explicit-logout", "1");
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<LoginPage />); });
+    await flush();
+    expect(mocks.readAdminSession).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("admin-explicit-logout")).toBeNull();
+    expect(container.querySelector("form")).not.toBeNull();
+  });
+
   it("keeps a single semantic page title across responsive layouts", async () => {
     const container = document.createElement("div");
     document.body.append(container);

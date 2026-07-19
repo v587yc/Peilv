@@ -30,17 +30,18 @@ function logoutButton(container: HTMLElement) {
   return Array.from(container.querySelectorAll("button")).find(button => button.textContent === "退出")!;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear(); });
 afterEach(async () => {
   await act(async () => root?.unmount());
   root = null;
   document.body.replaceChildren();
+  sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
 describe("AdminHeader logout", () => {
   it("hard-navigates only to the clean login URL after revocation succeeds", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true })));
     const replace = vi.spyOn(window.location, "replace").mockImplementation(() => undefined);
     const container = await renderHeader();
 
@@ -49,6 +50,7 @@ describe("AdminHeader logout", () => {
     expect(fetch).toHaveBeenCalledWith("/api/auth/session", { method: "DELETE" });
     expect(replace).toHaveBeenCalledTimes(1);
     expect(replace).toHaveBeenCalledWith("/login");
+    expect(sessionStorage.getItem("admin-explicit-logout")).toBe("1");
   });
 
   it("shows an error and does not navigate when revocation fails", async () => {
