@@ -36,9 +36,12 @@ describe("production deployment transaction contract", () => {
     expect(deploy).toContain('[[ ! -e "$release_dir" ]] || { printf \'Release directory already exists');
     const control = await read("infra/deploy/peilv-control");
     const lock = control.indexOf("flock -n 9");
+    const dispatch = control.indexOf("exec /usr/local/libexec/peilv/deploy-production.sh");
     const rejectExisting = deploy.indexOf('[[ ! -e "$release_dir" ]]');
     const failureTrap = deploy.indexOf("trap restore_on_failure EXIT");
-    expect(lock).toBeLessThan(rejectExisting);
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(dispatch).toBeGreaterThan(lock);
+    expect(rejectExisting).toBeGreaterThanOrEqual(0);
     expect(rejectExisting).toBeLessThan(failureTrap);
     expect(deploy).toContain("release_created=0");
     expect(deploy).toContain("release_created == 1 && release_activated == 0");
