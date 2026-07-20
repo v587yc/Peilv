@@ -103,13 +103,15 @@ set -euo pipefail
 real=/usr/bin/stat
 format=''; target="${"${!#}"}"
 for ((i=1;i<=$#;i++)); do [[ "${"${!i}"}" != -c ]] || { j=$((i+1)); format="${"${!j}"}"; }; done
-if [[ "$format" == '%U:%G:%h:%a' || "$format" == '%U:%G:%a:%h' ]]; then
+if [[ "$format" == '%U:%G:%h:%a' || "$format" == '%U:%G:%a:%h' || "$format" == '%U:%G:%a' ]]; then
   nlink="$($real -c %h "$target")"; owner=root:root; base="${"${target##*/}"}"
   [[ "${"${PEILV_TEST_BAD_OWNER:-}"}" != "$target" ]] || owner=nobody:nogroup
   if [[ -d "$target" ]]; then case "$base" in state|deploy-operations|deploy-results) mode=700;; *) mode=755;; esac
   else case "$base" in peilv|peilv-sudoers) mode=440;; ${manifestName}) mode=644;; *) mode=755;; esac; fi
   [[ "${"${PEILV_TEST_BAD_MODE:-}"}" != "$target" ]] || mode=777
-  [[ "$format" == '%U:%G:%h:%a' ]] && printf '%s:%s:%s\n' "$owner" "$nlink" "$mode" || printf '%s:%s:%s\n' "$owner" "$mode" "$nlink"
+  if [[ "$format" == '%U:%G:%h:%a' ]]; then printf '%s:%s:%s\n' "$owner" "$nlink" "$mode"
+  elif [[ "$format" == '%U:%G:%a:%h' ]]; then printf '%s:%s:%s\n' "$owner" "$mode" "$nlink"
+  else printf '%s:%s\n' "$owner" "$mode"; fi
 else exec "$real" "$@"; fi
 `;
     const statPath = path.join(adapterBin, "stat");
@@ -141,10 +143,19 @@ else exec "$real" "$@"; fi
     return exec("sudo", ["env", ...environment, "bash", ...args]);
   };
   const readTrusted = async (target: string) => isWindows ? readFile(target, "utf8") : (await exec("sudo", ["cat", target])).stdout;
+  const writeTrusted = async (target: string, content: string, mode: number) => {
+    if (isWindows) {
+      await writeFile(target, content);
+      await chmod(target, mode);
+      return;
+    }
+    await exec("sudo", [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], process.argv[2])", target, content]);
+    await exec("sudo", ["chmod", mode.toString(8), target]);
+  };
   const snapshot = async () => Object.fromEntries(
     await Promise.all(activationNames.map(async name => [name, await readTrusted(destinations[name])])),
   );
-  return { stage, state, destinations, run, snapshot, readTrusted };
+  return { stage, state, destinations, run, snapshot, readTrusted, writeTrusted };
 }
 
 describe("deploy v3 Host TCB bootstrap crash-consistent transaction", () => {
@@ -196,16 +207,14 @@ describe("deploy v3 Host TCB bootstrap crash-consistent transaction", () => {
   it("fails closed when a committed manifest points at a mixed runtime generation", async () => {
     const f = await fixture();
     await expect(f.run({ PEILV_TCB_FAIL_AFTER: manifestName })).rejects.toBeDefined();
-    await writeFile(f.destinations["deploy-production.sh"], "MIXED\n");
-    await chmod(f.destinations["deploy-production.sh"], modes["deploy-production.sh"]);
+    await f.writeTrusted(f.destinations["deploy-production.sh"], "MIXED\n", modes["deploy-production.sh"]);
     await expect(f.run({}, true)).rejects.toMatchObject({ stderr: expect.stringContaining("Committed TCB generation is mixed") });
   });
 
   it("rejects a CRLF staged executable before writing a durable journal", async () => {
     const f = await fixture();
     const before = await f.snapshot();
-    await writeFile(path.join(f.stage, "deploy-production.sh"), "#!/bin/sh\r\nexit 0\r\n");
-    await chmod(path.join(f.stage, "deploy-production.sh"), modes["deploy-production.sh"]);
+    await f.writeTrusted(path.join(f.stage, "deploy-production.sh"), "#!/bin/sh\r\nexit 0\r\n", modes["deploy-production.sh"]);
     await expect(f.run()).rejects.toBeDefined();
     expect(await f.snapshot()).toEqual(before);
     await expect(readFile(path.join(f.state, "tcb-v3-activation.json"))).rejects.toMatchObject({ code: "ENOENT" });

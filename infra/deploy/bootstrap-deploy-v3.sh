@@ -27,7 +27,7 @@ declare -A modes=([deploy-production.sh]=755 [production-preflight.sh]=755 [roll
 
 sync_dir(){ sync -f "$1" 2>/dev/null || sync -d "$1"; }
 hash_or_absent(){ [[ -f "$1" && ! -L "$1" && "$(stat -c %h "$1")" == 1 ]] && sha256sum "$1"|awk '{print $1}' || printf absent; }
-safe_existing_dir(){ local p="$1" mode="$2"; [[ -d "$p" && ! -L "$p" && "$(stat -c '%U:%G:%a:%h' "$p")" == "root:root:$mode:1" ]]; }
+safe_existing_dir(){ local p="$1" mode="$2"; [[ -d "$p" && ! -L "$p" && "$(stat -c '%U:%G:%a' "$p")" == "root:root:$mode" ]]; }
 existing_parent(){ local p="$1"; while [[ ! -e "$p" ]]; do p="$(dirname "$p")"; done; [[ -d "$p" && ! -L "$p" ]] || return 1; printf '%s\n' "$p"; }
 write_journal(){
  local phase="$1" active="$2" sequence="$3"

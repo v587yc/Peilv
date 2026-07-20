@@ -20,7 +20,10 @@ function adaptLedgerOwnerContractForTest(source: string, expectedFileUid?: numbe
   const gid = process.getgid?.() ?? 0;
   const fileUid = expectedFileUid ?? uid;
   expect(source).toContain("s.uid!==0||s.gid!==0");
-  return source.replaceAll("s.uid!==0||s.gid!==0", `s.uid!==${fileUid}||s.gid!==${gid}`);
+  return source.replaceAll(
+    "s.uid!==0||s.gid!==0",
+    `(kind==="directory"?s.uid!==${uid}:s.uid!==${fileUid})||s.gid!==${gid}`,
+  );
 }
 
 async function ledgerFixture(prefix: string, expectedFileUid?: number) {
@@ -150,7 +153,7 @@ describe("migration CAS and deploy request idempotency", () => {
     const json=JSON.stringify(identity),operation=path.join(root,`${request}.json`);
     await exec(process.execPath,[script,"claim",root,request,json]);
     await chmod(operation,0o640);
-    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation ledger file")});
+    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation file")});
   });
 
   it.runIf(process.platform !== "win32")("rejects operation files owned by an unexpected uid", async () => {
@@ -158,7 +161,7 @@ describe("migration CAS and deploy request idempotency", () => {
     const {root,script}=await ledgerFixture("deploy-owner-",uid+1);
     const json=JSON.stringify(identity);
     await expect(exec(process.execPath,[script,"claim",root,request,json])).resolves.toMatchObject({stdout:"claimed\n"});
-    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation ledger file")});
+    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation file")});
   });
 
   it("rejects symlink durable operation files by lstat contract", async () => {
