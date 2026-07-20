@@ -1,10 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 const exec = promisify(execFile);
 const manifestName = "trusted-host-tcb-v3.sha256";
@@ -30,6 +30,83 @@ const approvedFixtures = {
 } as const;
 const isWindows = process.platform === "win32";
 const fixtureTimeout = isWindows ? 90_000 : 30_000;
+const fixtureRoots = new Set<string>();
+
+function checkedFixturePath(root: string, target: string) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)) throw new Error("Fixture path escaped its temporary root");
+  return resolvedTarget;
+}
+
+function sudoWithInput(args: readonly string[], input: string) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn("sudo", [...args], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", code => code === 0 ? resolve({ stdout, stderr }) : reject(Object.assign(new Error(`sudo ${args[0]} exited ${code}: ${stderr}`), { code, stdout, stderr })));
+    child.stdin.end(input);
+  });
+}
+
+async function privilegedMetadata(root: string, target: string) {
+  const checked = checkedFixturePath(root, target);
+  if (isWindows) {
+    const stat = await lstat(checked);
+    return { owner: "root:root", mode: (stat.mode & 0o777).toString(8), nlink: stat.nlink };
+  }
+  const { stdout } = await exec("sudo", ["stat", "-c", "%U:%G:%a:%h", "--", checked]);
+  const [owner, mode, nlink] = stdout.trim().split(":");
+  return { owner, mode, nlink: Number(nlink) };
+}
+
+async function privilegedWrite(root: string, target: string, content: string, mode: number) {
+  const checked = checkedFixturePath(root, target);
+  if (isWindows) {
+    await chmod(checked, 0o600).catch(() => undefined);
+    await writeFile(checked, content);
+    await chmod(checked, mode);
+    return;
+  }
+  await sudoWithInput(["install", "-o", "root", "-g", "root", "-m", mode.toString(8), "/dev/stdin", checked], content);
+}
+
+async function withPrivilegedFixtureMutation<T>(root: string, target: string, content: string, mode: number, action: () => Promise<T>) {
+  const checked = checkedFixturePath(root, target);
+  const existed = isWindows ? await lstat(checked).then(() => true, () => false) : await exec("sudo", ["test", "-e", checked]).then(() => true, () => false);
+  const originalContent = existed ? (isWindows ? await readFile(checked, "utf8") : (await exec("sudo", ["cat", "--", checked])).stdout) : null;
+  const originalMode = existed ? Number.parseInt((await privilegedMetadata(root, checked)).mode, 8) : null;
+  await privilegedWrite(root, checked, content, mode);
+  try {
+    return await action();
+  } finally {
+    if (originalContent !== null && originalMode !== null) await privilegedWrite(root, checked, originalContent, originalMode);
+    else if (isWindows) await rm(checked, { force: true });
+    else await exec("sudo", ["rm", "-f", "--", checked]);
+  }
+}
+
+async function expectUnprivilegedDenied(target: string, directory = false) {
+  if (isWindows || process.getuid?.() === 0) return;
+  await expect(directory ? readdir(target) : readFile(target)).rejects.toMatchObject({ code: "EACCES" });
+}
+
+async function expectUnprivilegedMutationDenied(target: string) {
+  if (isWindows || process.getuid?.() === 0) return;
+  await expect(appendFile(target, "UNPRIVILEGED MUTATION\n")).rejects.toMatchObject({ code: "EACCES" });
+}
+
+afterEach(async () => {
+  for (const root of fixtureRoots) {
+    checkedFixturePath(root, root);
+    if (!path.basename(root).startsWith("deploy-v3-bootstrap-")) throw new Error("Refusing to clean an unexpected fixture root");
+    if (isWindows) await rm(root, { recursive: true, force: true });
+    else await exec("sudo", ["rm", "-rf", "--", root]);
+    fixtureRoots.delete(root);
+  }
+});
 
 function replaceExactly(source: string, oldValue: string, newValue: string) {
   const first = source.indexOf(oldValue);
@@ -53,6 +130,7 @@ function windowsMetadataAdapter(source: string) {
 type FixtureOptions = { legacy?: "approved" | "absent" | "unknown" | "symlink" | "hardlink"; legacyMode?: number; legacyOwner?: "root" | "nobody"; legacyV2?: "approved" | "absent" | "unknown"; conflict?: string; extraLegacy?: boolean; extraV2?: boolean; unknownExisting?: string };
 async function fixture(options: FixtureOptions = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "deploy-v3-bootstrap-"));
+  fixtureRoots.add(root);
   const stage = path.join(root, "stage"), sbin = path.join(root, "sbin"), libexec = path.join(root, "libexec"), etc = path.join(root, "etc"), sudoers = path.join(root, "sudoers.d"), state = path.join(root, "state"), adapterBin = path.join(root, "adapter-bin"), sudoersMain = path.join(root, "sudoers-main");
   await Promise.all([stage, sbin, libexec, etc, sudoers, state, adapterBin].map(dir => mkdir(dir)));
   await chmod(state, 0o700);
@@ -119,8 +197,8 @@ describe("deploy v3 legacy sudoers retirement transaction", () => {
   it("restores legacy old when killed after retirement", async () => { const f = await fixture(); const before = await f.snapshot(); await expect(f.run({ PEILV_TCB_FAIL_AFTER: legacyName })).rejects.toBeDefined(); await expect(f.run({}, true)).resolves.toMatchObject({ stdout: expect.stringContaining("old generation retained") }); expect(await f.snapshot()).toEqual(before); }, fixtureTimeout);
   it("retains legacy absent and all-new after manifest commit", async () => { const f = await fixture(); await expect(f.run({ PEILV_TCB_FAIL_AFTER: manifestName })).rejects.toBeDefined(); await expect(f.run({}, true)).resolves.toMatchObject({ stdout: expect.stringContaining("new generation retained") }); expect(await f.absent(f.destinations[legacyName])).toBe(true); }, fixtureTimeout);
   it("recovery is reentrant after a second interruption", async () => { const f = await fixture(); const before = await f.snapshot(); await expect(f.run({ PEILV_TCB_FAIL_AFTER: legacyName })).rejects.toBeDefined(); await expect(f.run({ PEILV_TCB_RECOVERY_FAIL_AFTER: "migration-contract.mjs" }, true)).rejects.toBeDefined(); await expect(f.run({}, true)).resolves.toMatchObject({ stdout: expect.stringContaining("old generation retained") }); expect(await f.snapshot()).toEqual(before); }, 90_000);
-  it("fails closed on committed mixed runtime/legacy state", async () => { const f = await fixture(); await expect(f.run({ PEILV_TCB_FAIL_AFTER: manifestName })).rejects.toBeDefined(); await writeFile(f.destinations[legacyName], approvedLegacy); await expect(f.run({}, true)).rejects.toMatchObject({ stderr: expect.stringContaining("mixed") }); }, fixtureTimeout);
-  it.each(["new", "old"] as const)("seals durable root-only forensic evidence for %s outcome", async finalState => { const f = await fixture(); if (finalState === "new") await f.run(); else { await expect(f.run({ PEILV_TCB_FAIL_AFTER: legacyName })).rejects.toBeDefined(); await f.run({}, true); } const entries = await exec("bash", ["-c", "ls -1 \"$1\"", "bash", f.evidenceRoot]); const evidence = path.join(f.evidenceRoot, entries.stdout.trim().split(/\r?\n/)[0]); const bundle = JSON.parse(await f.readTrusted(path.join(evidence, "bundle.json"))); expect(bundle).toMatchObject({ schemaVersion: 1, finalState, transactionId: expect.any(String), digest: expect.stringMatching(/^[0-9a-f]{64}$/) }); expect(bundle.records.find((r: { name: string }) => r.name === legacyName).oldHash).toBe("e7e825d0c9a81c9514eb42aef12a56ad8c41729cfc9aa6f9fbaf345e9488b35a"); expect(await f.absent(path.join(evidence, `${legacyName}.old`))).toBe(false); }, fixtureTimeout);
+  it("fails closed on committed mixed runtime/legacy state", async () => { const f = await fixture(); await expect(f.run({ PEILV_TCB_FAIL_AFTER: manifestName })).rejects.toBeDefined(); await withPrivilegedFixtureMutation(f.root, f.destinations[legacyName], approvedLegacy, 0o440, async () => { if (!isWindows) expect(await privilegedMetadata(f.root, f.destinations[legacyName])).toEqual({ owner: "root:root", mode: "440", nlink: 1 }); await expectUnprivilegedDenied(f.destinations[legacyName]); await expect(f.run({}, true)).rejects.toMatchObject({ stderr: expect.stringContaining("mixed") }); }); }, fixtureTimeout);
+  it.each(["new", "old"] as const)("seals durable root-only forensic evidence for %s outcome", async finalState => { const f = await fixture(); if (finalState === "new") await f.run(); else { await expect(f.run({ PEILV_TCB_FAIL_AFTER: legacyName })).rejects.toBeDefined(); await f.run({}, true); } await expectUnprivilegedDenied(f.evidenceRoot, true); const entries = isWindows ? { stdout: (await readdir(f.evidenceRoot)).join("\n") } : await exec("sudo", ["find", f.evidenceRoot, "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-printf", "%f\n"]); const entry = entries.stdout.trim().split(/\r?\n/)[0]; expect(entry).toMatch(/^[0-9A-Za-z._-]+$/); const evidence = checkedFixturePath(f.root, path.join(f.evidenceRoot, entry)); if (!isWindows) { expect(await privilegedMetadata(f.root, f.evidenceRoot)).toMatchObject({ owner: "root:root", mode: "700" }); expect(await privilegedMetadata(f.root, evidence)).toMatchObject({ owner: "root:root", mode: "700" }); } const bundlePath = checkedFixturePath(f.root, path.join(evidence, "bundle.json")); if (!isWindows) expect((await exec("sudo", ["sha256sum", "--", bundlePath])).stdout).toMatch(/^[0-9a-f]{64}\s/); await expectUnprivilegedDenied(bundlePath); const bundle = JSON.parse(await f.readTrusted(bundlePath)); expect(bundle).toMatchObject({ schemaVersion: 1, finalState, transactionId: expect.any(String), digest: expect.stringMatching(/^[0-9a-f]{64}$/) }); expect(bundle.records.find((r: { name: string }) => r.name === legacyName).oldHash).toBe("e7e825d0c9a81c9514eb42aef12a56ad8c41729cfc9aa6f9fbaf345e9488b35a"); expect(await f.absent(path.join(evidence, `${legacyName}.old`))).toBe(false); }, fixtureTimeout);
   it.each(installNames.flatMap(name => name === manifestName ? [`${name}:backup`] : [`${name}:backup`, name]))("recovers all-old from install fault point %s", async point => { const f = await fixture(); const before = await f.snapshot(); await expect(f.run({ PEILV_TCB_FAIL_AFTER: point })).rejects.toBeDefined(); await expect(f.run({}, true)).resolves.toBeDefined(); expect(await f.snapshot()).toEqual(before); }, 90_000);
-  it.each(["peilv-control", "peilv-sudoers", policyName, manifestName])("rejects CRLF in staged %s before mutation", async name => { const f = await fixture(); const before = await f.snapshot(); const target=path.join(f.stage,name); await chmod(target,0o600); await writeFile(target, `${await f.readTrusted(target)}\r\n`); await chmod(target,modes[name]); await expect(f.run()).rejects.toBeDefined(); expect(await f.snapshot()).toEqual(before); }, fixtureTimeout);
+  it.each(["peilv-control", "peilv-sudoers", policyName, manifestName])("rejects CRLF in staged %s before mutation", async name => { const f = await fixture(); const before = await f.snapshot(); const target = path.join(f.stage, name); await withPrivilegedFixtureMutation(f.root, target, `${await f.readTrusted(target)}\r\n`, modes[name], async () => { if (!isWindows) expect(await privilegedMetadata(f.root, target)).toEqual({ owner: "root:root", mode: modes[name].toString(8), nlink: 1 }); await expectUnprivilegedMutationDenied(target); await expect(f.run()).rejects.toBeDefined(); expect(await f.snapshot()).toEqual(before); }); }, fixtureTimeout);
 });
