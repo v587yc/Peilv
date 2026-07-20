@@ -171,9 +171,17 @@ chmod 440 "$expected_sudoers"; visudo -cf "$expected_sudoers" >/dev/null
 
 for name in "${install_names[@]}"; do target="${destinations[$name]}"; target_kind="$(classify_entry "$target")"; [[ "$target_kind" == absent ]] || [[ "$target_kind" == regular && "$(stat -c '%U:%G:%a:%h' "$target")" == "root:root:${modes[$name]}:1" ]] || { printf 'Unsafe existing TCB object: %s\n' "$target" >&2; exit 78; }; done
 for name in "${activation_names[@]}"; do target="${destinations[$name]}"; old_hash="$(hash_or_absent "$target")"; [[ "$old_hash" == absent || ( -n "${allowed_old[$name]:-}" && "$old_hash" == "${allowed_old[$name]}" ) ]] || { printf 'Unapproved existing TCB hash: %s\n' "$name" >&2; exit 1; }; done
-declare -a created_dirs=() missing_dirs=(); declare -a required_dirs=("$state_root|700" "$operation_root|700" "$result_root|700" "$evidence_root|700" "$sbin|755" "$libexec|755" "$etc|755" "$sudoers_dir|755")
-for item in "${required_dirs[@]}"; do IFS='|' read -r dir mode <<<"$item"; if path_entry_exists "$dir"; then safe_existing_dir "$dir" "$mode" || { printf 'Unsafe existing directory: %s\n' "$dir" >&2; exit 78; }; else parent="$(dirname "$dir")"; [[ "$(classify_entry "$parent")" == directory ]] || { printf 'Missing trusted parent: %s\n' "$parent" >&2; exit 1; }; missing_dirs+=("$item"); fi; done
-for item in "${missing_dirs[@]}"; do IFS='|' read -r dir mode <<<"$item"; parent="$(dirname "$dir")"; install -d -o root -g root -m "$mode" "$dir"; created_dirs+=("$dir"); sync_dir "$parent"; done
+declare -a created_dirs=(); declare -a required_dirs=("$state_root|700" "$operation_root|700" "$result_root|700" "$evidence_root|700" "$sbin|755" "$libexec|755" "$etc|755" "$sudoers_dir|755")
+for item in "${required_dirs[@]}"; do
+ IFS='|' read -r dir mode <<<"$item"
+ if path_entry_exists "$dir"; then safe_existing_dir "$dir" "$mode" || { printf 'Unsafe existing directory: %s\n' "$dir" >&2; exit 78; }
+ else
+  parent="$(dirname "$dir")"
+  [[ "$(classify_entry "$parent")" == directory ]] || { printf 'Unsafe trusted parent: %s\n' "$parent" >&2; exit 78; }
+  install -d -o root -g root -m "$mode" "$dir"
+  created_dirs+=("$dir"); sync_dir "$parent"
+ fi
+done
 sync_dir "$stage"
 
 tx="$(date -u +%Y%m%dT%H%M%SZ)-$$"
