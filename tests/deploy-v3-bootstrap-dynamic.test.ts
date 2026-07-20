@@ -57,9 +57,9 @@ async function privilegedMetadata(root: string, target: string) {
     const stat = await lstat(checked);
     return { owner: "root:root", mode: (stat.mode & 0o777).toString(8), nlink: stat.nlink };
   }
-  const { stdout } = await exec("sudo", ["stat", "-c", "%U:%G:%a:%h", "--", checked]);
-  const [owner, mode, nlink] = stdout.trim().split(":");
-  return { owner, mode, nlink: Number(nlink) };
+  const { stdout } = await exec("sudo", ["stat", "-c", "%U\t%G\t%a\t%h", "--", checked]);
+  const [user, group, mode, nlink] = stdout.trim().split("\t");
+  return { owner: `${user}:${group}`, mode, nlink: Number(nlink) };
 }
 
 async function privilegedWrite(root: string, target: string, content: string, mode: number) {
@@ -70,7 +70,9 @@ async function privilegedWrite(root: string, target: string, content: string, mo
     await chmod(checked, mode);
     return;
   }
-  await sudoWithInput(["install", "-o", "root", "-g", "root", "-m", mode.toString(8), "/dev/stdin", checked], content);
+  await sudoWithInput(["tee", "--", checked], content);
+  await exec("sudo", ["chown", "root:root", "--", checked]);
+  await exec("sudo", ["chmod", mode.toString(8), "--", checked]);
 }
 
 async function withPrivilegedFixtureMutation<T>(root: string, target: string, content: string, mode: number, action: () => Promise<T>) {
@@ -89,13 +91,25 @@ async function withPrivilegedFixtureMutation<T>(root: string, target: string, co
 }
 
 async function expectUnprivilegedDenied(target: string, directory = false) {
-  if (isWindows || process.getuid?.() === 0) return;
-  await expect(directory ? readdir(target) : readFile(target)).rejects.toMatchObject({ code: "EACCES" });
+  if (isWindows) return;
+  if (process.getuid?.() !== 0) {
+    await expect(directory ? readdir(target) : readFile(target)).rejects.toMatchObject({ code: "EACCES" });
+    return;
+  }
+  const sudoUid = process.env.SUDO_UID;
+  if (!sudoUid?.match(/^[1-9][0-9]*$/)) throw new Error("Root fixture test requires a non-root SUDO_UID for access denial assertions");
+  await expect(exec("sudo", ["-u", `#${sudoUid}`, "--", directory ? "ls" : "cat", "--", target])).rejects.toMatchObject({ code: expect.any(Number) });
 }
 
 async function expectUnprivilegedMutationDenied(target: string) {
-  if (isWindows || process.getuid?.() === 0) return;
-  await expect(appendFile(target, "UNPRIVILEGED MUTATION\n")).rejects.toMatchObject({ code: "EACCES" });
+  if (isWindows) return;
+  if (process.getuid?.() !== 0) {
+    await expect(appendFile(target, "UNPRIVILEGED MUTATION\n")).rejects.toMatchObject({ code: "EACCES" });
+    return;
+  }
+  const sudoUid = process.env.SUDO_UID;
+  if (!sudoUid?.match(/^[1-9][0-9]*$/)) throw new Error("Root fixture test requires a non-root SUDO_UID for mutation denial assertions");
+  await expect(sudoWithInput(["-u", `#${sudoUid}`, "tee", "-a", "--", target], "UNPRIVILEGED MUTATION\n")).rejects.toMatchObject({ code: expect.any(Number) });
 }
 
 afterEach(async () => {
