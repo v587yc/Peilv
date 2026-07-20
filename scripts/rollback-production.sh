@@ -7,6 +7,7 @@ target_release_id="${1:?$usage}"
 expected_current_release_id="${2:?$usage}"
 request_id="${3:?$usage}"
 reason_b64url="${4:?$usage}"
+[[ "${PEILV_GLOBAL_LOCK_FD:-}" == 9 && "${PEILV_TCB_LOCK_FD:-}" == 8 && "${PEILV_REQUEST_LOCK_FD:-}" == 7 && "${HOST_TCB_GENERATION:-}" == host-tcb-v3 && -n "${HOST_TCB_MANIFEST_SHA256:-}" && -n "${HOST_SUDOERS_SHA256:-}" && -n "${HOST_MIGRATION_HELPER_SHA256:-}" ]] || { printf 'rollback old/direct ABI is forbidden\n' >&2; exit 126; }
 
 release_pattern='^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$'
 if [[ ! "$target_release_id" =~ $release_pattern ]] || [[ ! "$expected_current_release_id" =~ $release_pattern ]] ||
@@ -19,14 +20,21 @@ fi
 
 base=/opt/peilv
 transaction_state=/var/lib/peilv/deploy-transaction.json
+operation_root=/var/lib/peilv/deploy-operations
+result_root=/var/lib/peilv/deploy-results
+operation_ledger=/usr/local/libexec/peilv/deploy-operation-ledger.mjs
+result_path="$result_root/$request_id.json"
+operation_identity="$(RELEASE_ID="$target_release_id" CURRENT="$expected_current_release_id" TCB_GENERATION="$HOST_TCB_GENERATION" HOST_TCB_MANIFEST_SHA="$HOST_TCB_MANIFEST_SHA256" HOST_SUDOERS_SHA="$HOST_SUDOERS_SHA256" HOST_MIGRATION_HELPER_SHA="$HOST_MIGRATION_HELPER_SHA256" node -e 'process.stdout.write(JSON.stringify({schemaVersion:4,operation:"rollback",releaseId:process.env.RELEASE_ID,expectedCurrentReleaseId:process.env.CURRENT,tcbGeneration:process.env.TCB_GENERATION,hostTcbManifestSha256:process.env.HOST_TCB_MANIFEST_SHA,hostSudoersSha256:process.env.HOST_SUDOERS_SHA,hostMigrationHelperSha256:process.env.HOST_MIGRATION_HELPER_SHA}))')"
+operation_claimed=0
+operation_check="$("$operation_ledger" check "$operation_root" "$request_id" "$operation_identity")"
+if [[ "$operation_check" == replay ]]; then "$operation_ledger" status "$operation_root" "$request_id" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const o=JSON.parse(s);if(o.status!=="succeeded"||!o.result)process.exit(1);process.stdout.write(JSON.stringify(o.result,null,2)+"\n")})'; exit 0; fi
+[[ "$operation_check" == new ]]
 target="$base/releases/$target_release_id"
 current="$(readlink -f "$base/current" 2>/dev/null || true)"
 current_id="${current##*/}"
 [[ "$current_id" == "$expected_current_release_id" ]] || { printf 'Current release changed since approval\n' >&2; exit 1; }
 [[ -d "$target" && -d "$current" && -f "$target/release-manifest.json" && -f "$current/release-manifest.json" ]]
 
-exec 9>/run/lock/peilv-deploy.lock
-flock -n 9 || { printf 'Another server-side deployment is running\n' >&2; exit 1; }
 [[ "$(readlink -f "$base/current")" == "$current" ]] || { printf 'Current release changed after lock acquisition\n' >&2; exit 1; }
 
 mapfile -t applied_versions < <(docker exec local-data-postgres-1 sh -lc \
@@ -270,9 +278,20 @@ restore_on_failure() {
     printf 'Code rollback failed; database was not changed\n' >&2
   fi
   cleanup_temp_files
+  if (( operation_claimed == 1 )); then
+    install -d -o root -g root -m 0700 "$result_root"
+    REQUEST_ID="$request_id" RELEASE_ID="$target_release_id" STATUS="$status" TCB_GENERATION="$HOST_TCB_GENERATION" HOST_TCB_MANIFEST_SHA="$HOST_TCB_MANIFEST_SHA256" HOST_SUDOERS_SHA="$HOST_SUDOERS_SHA256" HOST_MIGRATION_HELPER_SHA="$HOST_MIGRATION_HELPER_SHA256" node <<'NODE' | "$operation_ledger" write-result-v2 "$result_root" "$request_id" failed >/dev/null
+const r={schemaVersion:2,status:"failed",requestId:process.env.REQUEST_ID,releaseId:process.env.RELEASE_ID,exitCode:Number(process.env.STATUS),tcbGeneration:process.env.TCB_GENERATION,hostTcbManifestSha256:process.env.HOST_TCB_MANIFEST_SHA,hostSudoersSha256:process.env.HOST_SUDOERS_SHA,hostMigrationHelperSha256:process.env.HOST_MIGRATION_HELPER_SHA,completedAt:new Date().toISOString()};process.stdout.write(JSON.stringify(r)+"\n")
+NODE
+    "$operation_ledger" finish "$operation_root" "$request_id" failed "$result_path"
+  fi
   exit "$status"
 }
 trap restore_on_failure EXIT
+claim_result="$("$operation_ledger" claim "$operation_root" "$request_id" "$operation_identity")"
+if [[ "$claim_result" == replay ]]; then "$operation_ledger" status "$operation_root" "$request_id"; completed=1; exit 0; fi
+[[ "$claim_result" == claimed ]]
+operation_claimed=1
 
 validate_unit_state peilv.service "$original_app_state"
 validate_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"
@@ -350,25 +369,14 @@ if [[ "$original_app_state" == "active" ]]; then
 fi
 if [[ "$original_reconcile_timer_state" == "active" ]]; then systemctl start peilv-reconcile.service; [[ "$(systemctl show peilv-reconcile.service -p Result --value)" == "success" ]]; systemctl start peilv-reconcile.timer; fi
 if [[ "$original_dispatch_timer_state" == "active" ]]; then systemctl start peilv-dispatch.service; [[ "$(systemctl show peilv-dispatch.service -p Result --value)" == "success" ]]; systemctl start peilv-dispatch.timer; fi
-LEDGER_PATH="$base/deployment-ledger.json" RELEASE_ID="$target_release_id" PREVIOUS_RELEASE="$current_id" REQUEST_ID="$request_id" node <<'NODE'
-const fs = require("node:fs");
-const path = process.env.LEDGER_PATH;
-let ledger = { schemaVersion: 1, events: [] };
-try { ledger = JSON.parse(fs.readFileSync(path, "utf8")); } catch {}
-if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.events)) throw new Error("Invalid deployment ledger");
-ledger.events.push({ kind: "rollback", releaseId: process.env.RELEASE_ID, previousReleaseId: process.env.PREVIOUS_RELEASE, requestId: process.env.REQUEST_ID, completedAt: new Date().toISOString() });
-ledger.events = ledger.events.slice(-100);
-const temporary = `${path}.next`;
-fs.writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o640 });
-fs.renameSync(temporary, path);
-NODE
-completed=1
+"$operation_ledger" append-deployment-event "$base" rollback "$target_release_id" "$current_id" "$request_id"
 rm -f "$transaction_state"
 [[ -z "$openresty_backup" ]] || rm -f "$openresty_backup"
 rm -f "$rendered_openresty"
 
-RESULT_PATH="/tmp/rollback-$request_id.json" TARGET="$target_release_id" PREVIOUS="$current_id" REQUEST_ID="$request_id" node <<'NODE'
-const result = { schemaVersion: 1, status: "succeeded", requestId: process.env.REQUEST_ID, targetReleaseId: process.env.TARGET, previousReleaseId: process.env.PREVIOUS, databaseRestored: false, migrationsRun: false, completedAt: new Date().toISOString() };
-require("node:fs").writeFileSync(process.env.RESULT_PATH, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o644 });
+TARGET="$target_release_id" PREVIOUS="$current_id" REQUEST_ID="$request_id" TCB_GENERATION="$HOST_TCB_GENERATION" HOST_TCB_MANIFEST_SHA="$HOST_TCB_MANIFEST_SHA256" HOST_SUDOERS_SHA="$HOST_SUDOERS_SHA256" HOST_MIGRATION_HELPER_SHA="$HOST_MIGRATION_HELPER_SHA256" node <<'NODE' | "$operation_ledger" write-result-v2 "$result_root" "$request_id" succeeded >/dev/null
+const result = { schemaVersion: 2, status: "succeeded", requestId: process.env.REQUEST_ID, releaseId: process.env.TARGET, targetReleaseId: process.env.TARGET, previousReleaseId: process.env.PREVIOUS, databaseRestored: false, migrationsRun: false, tcbGeneration: process.env.TCB_GENERATION, hostTcbManifestSha256: process.env.HOST_TCB_MANIFEST_SHA, hostSudoersSha256: process.env.HOST_SUDOERS_SHA, hostMigrationHelperSha256: process.env.HOST_MIGRATION_HELPER_SHA, completedAt: new Date().toISOString() };process.stdout.write(JSON.stringify(result)+"\n")
 NODE
+"$operation_ledger" finish "$operation_root" "$request_id" succeeded "$result_path"
+completed=1
 printf 'Code-only rollback completed\nTarget release: %s\nPrevious release: %s\nDatabase restored: no\nMigrations run: no\n' "$target_release_id" "$current_id"

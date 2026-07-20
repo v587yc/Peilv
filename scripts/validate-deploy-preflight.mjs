@@ -33,6 +33,17 @@ export function validateDeployPreflight({ manifest, result, env, now = Date.now(
   if (!SHA256.test(result.candidate?.archiveSha256 || "")) throw new Error("Preflight archive identity is invalid");
   if (!SHA256.test(expected.externalManifestSha256 || "") || result.candidate?.externalManifestSha256 !== expected.externalManifestSha256) throw new Error("External manifest digest mismatch");
   if (!RELEASE_ID.test(result.currentRelease || "")) throw new Error("Expected current release is invalid");
+  if (result.hostTcb?.schemaVersion !== 3 ||
+      result.hostTcb?.generation !== "host-tcb-v3" ||
+      !SHA256.test(result.hostTcb?.manifestSha256 || "") ||
+      !SHA256.test(result.hostTcb?.sudoersSha256 || "") ||
+      !SHA256.test(result.hostTcb?.migrationContractSha256 || "") ||
+      result.hostTcb.generation !== env.HOST_TCB_GENERATION ||
+      result.hostTcb.manifestSha256 !== env.HOST_TCB_MANIFEST_SHA ||
+      result.hostTcb.sudoersSha256 !== env.HOST_SUDOERS_SHA ||
+      result.hostTcb.migrationContractSha256 !== env.HOST_MIGRATION_HELPER_SHA) {
+    throw new Error("Preflight Host TCB generation is missing or drifted");
+  }
 
   if (!Array.isArray(result.checks) || result.checks.length === 0) throw new Error("Preflight checks are missing");
   const checkNames = new Set();
@@ -61,7 +72,7 @@ export function validateDeployPreflight({ manifest, result, env, now = Date.now(
       JSON.stringify(canonical.pending) !== JSON.stringify(migrations.pending)) {
     throw new Error("Preflight migration CAS does not match candidate manifest");
   }
-  return { archiveSha256: result.candidate.archiveSha256, externalManifestSha256: result.candidate.externalManifestSha256, currentRelease: result.currentRelease, validUntil: result.validUntil, migrationLedgerDigest: migrations.migrationLedgerDigest, pendingPlanDigest: migrations.pendingPlanDigest };
+  return { archiveSha256: result.candidate.archiveSha256, externalManifestSha256: result.candidate.externalManifestSha256, currentRelease: result.currentRelease, validUntil: result.validUntil, hostTcbGeneration: result.hostTcb.generation, hostTcbManifestSha256: result.hostTcb.manifestSha256, hostSudoersSha256: result.hostTcb.sudoersSha256, hostMigrationHelperSha256: result.hostTcb.migrationContractSha256, migrationLedgerDigest: migrations.migrationLedgerDigest, pendingPlanDigest: migrations.pendingPlanDigest };
 }
 
 function main() {
@@ -69,7 +80,7 @@ function main() {
   const manifest = JSON.parse(fs.readFileSync(path.resolve(manifestPath), "utf8"));
   const result = JSON.parse(fs.readFileSync(path.resolve(resultPath), "utf8"));
   const validated = validateDeployPreflight({ manifest, result, env: process.env });
-  process.stdout.write(`${validated.archiveSha256}\n${validated.externalManifestSha256}\n${validated.currentRelease}\n${validated.validUntil}\n${validated.migrationLedgerDigest}\n${validated.pendingPlanDigest}\n`);
+  process.stdout.write(`${validated.archiveSha256}\n${validated.externalManifestSha256}\n${validated.currentRelease}\n${validated.validUntil}\n${validated.hostTcbGeneration}\n${validated.hostTcbManifestSha256}\n${validated.hostSudoersSha256}\n${validated.hostMigrationHelperSha256}\n${validated.migrationLedgerDigest}\n${validated.pendingPlanDigest}\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

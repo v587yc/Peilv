@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmod, lstat, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,8 +7,9 @@ import { describe, expect, it } from "vitest";
 import { canonicalMigrationContract } from "../scripts/migration-contract.mjs";
 
 const exec = promisify(execFile);
+function execWithInput(file:string,args:string[],input:string){return new Promise<{stdout:string;stderr:string}>((resolve,reject)=>{const child=spawn(file,args,{stdio:["pipe","pipe","pipe"]});let stdout="",stderr="";child.stdout.setEncoding("utf8").on("data",chunk=>stdout+=chunk);child.stderr.setEncoding("utf8").on("data",chunk=>stderr+=chunk);child.on("error",reject);child.on("close",code=>code===0?resolve({stdout,stderr}):reject(Object.assign(new Error(stderr||`exit ${code}`),{code,stdout,stderr})));child.stdin.end(input)});}
 const request = "123e4567-e89b-42d3-a456-426614174000";
-const identity = { schemaVersion: 3, releaseId: "r1-a1-aaaaaaaaaaaa", archiveSha256: "b".repeat(64), externalManifestSha256: "a".repeat(64), expectedCurrentReleaseId: "20260712T192535Z", validUntil: "2099-01-01T00:00:00Z", migrationLedgerDigest: "c".repeat(64), pendingPlanDigest: "d".repeat(64) };
+const identity = { schemaVersion: 4, operation:"deploy", releaseId: "r1-a1-aaaaaaaaaaaa", archiveSha256: "b".repeat(64), externalManifestSha256: "a".repeat(64), expectedCurrentReleaseId: "20260712T192535Z", validUntil: "2099-01-01T00:00:00Z", tcbGeneration:"host-tcb-v3",hostTcbManifestSha256:"1".repeat(64),hostSudoersSha256:"2".repeat(64),hostMigrationHelperSha256:"3".repeat(64),migrationLedgerDigest: "c".repeat(64), pendingPlanDigest: "d".repeat(64) };
 const manifest = { schemaVersion: 1, migrations: [
   { file: "0001_base.sql", version: "0001_base", sha256: "1".repeat(64), codeRollbackSafe: true },
   { file: "0002_change.sql", version: "0002_change", sha256: "2".repeat(64), codeRollbackSafe: false },
@@ -18,14 +19,11 @@ function adaptLedgerOwnerContractForTest(source: string, expectedFileUid?: numbe
   const uid = process.getuid?.() ?? 0;
   const gid = process.getgid?.() ?? 0;
   const fileUid = expectedFileUid ?? uid;
-  const rootOwnerContract = "stat.uid!==0||stat.gid!==0)))throw new Error(\"Unsafe operation ledger root\")";
-  const fileOwnerContract = "stat.uid!==0||stat.gid!==0)))throw new Error(\"Unsafe operation ledger file\")";
-  expect(source.match(/stat\.uid!==0\|\|stat\.gid!==0/g)).toHaveLength(2);
-  expect(source).toContain(rootOwnerContract);
-  expect(source).toContain(fileOwnerContract);
-  return source
-    .replace(rootOwnerContract, `stat.uid!==${uid}||stat.gid!==${gid})))throw new Error(\"Unsafe operation ledger root\")`)
-    .replace(fileOwnerContract, `stat.uid!==${fileUid}||stat.gid!==${gid})))throw new Error(\"Unsafe operation ledger file\")`);
+  expect(source).toContain("s.uid!==0||s.gid!==0");
+  return source.replaceAll(
+    "s.uid!==0||s.gid!==0",
+    `(kind==="directory"?s.uid!==${uid}:s.uid!==${fileUid})||s.gid!==${gid}`,
+  );
 }
 
 async function ledgerFixture(prefix: string, expectedFileUid?: number) {
@@ -89,7 +87,7 @@ describe("migration CAS and deploy request idempotency", () => {
     await expect(exec(process.execPath, [script, "claim", root, request, json])).resolves.toMatchObject({ stdout: "claimed\n" });
     await expectSafeRegularFile(path.join(root, `${request}.json`));
     await expect(exec(process.execPath, [script, "check", root, request, json])).rejects.toMatchObject({ code: 1 });
-    const result = path.join(root, "result.json"); await writeFile(result, JSON.stringify({ schemaVersion: 1, status: "succeeded", requestId: request, releaseId: identity.releaseId }), { mode: 0o600 }); await chmod(result, 0o600);
+    const result = path.join(root, "result.json"); await writeFile(result, JSON.stringify({ schemaVersion: 2, status: "succeeded", requestId: request, releaseId: identity.releaseId,tcbGeneration:identity.tcbGeneration,hostTcbManifestSha256:identity.hostTcbManifestSha256,hostSudoersSha256:identity.hostSudoersSha256,hostMigrationHelperSha256:identity.hostMigrationHelperSha256 }), { mode: 0o600 }); await chmod(result, 0o600);
     await expectSafeRegularFile(result);
     await exec(process.execPath, [script, "finish", root, request, "succeeded", result]);
     await expect(exec(process.execPath, [script, "check", root, request, json])).resolves.toMatchObject({ stdout: "replay\n" });
@@ -102,17 +100,43 @@ describe("migration CAS and deploy request idempotency", () => {
 
   it("moves a host-restart running request to manual assessment without replay", async () => {
     const {root,script}=await ledgerFixture("deploy-recover-");const json=JSON.stringify(identity);
-    await exec(process.execPath,[script,"claim",root,request,json]);await exec(process.execPath,[script,"recover-running",root,request]);
+    await exec(process.execPath,[script,"claim",root,request,json]);const operation=path.join(root,`${request}.json`),value=JSON.parse(await readFile(operation,"utf8"));value.owner={pid:99999999,startTicks:"1",bootId:value.owner.bootId};value.events[0].owner=value.owner;const crypto=await import("node:crypto");value.eventDigest=crypto.createHash("sha256").update(JSON.stringify(value.events)).digest("hex");await writeFile(operation,JSON.stringify(value));await exec(process.execPath,[script,"recover-running",root,request,"operator-confirmed-stale"]);
     await expectSafeRegularFile(path.join(root,`${request}.json`));
-    const operation=JSON.parse((await exec(process.execPath,[script,"status",root,request])).stdout);
-    expect(operation).toMatchObject({status:"manual-assessment",result:{reason:"host-restart-running-operation"}});
+    const recoveredOperation=JSON.parse((await exec(process.execPath,[script,"status",root,request])).stdout);
+    expect(recoveredOperation).toMatchObject({status:"manual-assessment",result:{reason:"operator-confirmed-stale"}});
     await expect(exec(process.execPath,[script,"check",root,request,json])).rejects.toBeDefined();
   });
 
+  it.each(["succeeded", "failed", "manual-assessment"])("durably writes an exclusive status-v2 %s result", async status => {
+    const {root,script}=await ledgerFixture("deploy-result-");
+    const result={schemaVersion:2,status,requestId:request,releaseId:identity.releaseId,tcbGeneration:identity.tcbGeneration,hostTcbManifestSha256:identity.hostTcbManifestSha256,hostSudoersSha256:identity.hostSudoersSha256,hostMigrationHelperSha256:identity.hostMigrationHelperSha256};
+    await expect(execWithInput(process.execPath,[script,"write-result-v2",root,request,status],JSON.stringify(result))).resolves.toMatchObject({stdout:expect.stringContaining(`${request}.json`)});
+    await expectSafeRegularFile(path.join(root,`${request}.json`));
+    expect(JSON.parse(await readFile(path.join(root,`${request}.json`),"utf8"))).toEqual(result);
+    await expect(execWithInput(process.execPath,[script,"write-result-v2",root,request,status],JSON.stringify(result))).rejects.toBeDefined();
+  });
+
+  it("durably appends deployment events and fails closed on corrupt existing metadata", async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), "deployment-ledger-"));
+    const source = adaptLedgerOwnerContractForTest(await readFile("scripts/deploy-operation-ledger.mjs", "utf8"))
+      .replace('const mode=kind==="directory"?0o755:0o640', 'const mode=kind==="directory"?0o700:0o640');
+    const script = path.join(base, "writer.mjs");
+    await chmod(base, 0o700); await writeFile(script, source);
+    const args = [script, "append-deployment-event", base, "deploy", identity.releaseId, "r2-a1-bbbbbbbbbbbb", request];
+    await exec(process.execPath, args);
+    const ledgerPath = path.join(base, "deployment-ledger.json");
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    expect(ledger).toMatchObject({ schemaVersion: 1, events: [{ kind: "deploy", releaseId: identity.releaseId, previousReleaseId: "r2-a1-bbbbbbbbbbbb", requestId: request }] });
+    if (process.platform !== "win32") expect((await lstat(ledgerPath)).mode & 0o777).toBe(0o640);
+    await writeFile(ledgerPath, "{corrupt", { mode: 0o640 }); await chmod(ledgerPath, 0o640);
+    await expect(exec(process.execPath, args)).rejects.toBeDefined();
+    expect(await readFile(ledgerPath, "utf8")).toBe("{corrupt");
+  });
+
   it.each([
-    ["wrong release",{schemaVersion:1,status:"succeeded",requestId:request,releaseId:"r2-a1-bbbbbbbbbbbb"}],
-    ["wrong request",{schemaVersion:1,status:"succeeded",requestId:"223e4567-e89b-42d3-a456-426614174000",releaseId:identity.releaseId}],
-    ["wrong status",{schemaVersion:1,status:"failed",requestId:request,releaseId:identity.releaseId}],
+    ["wrong release",{schemaVersion:2,status:"succeeded",requestId:request,releaseId:"r2-a1-bbbbbbbbbbbb"}],
+    ["wrong request",{schemaVersion:2,status:"succeeded",requestId:"223e4567-e89b-42d3-a456-426614174000",releaseId:identity.releaseId}],
+    ["wrong status",{schemaVersion:2,status:"failed",requestId:request,releaseId:identity.releaseId}],
   ])("rejects finish result identity: %s",async(_name,resultValue)=>{const {root,script}=await ledgerFixture("deploy-finish-");const json=JSON.stringify(identity),result=path.join(root,"result.json");await exec(process.execPath,[script,"claim",root,request,json]);await writeFile(result,JSON.stringify(resultValue));await expect(exec(process.execPath,[script,"finish",root,request,"succeeded",result])).rejects.toBeDefined();});
 
   it("rejects hardlinked durable operation files", async () => {
@@ -129,7 +153,7 @@ describe("migration CAS and deploy request idempotency", () => {
     const json=JSON.stringify(identity),operation=path.join(root,`${request}.json`);
     await exec(process.execPath,[script,"claim",root,request,json]);
     await chmod(operation,0o640);
-    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation ledger file")});
+    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation file")});
   });
 
   it.runIf(process.platform !== "win32")("rejects operation files owned by an unexpected uid", async () => {
@@ -137,17 +161,17 @@ describe("migration CAS and deploy request idempotency", () => {
     const {root,script}=await ledgerFixture("deploy-owner-",uid+1);
     const json=JSON.stringify(identity);
     await expect(exec(process.execPath,[script,"claim",root,request,json])).resolves.toMatchObject({stdout:"claimed\n"});
-    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation ledger file")});
+    await expect(exec(process.execPath,[script,"status",root,request])).rejects.toMatchObject({stderr:expect.stringContaining("Unsafe operation file")});
   });
 
   it("rejects symlink durable operation files by lstat contract", async () => {
     const helper=await readFile("scripts/deploy-operation-ledger.mjs","utf8");
-    expect(helper).toContain("fs.lstatSync(operationPath)"); expect(helper).toContain("stat.isSymbolicLink()");
+    expect(helper).toContain("fs.lstatSync(target)"); expect(helper).toContain("s.isSymbolicLink()");
   });
 
   it.each(["oversized", "corrupt-json", "corrupt-event-digest"])("fails closed on %s operation ledger", async kind=>{const {root,script}=await ledgerFixture("deploy-corrupt-"),json=JSON.stringify(identity),operation=path.join(root,`${request}.json`);await exec(process.execPath,[script,"claim",root,request,json]);if(kind==="oversized")await writeFile(operation,"x".repeat(1024*1024+1));if(kind==="corrupt-json")await writeFile(operation,"{broken");if(kind==="corrupt-event-digest"){const value=JSON.parse(await readFile(operation,"utf8"));value.eventDigest="0".repeat(64);await writeFile(operation,JSON.stringify(value))}await expect(exec(process.execPath,[script,"status",root,request])).rejects.toBeDefined();});
 
-  it("maintenance confirmation cannot bypass identity, expiry, manifest, or migration CAS gates", async()=>{const deploy=await readFile("scripts/deploy-production.sh","utf8"),maintenance=deploy.indexOf('maintenance_confirmation="${9:-}"'),identity=deploy.indexOf("operation_identity="),expiry=deploy.indexOf("assert_preflight_not_expired",deploy.indexOf('[[ "$operation_check" == new ]]')),manifest=deploy.indexOf('sha256sum "$external_manifest"'),cas=deploy.indexOf("Migration ledger or pending plan CAS drift"),maintenanceUse=deploy.indexOf('incompatible_migration_pending == 1',cas);expect(maintenance).toBeGreaterThan(-1);expect(identity).toBeGreaterThan(maintenance);expect(expiry).toBeGreaterThan(identity);expect(manifest).toBeGreaterThan(expiry);expect(cas).toBeGreaterThan(manifest);expect(maintenanceUse).toBeGreaterThan(cas);});
+  it("maintenance confirmation cannot bypass identity, expiry, manifest, or migration CAS gates", async()=>{const deploy=await readFile("scripts/deploy-production.sh","utf8"),maintenance=deploy.indexOf('maintenance_confirmation="${13:-}"'),identity=deploy.indexOf("operation_identity="),expiry=deploy.indexOf("assert_preflight_not_expired",deploy.indexOf('[[ "$operation_check" == new ]]')),manifest=deploy.indexOf('sha256sum "$external_manifest"'),cas=deploy.indexOf("Migration ledger or pending plan CAS drift"),maintenanceUse=deploy.indexOf('incompatible_migration_pending == 1',cas);expect(maintenance).toBeGreaterThan(-1);expect(identity).toBeGreaterThan(maintenance);expect(expiry).toBeGreaterThan(identity);expect(manifest).toBeGreaterThan(expiry);expect(cas).toBeGreaterThan(manifest);expect(maintenanceUse).toBeGreaterThan(cas);});
 
   it("keeps unsafe completed or incomplete migrations stopped for manual assessment", async () => {
     const deploy = await readFile("scripts/deploy-production.sh", "utf8");
@@ -188,7 +212,7 @@ describe("migration CAS and deploy request idempotency", () => {
   it("queries durable status after SSH failure without replaying deploy", async () => {
     const workflow = await readFile(".github/workflows/deploy-approved-production.yml", "utf8");
     const invoke = workflow.indexOf('peilv-control deploy-v3 \'$RELEASE_ID\'');
-    const status = workflow.indexOf("peilv-control deploy-status-v1 '$REQUEST_ID'", invoke);
+    const status = workflow.indexOf("peilv-control deploy-status-v2 '$REQUEST_ID'", invoke);
     expect(workflow.slice(invoke, status).match(/peilv-control deploy-v3 /g)).toHaveLength(1);
     expect(workflow.slice(invoke, status)).toContain('deploy_ssh_status="${PIPESTATUS[0]}"');
     expect(status).toBeGreaterThan(invoke);

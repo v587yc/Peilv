@@ -26,6 +26,7 @@ function passed() {
     schemaVersion: 1, status: "passed", requestId: env.REQUEST_ID,
     candidate: { ...candidateFromEnvironment(env), archiveSha256: "b".repeat(64) },
     currentRelease: `r99-a1-${"c".repeat(12)}`, checks: [{ name: "current_release", status: "passed" }], migrations: { applied: [], pending: [], unknown: [] }, blockers: [],
+    hostTcb:{schemaVersion:3,generation:"host-tcb-v3",manifestSha256:"1".repeat(64),sudoersSha256:"2".repeat(64),migrationContractSha256:"3".repeat(64)},
     checkedAt: new Date().toISOString(), validUntil: new Date(Date.now() + 60_000).toISOString(),
   };
 }

@@ -502,12 +502,12 @@ systemctl list-timers peilv-reconcile.timer peilv-dispatch.timer --no-pager
 - `.github/workflows/deploy-approved-production.yml` 使用仓库 API 返回的固定 workflow ID 与 `.github/workflows/production-preflight.yml` path 绑定预检身份，不使用动态 run-name。部署 dispatch 自身必须运行在 `main`，且 workflow 的 `github.sha` 必须与候选 `commit_sha` 完全一致；同时校验 repository ID、事件、分支、SHA、run attempt、完成状态与结论。若 run 响应不提供 path，必须按已验证的 workflow ID 再查询 workflow API 核对 path，禁止猜测。
 - 预检 `validUntil` 保持公共 schema v1 不变，值必须是 UTC `Z` 结尾的严格 RFC3339。runner 在结构化结果 cross-check 后、上传前、远端调用前分别以零容差复核。服务器获取 deploy lock 后先只读检查持久化 request ledger：同 identity 的 `succeeded` 请求只回放既有结果，不重新部署；新 request 随即用服务器 UTC 时钟复核 `now < validUntil`，并在任何 release、备份、停服务或迁移写入前重复复核。服务器 ABI 不接收 `checkedAt`，因此不虚构服务器侧 TTL 校验；`checkedAt < validUntil` 仍由 runner 对完整 preflight result 验证，剩余边界由绝对 `validUntil` 界定。
 - `maintenance_window_confirmed` 是显式 boolean，默认 `false`。只有操作者确认 `true` 时 runner 才传 `--maintenance-window-confirmed`；服务器仍只在待执行迁移包含 `codeRollbackSafe: false` 时强制要求该 flag。当前待发布迁移若全部 rollback-safe，应保持 `false`。
-- 远端 ABI 已版本化并固定为 `deploy-v3 <release> <archive-sha> <external-manifest-sha> <expected-current> <request> <validUntil> <migration-ledger-digest> <pending-plan-digest> [--maintenance-window-confirmed]` 与只读 `deploy-status-v1 <request>`。external release manifest 以 candidate artifact 原始字节 SHA-256 绑定：preflight result 写入 `candidate.externalManifestSha256`，runner 对下载的同一 sidecar 重算，Host 对 incoming sidecar 再算并与 archive 内 migration manifest 同序逐项比较；不得用 archive SHA 替代 sidecar 身份。`peilv-control` 仅接受固定参数形态，错位、重复、多余和旧 ABI 全部拒绝。
+- 远端 ABI 固定为 `preflight-v3`、`deploy-v3`、`deploy-status-v2`、`rollback-v2`、`rollback-status-v2` 与 root-only `recover-operation-v1`。每个 production ABI 都绑定 TCB generation、manifest、sudoers和 migration helper 摘要；`peilv-control` 只接受固定参数数量与顺序，错位、重复、多余和旧 ABI 全部拒绝。external release manifest 继续以 candidate artifact 原始字节 SHA-256 绑定，不得用 archive SHA 替代 sidecar 身份。
 - preflight result 继续使用公共 `schemaVersion: 1`，新增 `migrations.migrationLedgerDigest`、`pendingPlanDigest`、`pendingAllCodeRollbackSafe` 作为兼容扩展字段；普通 v1 读取者可以忽略，但 production deploy consumer 强制要求存在。canonical payload 严格采用 candidate external release manifest 的 migration 原始顺序，每项绑定 `file/version/sha256/codeRollbackSafe`，baseline alias 只规范化 `0001_canonical_baseline` 为 `0001_production_baseline`，不使用 Date 或 locale 排序。runner 根据 external manifest 与 preflight `applied` 重算并精确比较 applied、pending、unknown、两个 digest 和 rollback-safe；unknown 或任一漂移均阻断。服务器在 lock 内从 archive candidate manifest 与实时 DB ledger再次计算相同 contract，CAS 通过后才 claim request 和进入生产写入。
-- root-only operation ledger 位于 `/var/lib/peilv/deploy-operations/<request>.json`；目录 root:root 0700，文件 0600、非 symlink、单链接、最大 1MiB。request 以 no-clobber 原子 claim 进入 `running`，identity 绑定 release/archive/external manifest/current/validUntil/两个 migration digest。终态 result 内嵌在 ledger，按 request/release/status 交叉验证，并记录递增 sequence、previous event digest、result digest 和 event-chain digest；replay只返回内嵌结果，不读取可漂移独立文件。Host 重启后的 running 只能由 root 离线执行 `recover-running` 转为 manual-assessment，不自动重放。
+- root-only operation ledger 位于 `/var/lib/peilv/deploy-operations/<request>.json`，durable status-v2 result 位于 `/var/lib/peilv/deploy-results/<request>.json`；目录 root:root 0700，文件 0600、非 symlink、单链接、最大 1MiB。共享 ledger helper 以 `O_EXCL|O_NOFOLLOW` 创建临时文件，fsync 文件、原子 rename、fsync 父目录后，部署/回滚才能执行 ledger `finish`。初始化只接受 `ENOENT`，损坏 JSON 或 owner/mode/nlink 异常均 fail closed。Host 重启后的 running 只能由 root 离线通过 `recover-operation-v1` 转为 manual-assessment，不自动重放。
 - migration 未完整完成时始终保持应用与 timers 停止。migration 全部完成后的后续失败，仅当本次 pending 全部 `codeRollbackSafe=true` 才允许恢复旧代码；否则持久化 `manual-assessment`（`migration-incomplete` 或 `non-rollback-safe-migrations-completed`），再次确保 app/timers 停止，不自动恢复数据库。
 - 部署逐个记录并停止 dispatch/reconcile timer，部分 stop 失败也按各自部署前 active/inactive 快照恢复；未知状态 fail closed。成功后 reconcile/dispatch oneshot 分别按 unit 的 `TimeoutStartUSec + 10s` 有界等待，最终必须 `inactive + Result=success`，timer 最终状态严格恢复原快照。
-- Host TCB exact-set manifest 固定为仓库 `infra/deploy/trusted-deploy-v2.sha256`（文件名是 TCB manifest schema 名称，不代表可调用旧 ABI），服务器安装到同名 `/etc/peilv/` 路径。它精确绑定 `peilv-control`、`deploy-production.sh`、`migration-contract.mjs`、`deploy-operation-ledger.mjs` 四个 runtime；bootstrap 再把 fixed manifest 自身作为第五对象、sudoers作为同事务配置对象。缺失、重复、额外、basename collision、symlink、硬链接、owner/mode/hash 任一异常均拒绝。仅 `deploy-v3` 和 `deploy-status-v1` 可调用并在每次执行前验证 exact set。
+- Host TCB v3 exact-set manifest 固定为仓库 `infra/deploy/trusted-host-tcb-v3.sha256`，精确绑定 `peilv-control`、`production-preflight.sh`、`deploy-production.sh`、`rollback-production.sh`、`migration-contract.mjs`、`deploy-operation-ledger.mjs` 六个 runtime。bootstrap 将 sudoers、六 runtime、manifest 纳入同一事务；缺失、重复、额外、basename collision、symlink、硬链接、owner/mode/hash 任一异常均拒绝。durable manifest 是唯一 commit marker：manifest 激活并完成目录 fsync 前恢复 all-old，之后保留 all-new，任何 mixed generation fail closed。
 - `.github/workflows/deploy-approved-production.yml`：仅允许手动触发；用户把预检 Summary 中的 `Release ID` 与 `Release SHA-256` 填入后，才执行上传和生产发布。
 
 自动发布仍以本文第 1–15 节为约束：
@@ -526,18 +526,18 @@ GitHub 配置：
 
 服务器使用 `peilv-audit` 与 `peilv-deploy` 两个专用 SSH 账号，通过 root-owned `/usr/local/sbin/peilv-control` 进入固定预检或部署命令。GitHub 不保存 root 密码、1Panel 密码、管理员令牌、数据库密码或共享环境文件内容。
 
-### 17.1 Host TCB v2 bootstrap（本轮不得连接生产）
+### 17.1 Host TCB v3 bootstrap（本轮不得连接生产）
 
 Host TCB 更新必须走独立受控 bootstrap，不能由待部署 release 或服务器现场计算 manifest：
 
-1. 从已审核的精确 Git commit 取得四个 runtime、fixed manifest、sudoers和 `bootstrap-deploy-v3.sh`。
-2. 在离线可信端验证 fixed manifest 与四个 runtime SHA，以及 bootstrap 内固定的 manifest/sudoers SHA；任何对象变化都必须重新冻结并评审。
-3. 先以 root:root 0755、regular、非 symlink、单硬链接方式原子安装 `/usr/local/libexec/peilv/deploy-production.sh`、`migration-contract.mjs`、`deploy-operation-ledger.mjs`。
-4. 再原子安装 root:root 0755 的 `/usr/local/sbin/peilv-control`。
-5. sudoers与五个 TCB 对象在同事务中逐项使用同目录原子 rename；最后（manifest-last）激活 root:root 0644 的 fixed manifest。任一步失败逆序恢复整组旧代，任何混代必须使 deploy-v3/status-v1 fail closed。
-6. 只执行无生产写入的 ABI/TCB 拒绝测试和 `deploy-status-v1` 不存在 request 测试；不得借 bootstrap 触发 preflight、deploy 或 rollback。
+1. 从已审核的精确 Git commit 取得六个 runtime、fixed manifest、sudoers和 `bootstrap-deploy-v3.sh`。
+2. 按 sudoers → control/六 runtime → manifest → bootstrap 常量顺序冻结 LF 字节；任何对象变化都必须从头重新冻结并执行 `sha256sum -c --strict`。
+3. bootstrap 只允许在同设备目录内完成 backup/new rename，并对源目录、目标目录和 manifest 目录执行 fsync；journal 固定为单一路径并记录 target absent/旧摘要/备份路径。
+4. SIGKILL 测试只表示进程中断，不称为掉电。每个对象 backup/new rename 前后、manifest 提交前后及 recovery 二次 SIGKILL 均须验证 all-old/all-new；真实文件系统故障仅在隔离 Linux loopback job 中执行。
+5. Linux CI 必须直接运行未改写的生产 bootstrap，验证真实 root/mode/nlink/flock/visudo/fsync/rename/cross-device；Windows 只运行 `process.platform === "win32"` 的临时逻辑 fixture。
+6. 本迁移验证不得触发 production workflow、preflight、deploy 或 rollback。
 
-`peilv-audit` 的 `authorized_keys` 当前契约必须以 `restrict` 开头，sudoers 仅允许调用参数收敛的 `peilv-control preflight`。本轮只静态验证仓库模板，不自动修改服务器配置。把参数改为 stdin 并配合 forced-command、从而完全取消通用远端 shell，是后续独立升级项，不在本轮兼容修复中实施。
+`peilv-audit` 的 `authorized_keys` 当前契约必须以 `restrict` 开头，sudoers 仅允许调用参数收敛的 `peilv-control preflight-v3`。本轮只静态验证仓库模板，不自动修改服务器配置。把参数改为 stdin 并配合 forced-command、从而完全取消通用远端 shell，是后续独立升级项，不在本轮兼容修复中实施。
 
 ### 17.2 main push Artifact 漏发恢复
 

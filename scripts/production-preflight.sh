@@ -14,6 +14,7 @@ external_manifest_sha="${9:?$usage}"
 uploaded_archive="${10:?$usage}"
 transition_confirmation="${11:-}"
 [[ -z "$transition_confirmation" || "$transition_confirmation" == --approved-current-unit-hotfix-transition ]] || { printf 'Unknown preflight option: %s\n' "$transition_confirmation" >&2; exit 1; }
+[[ "${PEILV_GLOBAL_LOCK_FD:-}" == 9 && "${PEILV_TCB_LOCK_FD:-}" == 8 && "${PEILV_REQUEST_LOCK_FD:-}" == 7 && "${HOST_TCB_GENERATION:-}" == host-tcb-v3 && -n "${HOST_TCB_MANIFEST_SHA256:-}" && -n "${HOST_SUDOERS_SHA256:-}" && -n "${HOST_MIGRATION_HELPER_SHA256:-}" ]] || { printf 'production-preflight old/direct ABI is forbidden\n' >&2; exit 126; }
 
 if [[ ! "$release_id" =~ ^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$ ]] ||
    [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]] ||
@@ -103,10 +104,7 @@ source "$candidate_stage_helper"
 source "$deployment_budget_helper"
 [[ "$CANDIDATE_STAGE_ROOT" == "$candidate_stage_root" ]] || { printf 'Candidate staging root is not fixed\n' >&2; exit 1; }
 
-exec 8>"/run/lock/peilv-preflight-$request_id.lock"
-if ! flock -n 8; then printf 'This preflight request is already running\n' >&2; exit 1; fi
-exec 9>/run/lock/peilv-deploy.lock
-if ! flock -n 9; then printf 'Another server-side deployment or preflight is running\n' >&2; exit 1; fi
+# The controller owns deploy -> TCB -> request locks for the complete verification/runtime span.
 archive_kib=$(( ($(stat -c '%s' "$uploaded_archive") + 1023) / 1024 ))
 read -r expanded_kib expanded_inodes < <(deployment_archive_measure "$uploaded_archive")
 db_backup_kib="$(deployment_database_estimate_kib)"
@@ -421,7 +419,7 @@ fi
 latest_applied_version="$(printf '%s\n' "${applied_versions[@]}" | sort | awk 'NF{value=$0} END{print value}')"
 migration_contract_file="$(mktemp)"; register_temp_file "$migration_contract_file"
 printf '%s\n' "${applied_versions[@]}" >"$migration_contract_file"
-migration_contract_json="$(node "$verified_tree/scripts/migration-contract.mjs" "$verified_tree/migrations/manifest.json" "$migration_contract_file")" || check_blocked migration_contract "Canonical migration contract could not be calculated"
+migration_contract_json="$(node /usr/local/libexec/peilv/migration-contract.mjs "$verified_tree/migrations/manifest.json" "$migration_contract_file")" || check_blocked migration_contract "Canonical migration contract could not be calculated"
 if [[ -n "$migration_contract_json" ]]; then
   migration_ledger_digest="$(MIGRATION_CONTRACT="$migration_contract_json" node -e 'process.stdout.write(JSON.parse(process.env.MIGRATION_CONTRACT).migrationLedgerDigest)')"
   pending_plan_digest="$(MIGRATION_CONTRACT="$migration_contract_json" node -e 'process.stdout.write(JSON.parse(process.env.MIGRATION_CONTRACT).pendingPlanDigest)')"
@@ -533,7 +531,7 @@ TARGET_RELEASE="$target_release" BACKUP_PATH="$backup_path" OPT_AVAILABLE_KB="$o
 TRANSITION_APPROVED="$transition_approved" \
 CHECKS="$(join_lines "${checks[@]}")" BLOCKERS="$(join_lines "${blockers[@]}")" \
 PENDING="$(join_lines "${pending[@]}")" APPLIED="$(join_lines "${applied_versions[@]}")" \
-UNKNOWN="$(join_lines "${unknown[@]}")" MIGRATION_LEDGER_DIGEST="$migration_ledger_digest" PENDING_PLAN_DIGEST="$pending_plan_digest" PENDING_ALL_ROLLBACK_SAFE="$pending_all_rollback_safe" VERIFIED_TREE="$verified_tree" node <<'NODE'
+UNKNOWN="$(join_lines "${unknown[@]}")" MIGRATION_LEDGER_DIGEST="$migration_ledger_digest" PENDING_PLAN_DIGEST="$pending_plan_digest" PENDING_ALL_ROLLBACK_SAFE="$pending_all_rollback_safe" HOST_TCB_GENERATION="$HOST_TCB_GENERATION" HOST_TCB_MANIFEST_SHA256="$HOST_TCB_MANIFEST_SHA256" HOST_SUDOERS_SHA256="$HOST_SUDOERS_SHA256" HOST_MIGRATION_HELPER_SHA256="$HOST_MIGRATION_HELPER_SHA256" VERIFIED_TREE="$verified_tree" node <<'NODE'
 const lines = key => (process.env[key] || "").split("\n").filter(Boolean);
 const checks = lines("CHECKS").map(value => {
   const separator = value.lastIndexOf("=");
@@ -562,6 +560,7 @@ const result = {
   rollbackRelease: process.env.CURRENT_RELEASE || null,
   approvedCurrentUnitHotfixTransition: process.env.TRANSITION_APPROVED === "1",
   databaseBackupPath: process.env.BACKUP_PATH,
+  hostTcb: { schemaVersion: 3, generation: process.env.HOST_TCB_GENERATION, manifestSha256: process.env.HOST_TCB_MANIFEST_SHA256, sudoersSha256: process.env.HOST_SUDOERS_SHA256, migrationContractSha256: process.env.HOST_MIGRATION_HELPER_SHA256 },
   checks,
   migrations: { applied: lines("APPLIED"), pending: lines("PENDING"), unknown: lines("UNKNOWN"), migrationLedgerDigest: process.env.MIGRATION_LEDGER_DIGEST || null, pendingPlanDigest: process.env.PENDING_PLAN_DIGEST || null, pendingAllCodeRollbackSafe: process.env.PENDING_ALL_ROLLBACK_SAFE === "true" },
   blockers: lines("BLOCKERS"),

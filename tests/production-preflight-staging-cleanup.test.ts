@@ -80,9 +80,10 @@ describe("production preflight staging static contracts", () => {
     ]);
     expect(authorizedKeys).toMatch(/^#.*\n#.*\nrestrict ssh-ed25519 TEST_PUBLIC_KEY /);
     expect(authorizedKeys).not.toMatch(/(?:^|,)(?:port-forwarding|agent-forwarding|x11-forwarding|pty|user-rc)(?:,|\s)/m);
-    expect(sudoers).toContain("peilv-audit ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control preflight *");
-    expect(control).toContain("peilv-audit:preflight:11)");
-    expect(control).toContain("peilv-audit:preflight:12)");
+    expect(sudoers).toContain("peilv-audit ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control preflight-v3 *");
+    expect(sudoers).not.toMatch(/NOPASSWD:\s*(?:ALL|\/usr\/local\/sbin\/peilv-control\s+\*)/);
+    expect(control).toContain("peilv-audit:preflight-v3:11)");
+    expect(control).toContain("peilv-audit:preflight-v3:12)");
   });
 
   it("uses no-clobber publication, bounded capacity, structured transfer errors, and secondary cleanup", async () => {
@@ -113,7 +114,7 @@ describe("production preflight staging static contracts", () => {
     const script = await readFile(new URL("../scripts/production-preflight.sh", import.meta.url), "utf8");
     expect(workflow).toContain('echo "EXTERNAL_MANIFEST_SHA=$(sha256sum "$external"');
     expect(workflow).toContain('"$MIGRATIONS" "$EXTERNAL_MANIFEST_SHA" "$remote_archive"');
-    expect(workflow).toContain('peilv-control preflight "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"');
+    expect(workflow).toContain('peilv-control preflight-v3 "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"');
     expect(script).toContain('external_manifest_sha="${9:?$usage}"');
     expect(script).toContain('[[ ! "$external_manifest_sha" =~ ^[0-9a-f]{64}$ ]]');
     expect(script).toContain('EXTERNAL_MANIFEST_SHA="$external_manifest_sha"');
@@ -153,8 +154,9 @@ describe("production preflight staging static contracts", () => {
     expect(script).toContain('register_temp_file "$private_archive"');
     expect(script).toContain('register_temp_file "$verified_tree"');
     expect(script).toContain('register_temp_file "$probe_runtime"');
-    expect(script).toContain('exec 8>"/run/lock/peilv-preflight-$request_id.lock"');
-    expect(script).toContain("This preflight request is already running");
+    const control = await readFile(new URL("../infra/deploy/peilv-control", import.meta.url), "utf8");
+    expect(control).toContain('acquire_request_lock "$8"');
+    expect(control).toContain("flock -n 7");
     expect(script.match(/preflight_upload_validate "\$request_id" "\$uploaded_archive"/g)).toHaveLength(2);
     expect(script.indexOf('preflight_upload_validate "$request_id" "$uploaded_archive"')).toBeLessThan(script.indexOf('measured_archive_sha="$(node "$private_copy_helper"'));
     expect(script.lastIndexOf('preflight_upload_validate "$request_id" "$uploaded_archive"')).toBeGreaterThan(script.indexOf('measured_archive_sha="$(node "$private_copy_helper"'));

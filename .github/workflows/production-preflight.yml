@@ -355,7 +355,7 @@ jobs:
           for _ in {1..90}; do
             status=0
             stderr_file="$(mktemp)"
-            output="$(sudo -n /usr/local/sbin/peilv-control preflight "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" 2>"$stderr_file")" || status=$?
+            output="$(sudo -n /usr/local/sbin/peilv-control preflight-v3 "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" 2>"$stderr_file")" || status=$?
             if (( status == 0 )); then
               cat "$stderr_file" >&2; rm -f "$stderr_file"
               printf '%s\n' "$output"

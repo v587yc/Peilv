@@ -90,12 +90,12 @@ describe("production deploy fixed identity and expiry", () => {
     expect(workflowText).toContain("default: false");
     expect(workflowText).toContain('[[ "$MAINTENANCE_WINDOW_CONFIRMED" == true ]] && maintenance_option=" --maintenance-window-confirmed"');
     const control = await read("infra/deploy/peilv-control");
-    expect(control).toContain("peilv-deploy:deploy-v3:9)");
-    expect(control).toContain("peilv-deploy:deploy-v3:10)");
-    expect(control).toContain("peilv-deploy:deploy-status-v1:2)");
-    expect(control).not.toContain("peilv-deploy:deploy-v3:11)");
+    expect(control).toContain("peilv-deploy:deploy-v3:13)");
+    expect(control).toContain("peilv-deploy:deploy-v3:14)");
+    expect(control).toContain("peilv-deploy:deploy-status-v2:2)");
+    expect(control).not.toContain("peilv-deploy:deploy-status-v1:2)");
     const deploy = await read("scripts/deploy-production.sh");
-    expect(deploy).toContain('[[ "$#" == 8 || "$#" == 9 ]]');
+    expect(deploy).toContain('[[ "$#" == 12 || "$#" == 13 ]]');
     expect(deploy).not.toContain('for option in "${@:6}"');
     expect(deploy).not.toContain("--approved-current-unit-hotfix-transition");
   });
@@ -110,9 +110,9 @@ describe("production deploy fixed identity and expiry", () => {
     await expect(exec("bash", ["scripts/deploy-production.sh", ...args])).rejects.toMatchObject({ code: 1 });
   });
 
-  it("rechecks expiry immediately after acquiring the deployment lock", async () => {
+  it("rechecks expiry after controller-owned lock and operation identity check", async () => {
     const deploy = await read("scripts/deploy-production.sh");
-    const lock = deploy.indexOf("if ! flock -n 9");
+    const lock = deploy.indexOf('PEILV_GLOBAL_LOCK_FD');
     const operationCheck = deploy.indexOf('[[ "$operation_check" == new ]]', lock);
     const afterLock = deploy.indexOf("assert_preflight_not_expired", operationCheck);
     const releaseCheck = deploy.indexOf('[[ ! -e "$release_dir" ]]', afterLock);

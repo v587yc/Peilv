@@ -152,14 +152,22 @@ jobs:
           actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
           [[ "$(awk 'NR == 1 {print $1}' "$checksum")" == "$actual_sha" ]]
           external_manifest_sha="$(sha256sum "$external" | awk '{print $1}')"
-          readarray -t result_values < <(RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" SOURCE_ARTIFACT_ID="$SOURCE_ARTIFACT_ID" ACTUAL_SHA="$actual_sha" EXTERNAL_MANIFEST_SHA="$external_manifest_sha" REQUEST_ID="$REQUEST_ID" node scripts/validate-deploy-preflight.mjs "$external" "$result")
-          [[ "${#result_values[@]}" -eq 6 ]]
+          host_tcb_manifest_sha="$(node -e 'process.stdout.write(require(process.argv[1]).hostTcb?.manifestSha256||"")' "$(realpath "$result")")"
+          host_tcb_generation="$(node -e 'process.stdout.write(require(process.argv[1]).hostTcb?.generation||"")' "$(realpath "$result")")"
+          host_sudoers_sha="$(node -e 'process.stdout.write(require(process.argv[1]).hostTcb?.sudoersSha256||"")' "$(realpath "$result")")"
+          host_migration_helper_sha="$(node -e 'process.stdout.write(require(process.argv[1]).hostTcb?.migrationContractSha256||"")' "$(realpath "$result")")"
+          readarray -t result_values < <(RELEASE_ID="$RELEASE_ID" COMMIT_SHA="$COMMIT_SHA" SOURCE_RUN_ID="$SOURCE_RUN_ID" SOURCE_RUN_ATTEMPT="$SOURCE_RUN_ATTEMPT" SOURCE_ARTIFACT_ID="$SOURCE_ARTIFACT_ID" ACTUAL_SHA="$actual_sha" EXTERNAL_MANIFEST_SHA="$external_manifest_sha" REQUEST_ID="$REQUEST_ID" HOST_TCB_GENERATION="$host_tcb_generation" HOST_TCB_MANIFEST_SHA="$host_tcb_manifest_sha" HOST_SUDOERS_SHA="$host_sudoers_sha" HOST_MIGRATION_HELPER_SHA="$host_migration_helper_sha" node scripts/validate-deploy-preflight.mjs "$external" "$result")
+          [[ "${#result_values[@]}" -eq 10 ]]
           echo "ARCHIVE_SHA=${result_values[0]}" >> "$GITHUB_ENV"
           echo "EXTERNAL_MANIFEST_SHA=${result_values[1]}" >> "$GITHUB_ENV"
           echo "EXPECTED_CURRENT=${result_values[2]}" >> "$GITHUB_ENV"
           echo "VALID_UNTIL=${result_values[3]}" >> "$GITHUB_ENV"
-          echo "MIGRATION_LEDGER_DIGEST=${result_values[4]}" >> "$GITHUB_ENV"
-          echo "PENDING_PLAN_DIGEST=${result_values[5]}" >> "$GITHUB_ENV"
+          echo "HOST_TCB_GENERATION=${result_values[4]}" >> "$GITHUB_ENV"
+          echo "HOST_TCB_MANIFEST_SHA=${result_values[5]}" >> "$GITHUB_ENV"
+          echo "HOST_SUDOERS_SHA=${result_values[6]}" >> "$GITHUB_ENV"
+          echo "HOST_MIGRATION_HELPER_SHA=${result_values[7]}" >> "$GITHUB_ENV"
+          echo "MIGRATION_LEDGER_DIGEST=${result_values[8]}" >> "$GITHUB_ENV"
+          echo "PENDING_PLAN_DIGEST=${result_values[9]}" >> "$GITHUB_ENV"
           echo "CANDIDATE_DIR=$candidate_dir" >> "$GITHUB_ENV"
           node scripts/assert-rfc3339-not-expired.mjs "${result_values[3]}"
       - name: Configure deployment SSH
@@ -198,21 +206,21 @@ jobs:
           ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
-            "sudo -n /usr/local/sbin/peilv-control deploy-v3 '$RELEASE_ID' '$ARCHIVE_SHA' '$EXTERNAL_MANIFEST_SHA' '$EXPECTED_CURRENT' '$REQUEST_ID' '$VALID_UNTIL' '$MIGRATION_LEDGER_DIGEST' '$PENDING_PLAN_DIGEST'$maintenance_option" \
+            "sudo -n /usr/local/sbin/peilv-control deploy-v3 '$RELEASE_ID' '$ARCHIVE_SHA' '$EXTERNAL_MANIFEST_SHA' '$EXPECTED_CURRENT' '$REQUEST_ID' '$VALID_UNTIL' '$HOST_TCB_GENERATION' '$HOST_TCB_MANIFEST_SHA' '$HOST_SUDOERS_SHA' '$HOST_MIGRATION_HELPER_SHA' '$MIGRATION_LEDGER_DIGEST' '$PENDING_PLAN_DIGEST'$maintenance_option" \
             | tee deployment-summary.txt
           deploy_ssh_status="${PIPESTATUS[0]}"
           set -e
           status_found=0
           for _ in {1..60}; do
             if ssh -i ~/.ssh/deploy_key -p "$PROD_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              "$PROD_USER@$PROD_HOST" "sudo -n /usr/local/sbin/peilv-control deploy-status-v1 '$REQUEST_ID'" > deployment-operation.json 2>/dev/null; then
+              "$PROD_USER@$PROD_HOST" "sudo -n /usr/local/sbin/peilv-control deploy-status-v2 '$REQUEST_ID'" > deployment-operation.json 2>/dev/null; then
               operation_status="$(node -e 'process.stdout.write(require("./deployment-operation.json").status || "")')"
               if [[ "$operation_status" != running ]]; then status_found=1; break; fi
             fi
             sleep 10
           done
           [[ "$status_found" == 1 ]] || { printf 'Deployment status remained unavailable after SSH status %s\n' "$deploy_ssh_status" >&2; exit 1; }
-          node -e 'const o=require("./deployment-operation.json"),r=o.result; if(o.schemaVersion!==1||o.status!=="succeeded"||r?.schemaVersion !== 1 || r.status !== "succeeded" || r.releaseId !== process.env.RELEASE_ID || r.requestId !== process.env.REQUEST_ID) process.exit(1); require("node:fs").writeFileSync("deployment-result.json",JSON.stringify(r,null,2)+"\n")'
+          node -e 'const o=require("./deployment-operation.json"),r=o.result; if(o.schemaVersion!==2||o.status!=="succeeded"||r?.schemaVersion !== 2 || r.status !== "succeeded" || r.releaseId !== process.env.RELEASE_ID || r.requestId !== process.env.REQUEST_ID || r.tcbGeneration!==process.env.HOST_TCB_GENERATION || r.hostTcbManifestSha256!==process.env.HOST_TCB_MANIFEST_SHA || r.hostSudoersSha256!==process.env.HOST_SUDOERS_SHA) process.exit(1); require("node:fs").writeFileSync("deployment-result.json",JSON.stringify(r,null,2)+"\n")'
           cat deployment-summary.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Upload structured deployment result
         if: always()

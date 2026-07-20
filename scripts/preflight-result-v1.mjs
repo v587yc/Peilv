@@ -90,6 +90,7 @@ export function normalizeRemoteResult(remote, env = process.env) {
   if (!SHA256.test(env.ARCHIVE_SHA || "") || remote.candidate?.archiveSha256 !== env.ARCHIVE_SHA) throw new Error("Remote candidate archiveSha256 mismatch");
   if (remote.requestId !== env.REQUEST_ID) throw new Error("Remote requestId mismatch");
   if (remote.status === "passed") {
+    if (remote.hostTcb?.schemaVersion !== 3 || remote.hostTcb?.generation !== "host-tcb-v3" || !SHA256.test(remote.hostTcb?.manifestSha256 || "") || !SHA256.test(remote.hostTcb?.sudoersSha256 || "") || !SHA256.test(remote.hostTcb?.migrationContractSha256 || "")) throw new Error("Remote Host TCB identity is missing");
     if (!RELEASE_ID.test(remote.currentRelease || "")) throw new Error("Invalid current release");
     if (!Array.isArray(remote.blockers) || remote.blockers.length !== 0) throw new Error("Passed result contains blockers");
     if (!Array.isArray(remote.checks) || remote.checks.length === 0 || remote.checks.some(check => !check || typeof check.name !== "string" || check.status !== "passed") ||
@@ -117,7 +118,7 @@ export function validateResult(result) {
   }
   const migrationExtensionValid = !result.migrations || !("migrationLedgerDigest" in result.migrations || "pendingPlanDigest" in result.migrations || "pendingAllCodeRollbackSafe" in result.migrations) ||
     (SHA256.test(result.migrations.migrationLedgerDigest || "") && SHA256.test(result.migrations.pendingPlanDigest || "") && typeof result.migrations.pendingAllCodeRollbackSafe === "boolean");
-  return result.code === "OK" && result.exitCode === 0 && migrationExtensionValid && Array.isArray(result.blockers) && result.blockers.length === 0 &&
+  return result.code === "OK" && result.exitCode === 0 && result.hostTcb?.schemaVersion === 3 && result.hostTcb?.generation === "host-tcb-v3" && SHA256.test(result.hostTcb?.manifestSha256 || "") && SHA256.test(result.hostTcb?.sudoersSha256 || "") && SHA256.test(result.hostTcb?.migrationContractSha256 || "") && migrationExtensionValid && Array.isArray(result.blockers) && result.blockers.length === 0 &&
     nullableString(result.requestId, UUID) !== null && candidateIsValid(result.candidate) &&
     RELEASE_ID.test(result.currentRelease || "") && Array.isArray(result.checks) && result.checks.length > 0 &&
     result.checks.every(check => check && typeof check.name === "string" && check.status === "passed") &&

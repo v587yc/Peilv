@@ -2,17 +2,22 @@
 set -Eeuo pipefail
 umask 027
 
-usage='Usage: deploy-production.sh <release-id> <sha256> <external-manifest-sha256> <expected-current-release-id> <request-id> <valid-until> <migration-ledger-digest> <pending-plan-digest> [--maintenance-window-confirmed]'
-[[ "$#" == 8 || "$#" == 9 ]] || { printf '%s\n' "$usage" >&2; exit 1; }
+usage='Usage: deploy-production.sh <release-id> <sha256> <external-manifest-sha256> <expected-current-release-id> <request-id> <valid-until> <tcb-generation> <host-tcb-manifest-sha256> <host-sudoers-sha256> <host-migration-helper-sha256> <migration-ledger-digest> <pending-plan-digest> [--maintenance-window-confirmed]'
+[[ "$#" == 12 || "$#" == 13 ]] || { printf '%s\n' "$usage" >&2; exit 1; }
 release_id="${1:?$usage}"
 expected_sha="${2:?$usage}"
 expected_external_manifest_sha="${3:?$usage}"
 expected_current_release_id="${4:?$usage}"
 request_id="${5:?$usage}"
 valid_until="${6:?$usage}"
-expected_migration_ledger_digest="${7:?$usage}"
-expected_pending_plan_digest="${8:?$usage}"
-maintenance_confirmation="${9:-}"
+tcb_generation="${7:?$usage}"
+host_tcb_manifest_sha="${8:?$usage}"
+host_sudoers_sha="${9:?$usage}"
+host_migration_helper_sha="${10:?$usage}"
+expected_migration_ledger_digest="${11:?$usage}"
+expected_pending_plan_digest="${12:?$usage}"
+maintenance_confirmation="${13:-}"
+[[ "${PEILV_GLOBAL_LOCK_FD:-}" == 9 && "${PEILV_TCB_LOCK_FD:-}" == 8 && "${PEILV_REQUEST_LOCK_FD:-}" == 7 && "$tcb_generation" == "${HOST_TCB_GENERATION:-}" && "$host_tcb_manifest_sha" == "${HOST_TCB_MANIFEST_SHA256:-}" && "$host_sudoers_sha" == "${HOST_SUDOERS_SHA256:-}" && "$host_migration_helper_sha" == "${HOST_MIGRATION_HELPER_SHA256:-}" ]] || { printf 'Deploy Host TCB binding is absent or stale\n' >&2; exit 126; }
 [[ -z "$maintenance_confirmation" || "$maintenance_confirmation" == --maintenance-window-confirmed ]] || {
   printf 'Unknown deployment option: %s\n' "$maintenance_confirmation" >&2
   exit 1
@@ -43,11 +48,6 @@ if [[ ! "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f
   printf 'Invalid request ID\n' >&2
   exit 1
 fi
-exec 9>/run/lock/peilv-deploy.lock
-if ! flock -n 9; then
-  printf 'Another server-side deployment is running\n' >&2
-  exit 1
-fi
 
 base=/opt/peilv
 transaction_state=/var/lib/peilv/deploy-transaction.json
@@ -64,7 +64,7 @@ private_archive="$verified_incoming_dir/$request_id.tar.gz"
 release_dir="$base/releases/$release_id"
 backup="$base/backups/peilv-before-$release_id.dump"
 result_path="$result_root/$request_id.json"
-operation_identity="$(RELEASE_ID="$release_id" ARCHIVE_SHA="$expected_sha" EXTERNAL_MANIFEST_SHA="$expected_external_manifest_sha" CURRENT="$expected_current_release_id" VALID_UNTIL="$valid_until" LEDGER_DIGEST="$expected_migration_ledger_digest" PLAN_DIGEST="$expected_pending_plan_digest" node -e 'process.stdout.write(JSON.stringify({schemaVersion:3,releaseId:process.env.RELEASE_ID,archiveSha256:process.env.ARCHIVE_SHA,externalManifestSha256:process.env.EXTERNAL_MANIFEST_SHA,expectedCurrentReleaseId:process.env.CURRENT,validUntil:process.env.VALID_UNTIL,migrationLedgerDigest:process.env.LEDGER_DIGEST,pendingPlanDigest:process.env.PLAN_DIGEST}))')"
+operation_identity="$(RELEASE_ID="$release_id" ARCHIVE_SHA="$expected_sha" EXTERNAL_MANIFEST_SHA="$expected_external_manifest_sha" CURRENT="$expected_current_release_id" VALID_UNTIL="$valid_until" TCB_GENERATION="$tcb_generation" HOST_TCB_MANIFEST_SHA="$host_tcb_manifest_sha" HOST_SUDOERS_SHA="$host_sudoers_sha" HOST_MIGRATION_HELPER_SHA="$host_migration_helper_sha" LEDGER_DIGEST="$expected_migration_ledger_digest" PLAN_DIGEST="$expected_pending_plan_digest" node -e 'process.stdout.write(JSON.stringify({schemaVersion:4,operation:"deploy",releaseId:process.env.RELEASE_ID,archiveSha256:process.env.ARCHIVE_SHA,externalManifestSha256:process.env.EXTERNAL_MANIFEST_SHA,expectedCurrentReleaseId:process.env.CURRENT,validUntil:process.env.VALID_UNTIL,tcbGeneration:process.env.TCB_GENERATION,hostTcbManifestSha256:process.env.HOST_TCB_MANIFEST_SHA,hostSudoersSha256:process.env.HOST_SUDOERS_SHA,hostMigrationHelperSha256:process.env.HOST_MIGRATION_HELPER_SHA,migrationLedgerDigest:process.env.LEDGER_DIGEST,pendingPlanDigest:process.env.PLAN_DIGEST}))')"
 operation_check="$("$operation_ledger" check "$operation_root" "$request_id" "$operation_identity")"
 if [[ "$operation_check" == replay ]]; then "$operation_ledger" status "$operation_root" "$request_id" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const o=JSON.parse(s);if(o.status!=="succeeded"||!o.result)process.exit(1);process.stdout.write(JSON.stringify(o.result,null,2)+"\n")})'; completed=1; exit 0; fi
 [[ "$operation_check" == new ]]
@@ -463,12 +463,11 @@ restore_on_failure() {
       systemctl stop peilv.service || status=1
       [[ "$(systemctl is-active peilv.service 2>/dev/null || true)" == "inactive" ]] || status=1
       install -d -o root -g root -m 0700 "$result_root"
-      RESULT_PATH="$result_path" REQUEST_ID="$request_id" RELEASE_ID="$release_id" REASON="$manual_reason" BACKUP="${backup:-}" node <<'NODE'
-const fs=require("node:fs"),path=process.env.RESULT_PATH,temp=`${process.env.RESULT_PATH}.next`;
-const result={schemaVersion:1,status:"manual-assessment",requestId:process.env.REQUEST_ID,releaseId:process.env.RELEASE_ID,reason:process.env.REASON,backupPath:process.env.BACKUP||null,completedAt:new Date().toISOString()};
-fs.writeFileSync(temp,JSON.stringify(result,null,2)+"\n",{mode:0o600});fs.renameSync(temp,path);
+      REQUEST_ID="$request_id" RELEASE_ID="$release_id" REASON="$manual_reason" BACKUP="${backup:-}" TCB_GENERATION="$tcb_generation" HOST_TCB_MANIFEST_SHA="$host_tcb_manifest_sha" HOST_SUDOERS_SHA="$host_sudoers_sha" HOST_MIGRATION_HELPER_SHA="$host_migration_helper_sha" node <<'NODE' | "$operation_ledger" write-result-v2 "$result_root" "$request_id" manual-assessment >/dev/null
+const result={schemaVersion:2,status:"manual-assessment",requestId:process.env.REQUEST_ID,releaseId:process.env.RELEASE_ID,reason:process.env.REASON,backupPath:process.env.BACKUP||null,tcbGeneration:process.env.TCB_GENERATION,hostTcbManifestSha256:process.env.HOST_TCB_MANIFEST_SHA,hostSudoersSha256:process.env.HOST_SUDOERS_SHA,hostMigrationHelperSha256:process.env.HOST_MIGRATION_HELPER_SHA,completedAt:new Date().toISOString()};
+process.stdout.write(JSON.stringify(result)+"\n")
 NODE
-      (( operation_claimed == 0 )) || "$operation_ledger" finish "$operation_root" "$request_id" manual-assessment "$result_path" || true
+      (( operation_claimed == 0 )) || "$operation_ledger" finish "$operation_root" "$request_id" manual-assessment "$result_path"
       completed=1
       printf '{"status":"manual-assessment","requestId":"%s","reason":"%s"}\n' "$request_id" "$manual_reason" >&2
       printf 'Deployment failed after unsafe or incomplete migration. Application and timers remain stopped for database assessment.\n' >&2
@@ -504,10 +503,10 @@ NODE
   fi
   if (( completed == 0 && operation_claimed == 1 )); then
     install -d -o root -g root -m 0700 "$result_root"
-    RESULT_PATH="$result_path" REQUEST_ID="$request_id" RELEASE_ID="$release_id" STATUS="$status" node <<'NODE'
-const fs=require("node:fs"),p=process.env.RESULT_PATH,t=`${p}.next`;fs.writeFileSync(t,JSON.stringify({schemaVersion:1,status:"failed",requestId:process.env.REQUEST_ID,releaseId:process.env.RELEASE_ID,exitCode:Number(process.env.STATUS),completedAt:new Date().toISOString()},null,2)+"\n",{mode:0o600});fs.renameSync(t,p);
+    REQUEST_ID="$request_id" RELEASE_ID="$release_id" STATUS="$status" TCB_GENERATION="$tcb_generation" HOST_TCB_MANIFEST_SHA="$host_tcb_manifest_sha" HOST_SUDOERS_SHA="$host_sudoers_sha" HOST_MIGRATION_HELPER_SHA="$host_migration_helper_sha" node <<'NODE' | "$operation_ledger" write-result-v2 "$result_root" "$request_id" failed >/dev/null
+process.stdout.write(JSON.stringify({schemaVersion:2,status:"failed",requestId:process.env.REQUEST_ID,releaseId:process.env.RELEASE_ID,exitCode:Number(process.env.STATUS),tcbGeneration:process.env.TCB_GENERATION,hostTcbManifestSha256:process.env.HOST_TCB_MANIFEST_SHA,hostSudoersSha256:process.env.HOST_SUDOERS_SHA,hostMigrationHelperSha256:process.env.HOST_MIGRATION_HELPER_SHA,completedAt:new Date().toISOString()})+"\n")
 NODE
-    "$operation_ledger" finish "$operation_root" "$request_id" failed "$result_path" || true
+    "$operation_ledger" finish "$operation_root" "$request_id" failed "$result_path"
   fi
   cleanup_temp_files
   exit "$status"
@@ -828,28 +827,17 @@ run_oneshot_and_wait peilv-reconcile.service
 run_oneshot_and_wait peilv-dispatch.service
 restore_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"
 restore_unit_state peilv-dispatch.timer "$original_dispatch_timer_state"
-LEDGER_PATH="$base/deployment-ledger.json" RELEASE_ID="$release_id" PREVIOUS_RELEASE="$old_release_id" REQUEST_ID="$request_id" node <<'NODE'
-const fs = require("node:fs");
-const path = process.env.LEDGER_PATH;
-let ledger = { schemaVersion: 1, events: [] };
-try { ledger = JSON.parse(fs.readFileSync(path, "utf8")); } catch {}
-if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.events)) throw new Error("Invalid deployment ledger");
-ledger.events.push({ kind: "deploy", releaseId: process.env.RELEASE_ID, previousReleaseId: process.env.PREVIOUS_RELEASE, requestId: process.env.REQUEST_ID, completedAt: new Date().toISOString() });
-ledger.events = ledger.events.slice(-100);
-const temporary = `${path}.next`;
-fs.writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o640 });
-fs.renameSync(temporary, path);
-NODE
+"$operation_ledger" append-deployment-event "$base" deploy "$release_id" "$old_release_id" "$request_id"
 rm -f "$transaction_state"
 node -e 'const fs=require("node:fs");const fd=fs.openSync("/var/lib/peilv","r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}'
 [[ -z "$openresty_backup" ]] || rm -f "$openresty_backup"
 rm -f "$rendered_openresty"
 
 rm -f "$archive" "$checksum" "$external_manifest" || printf 'Warning: incoming artifact cleanup failed\n' >&2
-RESULT_PATH="$result_path" RELEASE_ID="$release_id" PREVIOUS_RELEASE="$old_release_id" BACKUP="$backup" BACKUP_SHA="$backup_sha" APPLIED="$(printf '%s\n' "${applied[@]}")" REQUEST_ID="$request_id" node <<'NODE'
+RELEASE_ID="$release_id" PREVIOUS_RELEASE="$old_release_id" BACKUP="$backup" BACKUP_SHA="$backup_sha" APPLIED="$(printf '%s\n' "${applied[@]}")" REQUEST_ID="$request_id" TCB_GENERATION="$tcb_generation" HOST_TCB_MANIFEST_SHA="$host_tcb_manifest_sha" HOST_SUDOERS_SHA="$host_sudoers_sha" HOST_MIGRATION_HELPER_SHA="$host_migration_helper_sha" node <<'NODE' | "$operation_ledger" write-result-v2 "$result_root" "$request_id" succeeded >/dev/null
 const migrations = (process.env.APPLIED || "").split("\n").filter(Boolean);
 const result = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   status: "succeeded",
   requestId: process.env.REQUEST_ID,
   releaseId: process.env.RELEASE_ID,
@@ -857,9 +845,13 @@ const result = {
   backupPath: process.env.BACKUP,
   backupSha256: process.env.BACKUP_SHA,
   appliedMigrations: migrations,
+  tcbGeneration: process.env.TCB_GENERATION,
+  hostTcbManifestSha256: process.env.HOST_TCB_MANIFEST_SHA,
+  hostSudoersSha256: process.env.HOST_SUDOERS_SHA,
+  hostMigrationHelperSha256: process.env.HOST_MIGRATION_HELPER_SHA,
   completedAt: new Date().toISOString(),
 };
-const fs=require("node:fs"),temporary=`${process.env.RESULT_PATH}.next`;fs.writeFileSync(temporary, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });fs.renameSync(temporary,process.env.RESULT_PATH);
+process.stdout.write(JSON.stringify(result)+"\n")
 NODE
 "$operation_ledger" finish "$operation_root" "$request_id" succeeded "$result_path"
 completed=1

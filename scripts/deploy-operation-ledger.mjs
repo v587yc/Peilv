@@ -3,48 +3,53 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 
-const [command, ledgerRoot, requestId, identityJson, resultPath] = process.argv.slice(2);
-const request = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-if (!request.test(requestId || "")) throw new Error("Invalid request ID");
-if (!path.isAbsolute(ledgerRoot || "")) throw new Error("Operation ledger root must be absolute");
-const operationPath = path.join(ledgerRoot, `${requestId}.json`);
+const [command, ledgerRoot, requestId, identityJson, resultPath, extraArgument] = process.argv.slice(2);
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHA256=/^[0-9a-f]{64}$/;
 const MAX_BYTES=1024*1024;
+if(!path.isAbsolute(ledgerRoot||""))throw new Error("Operation ledger root must be absolute");
+const operationPath=requestId&&UUID.test(requestId)?path.join(ledgerRoot,`${requestId}.json`):null;
 const digest=value=>crypto.createHash("sha256").update(JSON.stringify(value),"utf8").digest("hex");
-const assertRoot = () => {
-  const stat=fs.lstatSync(ledgerRoot); if(!stat.isDirectory()||stat.isSymbolicLink()||(process.platform!=="win32"&&((stat.mode&0o777)!==0o700||stat.uid!==0||stat.gid!==0)))throw new Error("Unsafe operation ledger root");
-};
-const assertOperation = () => {
-  const stat=fs.lstatSync(operationPath); if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size<=0||stat.size>MAX_BYTES||(process.platform!=="win32"&&((stat.mode&0o777)!==0o600||stat.uid!==0||stat.gid!==0)))throw new Error("Unsafe operation ledger file");
-};
-const syncDirectory = () => { const dir=fs.openSync(ledgerRoot,"r");try{fs.fsyncSync(dir)}catch(error){if(process.platform!=="win32"||error.code!=="EPERM")throw error}finally{fs.closeSync(dir)} };
-const atomicWrite = value => { const temp=`${operationPath}.next-${process.pid}`; const fd=fs.openSync(temp,"wx",0o600); try{fs.writeFileSync(fd,`${JSON.stringify(value,null,2)}\n`);fs.fsyncSync(fd)}finally{fs.closeSync(fd)} fs.renameSync(temp,operationPath); syncDirectory() };
-const read = () => { assertRoot(); assertOperation(); const fd=fs.openSync(operationPath,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);let text;try{text=fs.readFileSync(fd,"utf8")}finally{fs.closeSync(fd)}const value=JSON.parse(text); if(value?.schemaVersion!==1||value.requestId!==requestId||!["running","succeeded","failed","manual-assessment"].includes(value.status)||!value.identity||typeof value.identity!=="object"||!Number.isSafeInteger(value.sequence)||value.sequence<1||!Array.isArray(value.events)||value.events.length!==value.sequence||value.eventDigest!==digest(value.events))throw new Error("Invalid operation ledger envelope"); return value; };
-if (command === "check") {
-  if(!fs.existsSync(ledgerRoot)){process.stdout.write("new\n");process.exit(0)}
-  const identity=JSON.parse(identityJson); let existing;
-  try{existing=read()}catch(error){if(error.code==="ENOENT"){process.stdout.write("new\n");process.exit(0)}throw error}
-  if(JSON.stringify(existing.identity)!==JSON.stringify(identity))throw new Error("Request identity conflict");
-  if(existing.status==="succeeded"){process.stdout.write("replay\n");process.exit(0)}
-  throw new Error(`Request is ${existing.status}`);
-} else if (command === "claim") {
-  assertRoot();
-  const identity=JSON.parse(identityJson); let existing;
-  try{existing=read()}catch(error){if(error.code!=="ENOENT")throw error}
-  if(existing){if(JSON.stringify(existing.identity)!==JSON.stringify(identity))throw new Error("Request identity conflict");if(existing.status==="succeeded"){process.stdout.write("replay\n");process.exit(0)}throw new Error(`Request is ${existing.status}`)}
-  const event={sequence:1,status:"running",at:new Date().toISOString(),identityDigest:digest(identity)};const events=[event];
-  const value={schemaVersion:1,requestId,status:"running",identity,claimedAt:event.at,sequence:1,events,eventDigest:digest(events),result:null};
-  try { const fd=fs.openSync(operationPath,"wx",0o600); try{fs.writeFileSync(fd,`${JSON.stringify(value,null,2)}\n`);fs.fsyncSync(fd)}finally{fs.closeSync(fd)} syncDirectory(); }
-  catch(error){ if(error.code!=="EEXIST")throw error; const raced=read(); if(JSON.stringify(raced.identity)!==JSON.stringify(identity))throw new Error("Request identity conflict"); throw new Error(`Request is ${raced.status}`); }
-  process.stdout.write("claimed\n");
-} else if (command === "finish") {
-  const existing=read(); const status=identityJson; if(existing.status!=="running"||!["succeeded","failed","manual-assessment"].includes(status))throw new Error("Invalid operation transition");
-  const resultStat=fs.lstatSync(resultPath);if(!resultStat.isFile()||resultStat.isSymbolicLink()||resultStat.size<=0||resultStat.size>MAX_BYTES)throw new Error("Unsafe operation result");
-  const result=JSON.parse(fs.readFileSync(resultPath,"utf8"));if(result.schemaVersion!==1||result.requestId!==requestId||result.releaseId!==existing.identity.releaseId||result.status!==status)throw new Error("Operation result identity mismatch");
-  const event={sequence:existing.sequence+1,status,at:new Date().toISOString(),resultDigest:digest(result),previousEventDigest:existing.eventDigest};existing.events.push(event);existing.sequence=event.sequence;existing.eventDigest=digest(existing.events);existing.status=status;existing.completedAt=event.at;existing.result=result; atomicWrite(existing);
-} else if (command === "recover-running") {
-  const existing=read();if(existing.status!=="running")throw new Error("Only running operations require recovery");
-  const result={schemaVersion:1,status:"manual-assessment",requestId,releaseId:existing.identity.releaseId,reason:"host-restart-running-operation",completedAt:new Date().toISOString()};
-  const event={sequence:existing.sequence+1,status:result.status,at:result.completedAt,resultDigest:digest(result),previousEventDigest:existing.eventDigest};existing.events.push(event);existing.sequence=event.sequence;existing.eventDigest=digest(existing.events);existing.status=result.status;existing.completedAt=event.at;existing.result=result;atomicWrite(existing);
-} else if (command === "status") {
-  process.stdout.write(`${JSON.stringify(read(),null,2)}\n`);
-} else throw new Error("Unknown operation ledger command");
+const safeStat=(target,kind)=>{const s=fs.lstatSync(target);const type=kind==="directory"?s.isDirectory():s.isFile();const mode=kind==="directory"?0o700:0o600;if(!type||s.isSymbolicLink()||(kind!=="directory"&&(s.nlink!==1||s.size<=0||s.size>MAX_BYTES))||(process.platform!=="win32"&&((s.mode&0o777)!==mode||s.uid!==0||s.gid!==0)))throw new Error(`Unsafe operation ${kind}`);return s};
+const safeDeploymentStat=(target,kind)=>{const s=fs.lstatSync(target);const type=kind==="directory"?s.isDirectory():s.isFile();const mode=kind==="directory"?0o755:0o640;if(!type||s.isSymbolicLink()||(kind!=="directory"&&(s.nlink!==1||s.size<=0||s.size>MAX_BYTES))||(process.platform!=="win32"&&((s.mode&0o777)!==mode||s.uid!==0||s.gid!==0)))throw new Error(`Unsafe deployment ledger ${kind}`);return s};
+const assertRoot=()=>safeStat(ledgerRoot,"directory");
+const syncDirectory=()=>{const fd=fs.openSync(ledgerRoot,"r");try{fs.fsyncSync(fd)}catch(error){if(process.platform!=="win32"||error.code!=="EPERM")throw error}finally{fs.closeSync(fd)}};
+const assertIdentity=identity=>{if(!identity||identity.schemaVersion!==4||!SHA256.test(identity.hostTcbManifestSha256||"")||!SHA256.test(identity.hostSudoersSha256||"")||identity.tcbGeneration!=="host-tcb-v3")throw new Error("Invalid Host TCB operation identity")};
+const processOwner=()=>{let startTicks=null,bootId=null;try{startTicks=fs.readFileSync(`/proc/${process.pid}/stat`,"utf8").trim().split(/\s+/)[21];bootId=fs.readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()}catch{}return{pid:process.pid,startTicks,bootId}};
+const ownerAlive=owner=>{if(!owner||!Number.isSafeInteger(owner.pid)||owner.pid<1||!owner.startTicks||!owner.bootId)return null;try{const boot=fs.readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim();if(boot!==owner.bootId)return false;const ticks=fs.readFileSync(`/proc/${owner.pid}/stat`,"utf8").trim().split(/\s+/)[21];return ticks===owner.startTicks}catch(error){return error.code==="ENOENT"?false:null}};
+const validateEnvelope=(value,expectedRequest)=>{if(value?.schemaVersion!==2||value.requestId!==expectedRequest||!["running","succeeded","failed","manual-assessment"].includes(value.status)||!value.identity||!Number.isSafeInteger(value.sequence)||value.sequence<1||!Array.isArray(value.events)||value.events.length!==value.sequence||value.eventDigest!==digest(value.events))throw new Error("Invalid operation ledger envelope");assertIdentity(value.identity);if(value.status==="running"&&!value.owner)throw new Error("Running operation lacks owner evidence");return value};
+const readFile=file=>{safeStat(file,"file");const fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);let text;try{text=fs.readFileSync(fd,"utf8")}finally{fs.closeSync(fd)}const name=path.basename(file,".json");return validateEnvelope(JSON.parse(text),name)};
+const read=()=>{if(!operationPath)throw new Error("Invalid request ID");assertRoot();return readFile(operationPath)};
+const atomicWriteFile=(root,target,value)=>{safeStat(root,"directory");try{fs.lstatSync(target);throw new Error("Durable target already exists")}catch(error){if(error.code!=="ENOENT")throw error}const temp=`${target}.next-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;const fd=fs.openSync(temp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);try{fs.writeFileSync(fd,`${JSON.stringify(value,null,2)}\n`);fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(temp,target);const directory=fs.openSync(root,"r");try{fs.fsyncSync(directory)}catch(error){if(process.platform!=="win32"||error.code!=="EPERM")throw error}finally{fs.closeSync(directory)}};
+const atomicReplaceFile=(root,target,value,mode)=>{const temp=`${target}.next-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;let fd;try{fd=fs.openSync(temp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,mode);fs.writeFileSync(fd,`${JSON.stringify(value,null,2)}\n`);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;fs.renameSync(temp,target);const directory=fs.openSync(root,"r");try{fs.fsyncSync(directory)}catch(error){if(process.platform!=="win32"||error.code!=="EPERM")throw error}finally{fs.closeSync(directory)}}catch(error){if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(temp)}catch(cleanupError){if(cleanupError.code!=="ENOENT")throw cleanupError}throw error}};
+const atomicWrite=value=>{const temp=`${operationPath}.next-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;const fd=fs.openSync(temp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);try{fs.writeFileSync(fd,`${JSON.stringify(value,null,2)}\n`);fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(temp,operationPath);syncDirectory()};
+const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+
+if(command==="append-deployment-event"){
+  const base=ledgerRoot,kind=requestId,releaseId=identityJson,previousReleaseId=resultPath,request=extraArgument,target=path.join(base,"deployment-ledger.json");
+  if(!["deploy","rollback"].includes(kind)||!/^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$/.test(releaseId||"")||!/^r[1-9][0-9]*-a[1-9][0-9]*-[0-9a-f]{12}$/.test(previousReleaseId||"")||!UUID.test(request||""))throw new Error("Invalid deployment event");
+  safeDeploymentStat(base,"directory");let ledger={schemaVersion:1,events:[]};try{safeDeploymentStat(target,"file");const fd=fs.openSync(target,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{ledger=JSON.parse(fs.readFileSync(fd,"utf8"))}finally{fs.closeSync(fd)}}catch(error){if(error.code!=="ENOENT")throw error}
+  if(ledger.schemaVersion!==1||!Array.isArray(ledger.events)||ledger.events.some(event=>!event||typeof event!=="object"))throw new Error("Invalid deployment ledger");
+  ledger.events.push({kind,releaseId,previousReleaseId,requestId:request,completedAt:new Date().toISOString()});ledger.events=ledger.events.slice(-100);atomicReplaceFile(base,target,ledger,0o640);
+}else if(command==="write-result-v2"){
+  if(!operationPath)throw new Error("Invalid request ID");const status=identityJson;if(!["succeeded","failed","manual-assessment"].includes(status))throw new Error("Invalid result status");let input="";for await(const chunk of process.stdin){input+=chunk;if(Buffer.byteLength(input)>MAX_BYTES)throw new Error("Operation result is too large")}const result=JSON.parse(input);if(result.schemaVersion!==2||result.requestId!==requestId||result.status!==status)throw new Error("Invalid operation result");atomicWriteFile(ledgerRoot,operationPath,result);process.stdout.write(`${operationPath}\n`);
+}else if(command==="guard-all"){
+  assertRoot();const blockers=[];
+  for(const name of fs.readdirSync(ledgerRoot).sort()){
+    if(!UUID.test(path.basename(name,".json"))||!name.endsWith(".json")){blockers.push({type:"unexpected-ledger-object",name});continue}
+    try{const value=readFile(path.join(ledgerRoot,name));if(value.status==="manual-assessment")blockers.push({type:"manual-assessment",requestId:value.requestId});if(value.status==="running"){const alive=ownerAlive(value.owner);blockers.push({type:alive===true?"running-owner-alive":alive===false?"stale-running":"running-owner-indeterminate",requestId:value.requestId,owner:value.owner})}}catch(error){blockers.push({type:"invalid-ledger",name,error:error.message})}
+  }
+  if(blockers.length){process.stderr.write(`${JSON.stringify({schemaVersion:1,status:"blocked",reason:"global-operation-guard",blockers})}\n`);process.exit(75)}
+  process.stdout.write("clear\n");
+}else{
+  if(!operationPath)throw new Error("Invalid request ID");
+  if(command==="check"){
+    assertRoot();const identity=JSON.parse(identityJson);assertIdentity(identity);let existing;try{existing=read()}catch(error){if(error.code==="ENOENT"){process.stdout.write("new\n");process.exit(0)}throw error}if(!same(existing.identity,identity))throw new Error("Request identity conflict");if(existing.status==="succeeded"){process.stdout.write("replay\n");process.exit(0)}throw new Error(`Request is ${existing.status}`);
+  }else if(command==="claim"){
+    assertRoot();const identity=JSON.parse(identityJson);assertIdentity(identity);let existing;try{existing=read()}catch(error){if(error.code!=="ENOENT")throw error}if(existing){if(!same(existing.identity,identity))throw new Error("Request identity conflict");if(existing.status==="succeeded"){process.stdout.write("replay\n");process.exit(0)}throw new Error(`Request is ${existing.status}`)}const owner=processOwner();const event={sequence:1,status:"running",at:new Date().toISOString(),identityDigest:digest(identity),owner};const events=[event];const value={schemaVersion:2,requestId,status:"running",identity,owner,claimedAt:event.at,sequence:1,events,eventDigest:digest(events),result:null};try{const fd=fs.openSync(operationPath,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);try{fs.writeFileSync(fd,`${JSON.stringify(value,null,2)}\n`);fs.fsyncSync(fd)}finally{fs.closeSync(fd)}syncDirectory()}catch(error){if(error.code!=="EEXIST")throw error;throw new Error(`Request is ${read().status}`)}process.stdout.write("claimed\n");
+  }else if(command==="finish"){
+    const existing=read(),status=identityJson;if(existing.status!=="running"||!["succeeded","failed","manual-assessment"].includes(status))throw new Error("Invalid operation transition");safeStat(resultPath,"file");const fd=fs.openSync(resultPath,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);let result;try{result=JSON.parse(fs.readFileSync(fd,"utf8"))}finally{fs.closeSync(fd)}if(result.schemaVersion!==2||result.requestId!==requestId||result.releaseId!==existing.identity.releaseId||result.status!==status||result.tcbGeneration!==existing.identity.tcbGeneration||result.hostTcbManifestSha256!==existing.identity.hostTcbManifestSha256||result.hostSudoersSha256!==existing.identity.hostSudoersSha256||result.hostMigrationHelperSha256!==existing.identity.hostMigrationHelperSha256)throw new Error("Operation result identity mismatch");const event={sequence:existing.sequence+1,status,at:new Date().toISOString(),resultDigest:digest(result),previousEventDigest:existing.eventDigest};existing.events.push(event);existing.sequence=event.sequence;existing.eventDigest=digest(existing.events);existing.status=status;existing.completedAt=event.at;existing.result=result;delete existing.owner;atomicWrite(existing);
+  }else if(command==="recover-running"){
+    const existing=read();if(existing.status!=="running")throw new Error("Only running operations require recovery");const alive=ownerAlive(existing.owner);if(alive===true)throw new Error("Running operation owner is still alive");const reason=identityJson;if(!/^[a-z0-9][a-z0-9-]{2,80}$/.test(reason||""))throw new Error("Root recovery reason is required");const result={schemaVersion:2,status:"manual-assessment",requestId,releaseId:existing.identity.releaseId,reason,tcbGeneration:existing.identity.tcbGeneration,hostTcbManifestSha256:existing.identity.hostTcbManifestSha256,hostSudoersSha256:existing.identity.hostSudoersSha256,hostMigrationHelperSha256:existing.identity.hostMigrationHelperSha256,completedAt:new Date().toISOString()};const event={sequence:existing.sequence+1,status:result.status,at:result.completedAt,resultDigest:digest(result),previousEventDigest:existing.eventDigest};existing.events.push(event);existing.sequence=event.sequence;existing.eventDigest=digest(existing.events);existing.status=result.status;existing.completedAt=event.at;existing.result=result;delete existing.owner;atomicWrite(existing);
+  }else if(command==="status")process.stdout.write(`${JSON.stringify(read(),null,2)}\n`);else throw new Error("Unknown operation ledger command");
+}
