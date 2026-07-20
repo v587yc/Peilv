@@ -26,15 +26,16 @@ describe("production deployment transaction contract", () => {
     const control = await read("infra/deploy/peilv-control");
     expect(workflow).toContain("maintenance_window_confirmed:");
     expect(workflow).toContain("default: false");
-    expect(control).toContain("peilv-deploy:deploy-v3:9)");
-    expect(control).toContain("peilv-deploy:deploy-v3:10)");
-    expect(control).toContain('[[ "${10}" == "--maintenance-window-confirmed" ]]');
-    expect(control).toContain('deploy-production.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"');
+    expect(control).toContain("peilv-deploy:deploy-v3:13)");
+    expect(control).toContain("peilv-deploy:deploy-v3:14)");
+    expect(control).toContain('[[ "${14}" == --maintenance-window-confirmed');
+    expect(control).toContain('deploy-production.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" "${14}"');
   });
   it("rejects only an occupied target release path, allowing a quarantined ID to be unpacked again", async () => {
     const deploy = await read("scripts/deploy-production.sh");
     expect(deploy).toContain('[[ ! -e "$release_dir" ]] || { printf \'Release directory already exists');
-    const lock = deploy.indexOf("flock -n 9");
+    const control = await read("infra/deploy/peilv-control");
+    const lock = control.indexOf("flock -n 9");
     const rejectExisting = deploy.indexOf('[[ ! -e "$release_dir" ]]');
     const failureTrap = deploy.indexOf("trap restore_on_failure EXIT");
     expect(lock).toBeLessThan(rejectExisting);

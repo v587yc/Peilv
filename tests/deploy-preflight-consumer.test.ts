@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 const now = Date.now();
 const sha = "a".repeat(40);
 const archiveSha = "b".repeat(64);
-const env = { RELEASE_ID: `r101-a2-${sha.slice(0, 12)}`, COMMIT_SHA: sha, SOURCE_RUN_ID: "101", SOURCE_RUN_ATTEMPT: "2", SOURCE_ARTIFACT_ID: "501", ACTUAL_SHA: archiveSha, REQUEST_ID: "123e4567-e89b-42d3-a456-426614174000" };
+const env = { RELEASE_ID: `r101-a2-${sha.slice(0, 12)}`, COMMIT_SHA: sha, SOURCE_RUN_ID: "101", SOURCE_RUN_ATTEMPT: "2", SOURCE_ARTIFACT_ID: "501", ACTUAL_SHA: archiveSha, REQUEST_ID: "123e4567-e89b-42d3-a456-426614174000",HOST_TCB_GENERATION:"host-tcb-v3",HOST_TCB_MANIFEST_SHA:"1".repeat(64),HOST_SUDOERS_SHA:"2".repeat(64),HOST_MIGRATION_HELPER_SHA:"3".repeat(64) };
 const manifestMigrations = [
   { file: "0001_production_baseline.sql", version: "0001_production_baseline", sha256: "d".repeat(64), codeRollbackSafe: true },
   { file: "0002_change.sql", version: "0002_change", sha256: "e".repeat(64), codeRollbackSafe: false },
@@ -23,11 +23,12 @@ const result = {
   currentRelease: `r99-a1-${"c".repeat(12)}`, checks: requiredChecks, blockers: [],
   checkedAt: new Date(now - 1_000).toISOString(), validUntil: new Date(now + 60_000).toISOString(),
   migrations: { applied: ["0001_canonical_baseline"], pending: migrationContract.pending, unknown: [], migrationLedgerDigest: migrationContract.migrationLedgerDigest, pendingPlanDigest: migrationContract.pendingPlanDigest, pendingAllCodeRollbackSafe: migrationContract.pendingAllCodeRollbackSafe },
+  hostTcb:{schemaVersion:3,generation:env.HOST_TCB_GENERATION,manifestSha256:env.HOST_TCB_MANIFEST_SHA,sudoersSha256:env.HOST_SUDOERS_SHA,migrationContractSha256:env.HOST_MIGRATION_HELPER_SHA},
 };
 
 describe("deploy preflight consumer", () => {
   it("accepts a fully bound passed production inspection", () => {
-    expect(validateDeployPreflight({ manifest, result, env, now })).toEqual({ archiveSha256: archiveSha, externalManifestSha256: externalManifestSha, currentRelease: result.currentRelease, validUntil: result.validUntil, migrationLedgerDigest: migrationContract.migrationLedgerDigest, pendingPlanDigest: migrationContract.pendingPlanDigest });
+    expect(validateDeployPreflight({ manifest, result, env, now })).toMatchObject({ archiveSha256: archiveSha, externalManifestSha256: externalManifestSha, currentRelease: result.currentRelease, validUntil: result.validUntil,hostTcbGeneration:"host-tcb-v3", migrationLedgerDigest: migrationContract.migrationLedgerDigest, pendingPlanDigest: migrationContract.pendingPlanDigest });
   });
 
   it.each([

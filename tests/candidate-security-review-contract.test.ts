@@ -96,9 +96,11 @@ printf '%s\\n' "\${properties[@]}"
     expect(budget).toContain("DEPLOY_BUDGET_INODES[$device]");
     expect(budget).toContain("df -Pk");
     expect(budget).toContain("df -Pi");
+    const control = await read("infra/deploy/peilv-control");
+    expect(control).toContain("flock -n 9");
     for (const file of ["scripts/deploy-production.sh", "scripts/production-preflight.sh"]) {
       const script = await read(file);
-      expect(script).toContain("flock -n 9");
+      expect(script).not.toContain("flock -n 9");
       expect(script).toContain("deployment_budget_check");
       expect(script.indexOf("deployment_budget_check")).toBeLessThan(script.indexOf('node "$private_copy_helper"'));
     }

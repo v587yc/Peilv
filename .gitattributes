@@ -1,5 +1,13 @@
-scripts/production-preflight.sh text eol=lf
-scripts/deploy-production.sh text eol=lf
-scripts/rollback-production.sh text eol=lf
 *.sql text eol=lf
 *.mjs text eol=lf
+infra/deploy/bootstrap-deploy-v3.sh text eol=lf
+infra/deploy/peilv-control text eol=lf
+infra/deploy/peilv-sudoers text eol=lf
+infra/deploy/trusted-host-tcb-v3.sha256 text eol=lf
+scripts/deploy-production.sh text eol=lf
+scripts/production-preflight.sh text eol=lf
+scripts/rollback-production.sh text eol=lf
+scripts/migration-contract.mjs text eol=lf
+scripts/deploy-operation-ledger.mjs text eol=lf
+tests/deploy-v3-bootstrap-dynamic.test.ts text eol=lf
+.github/workflows/ci.yml text eol=lf
