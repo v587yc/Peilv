@@ -72,7 +72,7 @@ jobs:
           ssh -i ~/.ssh/rollback_key -p "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$PROD_USER@$PROD_HOST" \
-            "sudo -n /usr/local/sbin/peilv-control rollback '$TARGET_RELEASE' '$EXPECTED_CURRENT' '$REQUEST_ID' '$REASON_B64URL'" \
+            "sudo -n /usr/local/sbin/peilv-control rollback-v2 '$TARGET_RELEASE' '$EXPECTED_CURRENT' '$REQUEST_ID' '$REASON_B64URL'" \
             | tee rollback-summary.txt
           scp -i ~/.ssh/rollback_key -P "$PROD_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
