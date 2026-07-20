@@ -81,6 +81,32 @@ async function privilegedWrite(root: string, target: string, content: string, mo
   await exec("sudo", ["chmod", mode.toString(8), "--", checked]);
 }
 
+async function createPrivilegedDanglingSymlink(root: string, target: string) {
+  const checked = checkedFixturePath(root, target);
+  const referent = checkedFixturePath(root, path.join(root, `missing-${path.basename(target)}`));
+  await exec("sudo", ["rm", "-f", "--", checked]);
+  await exec("sudo", ["ln", "-s", "--", referent, checked]);
+  const { stdout } = await exec("sudo", ["stat", "-c", "%i", "--", checked]);
+  return { referent, inode: stdout.trim() };
+}
+
+async function expectPrivilegedDanglingSymlinkPreserved(root: string, target: string, expected: { referent: string; inode: string }) {
+  const checked = checkedFixturePath(root, target);
+  expect((await exec("sudo", ["readlink", "--", checked])).stdout.trim()).toBe(expected.referent);
+  expect((await exec("sudo", ["stat", "-c", "%i", "--", checked])).stdout.trim()).toBe(expected.inode);
+  await expect(exec("sudo", ["test", "-e", expected.referent])).rejects.toBeDefined();
+}
+
+async function privilegedTreeSnapshot(root: string, target: string) {
+  const checked = checkedFixturePath(root, target);
+  return (await exec("sudo", ["find", checked, "-mindepth", "1", "-printf", "%P|%y|%i|%l|%s\n"])).stdout.split(/\r?\n/).filter(Boolean).sort();
+}
+
+async function transactionArtifactSnapshot(root: string) {
+  const entries = await privilegedTreeSnapshot(root, root);
+  return entries.filter(entry => entry.includes(".tcb-v3-old-") || entry.includes(".next-v3-") || entry.includes("tcb-v3-activation.json") || entry.includes("tcb-forensics/"));
+}
+
 async function withPrivilegedFixtureMutation<T>(root: string, target: string, content: string, mode: number, action: () => Promise<T>) {
   const checked = checkedFixturePath(root, target);
   const existed = isWindows ? await lstat(checked).then(() => true, () => false) : await exec("sudo", ["test", "-e", checked]).then(() => true, () => false);
@@ -196,7 +222,8 @@ async function fixture(options: FixtureOptions = {}) {
   const readTrusted = async (target: string) => isWindows ? readFile(target, "utf8") : (await exec("sudo", ["cat", target])).stdout;
   const absent = async (target: string) => exec("bash", ["-c", "[[ ! -e \"$1\" && ! -L \"$1\" ]]", "bash", target]).then(() => true, () => false);
   const snapshot = async () => Object.fromEntries(await Promise.all(transactionNames.map(async name => [name, await absent(destinations[name]) ? null : await readTrusted(destinations[name])])));
-  return { root, stage, state, evidenceRoot: path.join(state, "tcb-forensics"), destinations, run, snapshot, readTrusted, absent, metadataTarget: (target: string) => shellPath(target) };
+  const snapshotExcept = async (excluded: string) => Object.fromEntries(await Promise.all(transactionNames.filter(name => destinations[name] !== excluded).map(async name => [name, await absent(destinations[name]) ? null : await readTrusted(destinations[name])])));
+  return { root, stage, state, evidenceRoot: path.join(state, "tcb-forensics"), destinations, run, snapshot, snapshotExcept, readTrusted, absent, metadataTarget: (target: string) => shellPath(target) };
 }
 
 describe("deploy v3 legacy sudoers retirement transaction", () => {
@@ -207,6 +234,12 @@ describe("deploy v3 legacy sudoers retirement transaction", () => {
     expect(bytes.at(-1)).toBe(0x0a);
   });
   if (process.env.HOST_TCB_LINUX_REAL_SEMANTICS === "1") it("runs unmodified bootstrap with real root metadata and visudo", () => { expect(process.platform).toBe("linux"); expect(process.getuid?.()).toBe(0); });
+  it("uses one dangling-symlink-aware entry classifier", async () => {
+    const source = await readFile("infra/deploy/bootstrap-deploy-v3.sh", "utf8");
+    expect(source).toContain('path_entry_exists(){ [[ -e "$1" || -L "$1" ]]; }');
+    expect(source).toContain('classify_entry(){');
+    expect(source).toContain('require_absent(){');
+  });
   it.each(["absent", "approved"] as const)("activates all-new with legacy %s", async legacy => { const f = await fixture({ legacy }); await expect(f.run()).resolves.toMatchObject({ stdout: expect.stringContaining("legacy sudoers retired") }); expect(await f.absent(f.destinations[legacyName])).toBe(true); expect(await f.absent(f.destinations[legacyV2Name])).toBe(true); for (const name of installNames) expect(await f.readTrusted(f.destinations[name])).toBe(await f.readTrusted(path.join(f.stage, name))); }, fixtureTimeout);
   it.each(["unknown", "symlink", "hardlink"] as const)("rejects unsafe legacy %s with zero mutation", async legacy => { const f = await fixture({ legacy }); const before = await f.snapshot(); await expect(f.run()).rejects.toBeDefined(); expect(await f.snapshot()).toEqual(before); expect(await f.absent(path.join(f.state, "tcb-v3-activation.json"))).toBe(true); }, fixtureTimeout);
   it.each(["mode", "owner"] as const)("rejects legacy %s before mutation", async kind => { const f = await fixture({ legacyMode: kind === "mode" && !isWindows ? 0o644 : 0o440, legacyOwner: kind === "owner" && !isWindows ? "nobody" : "root" }); const before = await f.snapshot(); const target = f.metadataTarget(f.destinations[legacyName]); await expect(f.run(kind === "mode" && isWindows ? { PEILV_TEST_BAD_MODE: target } : kind === "owner" && isWindows ? { PEILV_TEST_BAD_OWNER: target } : {})).rejects.toBeDefined(); expect(await f.snapshot()).toEqual(before); }, fixtureTimeout);
@@ -221,4 +254,29 @@ describe("deploy v3 legacy sudoers retirement transaction", () => {
   it.each(["new", "old"] as const)("seals durable root-only forensic evidence for %s outcome", async finalState => { const f = await fixture(); if (finalState === "new") await f.run(); else { await expect(f.run({ PEILV_TCB_FAIL_AFTER: legacyName })).rejects.toBeDefined(); await f.run({}, true); } await expectUnprivilegedDenied(f.evidenceRoot, true); const entries = isWindows ? { stdout: (await readdir(f.evidenceRoot)).join("\n") } : await exec("sudo", ["find", f.evidenceRoot, "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-printf", "%f\n"]); const entry = entries.stdout.trim().split(/\r?\n/)[0]; expect(entry).toMatch(/^[0-9A-Za-z._-]+$/); const evidence = checkedFixturePath(f.root, path.join(f.evidenceRoot, entry)); if (!isWindows) { expect(await privilegedMetadata(f.root, f.evidenceRoot)).toMatchObject({ owner: "root:root", mode: "700" }); expect(await privilegedMetadata(f.root, evidence)).toMatchObject({ owner: "root:root", mode: "700" }); } const bundlePath = checkedFixturePath(f.root, path.join(evidence, "bundle.json")); if (!isWindows) expect((await exec("sudo", ["sha256sum", "--", bundlePath])).stdout).toMatch(/^[0-9a-f]{64}\s/); await expectUnprivilegedDenied(bundlePath); const bundle = JSON.parse(await f.readTrusted(bundlePath)); expect(bundle).toMatchObject({ schemaVersion: 1, finalState, transactionId: expect.any(String), digest: expect.stringMatching(/^[0-9a-f]{64}$/) }); expect(bundle.records.find((r: { name: string }) => r.name === legacyName).oldHash).toBe("e7e825d0c9a81c9514eb42aef12a56ad8c41729cfc9aa6f9fbaf345e9488b35a"); expect(await privilegedExists(f.root, path.join(evidence, `${legacyName}.old`))).toBe(true); }, fixtureTimeout);
   it.each(installNames.flatMap(name => name === manifestName ? [`${name}:backup`] : [`${name}:backup`, name]))("recovers all-old from install fault point %s", async point => { const f = await fixture(); const before = await f.snapshot(); await expect(f.run({ PEILV_TCB_FAIL_AFTER: point })).rejects.toBeDefined(); await expect(f.run({}, true)).resolves.toBeDefined(); expect(await f.snapshot()).toEqual(before); }, 90_000);
   it.each(["peilv-control", "peilv-sudoers", policyName, manifestName])("rejects CRLF in staged %s before mutation", async name => { const f = await fixture(); const before = await f.snapshot(); const target = path.join(f.stage, name); await withPrivilegedFixtureMutation(f.root, target, `${await f.readTrusted(target)}\r\n`, modes[name], async () => { if (!isWindows) expect(await privilegedMetadata(f.root, target)).toEqual({ owner: "root:root", mode: modes[name].toString(8), nlink: 1 }); await expectUnprivilegedMutationDenied(target); await expect(f.run()).rejects.toBeDefined(); expect(await f.snapshot()).toEqual(before); }); }, fixtureTimeout);
+  if (!isWindows) it.each(["install", "retire", "manifest", "journal", "backup", "forensic"] as const)("rejects dangling symlink at %s boundary with zero subsequent mutation", async boundary => {
+    const f = await fixture();
+    let target: string;
+    let recover = false;
+    if (boundary === "backup" || boundary === "forensic") {
+      await expect(f.run({ PEILV_TCB_FAIL_AFTER: "peilv-control:backup" })).rejects.toBeDefined();
+      const journal = JSON.parse(await f.readTrusted(path.join(f.state, "tcb-v3-activation.json")));
+      if (boundary === "backup") target = journal.records.find((record: { name: string }) => record.name === "peilv-control").backup;
+      else target = path.join(f.evidenceRoot, journal.transactionId);
+      recover = true;
+    } else if (boundary === "install") target = f.destinations["peilv-control"];
+    else if (boundary === "retire") target = f.destinations[legacyName];
+    else if (boundary === "manifest") target = f.destinations[manifestName];
+    else target = path.join(f.state, "tcb-v3-activation.json");
+
+    const link = await createPrivilegedDanglingSymlink(f.root, target);
+    const otherTargetsBefore = await f.snapshotExcept(target);
+    const stateBefore = await privilegedTreeSnapshot(f.root, f.state);
+    const artifactsBefore = await transactionArtifactSnapshot(f.root);
+    await expect(f.run({}, recover)).rejects.toMatchObject({ code: 78 });
+    await expectPrivilegedDanglingSymlinkPreserved(f.root, target, link);
+    expect(await f.snapshotExcept(target)).toEqual(otherTargetsBefore);
+    expect(await privilegedTreeSnapshot(f.root, f.state)).toEqual(stateBefore);
+    expect(await transactionArtifactSnapshot(f.root)).toEqual(artifactsBefore);
+  }, 90_000);
 });
