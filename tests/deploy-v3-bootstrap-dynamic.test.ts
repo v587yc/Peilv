@@ -143,6 +143,13 @@ else exec "$real" "$@"; fi
     return exec("sudo", ["env", ...environment, "bash", ...args]);
   };
   const readTrusted = async (target: string) => isWindows ? readFile(target, "utf8") : (await exec("sudo", ["cat", target])).stdout;
+  const expectTrustedMissing = async (target: string) => {
+    if (isWindows) {
+      await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+      return;
+    }
+    await expect(exec("sudo", ["test", "!", "-e", target])).resolves.toBeDefined();
+  };
   const writeTrusted = async (target: string, content: string, mode: number) => {
     if (isWindows) {
       await writeFile(target, content);
@@ -155,7 +162,7 @@ else exec "$real" "$@"; fi
   const snapshot = async () => Object.fromEntries(
     await Promise.all(activationNames.map(async name => [name, await readTrusted(destinations[name])])),
   );
-  return { stage, state, destinations, run, snapshot, readTrusted, writeTrusted };
+  return { stage, state, destinations, run, snapshot, readTrusted, writeTrusted, expectTrustedMissing };
 }
 
 describe("deploy v3 Host TCB bootstrap crash-consistent transaction", () => {
@@ -217,6 +224,6 @@ describe("deploy v3 Host TCB bootstrap crash-consistent transaction", () => {
     await f.writeTrusted(path.join(f.stage, "deploy-production.sh"), "#!/bin/sh\r\nexit 0\r\n", modes["deploy-production.sh"]);
     await expect(f.run()).rejects.toBeDefined();
     expect(await f.snapshot()).toEqual(before);
-    await expect(readFile(path.join(f.state, "tcb-v3-activation.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await f.expectTrustedMissing(path.join(f.state, "tcb-v3-activation.json"));
   });
 });
