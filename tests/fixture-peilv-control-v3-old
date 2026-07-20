@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly manifest=/etc/peilv/trusted-host-tcb-v3.sha256
+readonly sudoers=/etc/sudoers.d/peilv
+readonly bootstrap_journal=/var/lib/peilv/tcb-v3-activation.json
+readonly tcb_lock=/run/lock/peilv-deploy-tcb.lock
+readonly operation_root=/var/lib/peilv/deploy-operations
+readonly tcb_generation=host-tcb-v3
+readonly expected_sudoers_sha=1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833
+
+verify_host_tcb_v3() {
+  local expected file extra target mode actual_manifest_sha candidate
+  local -A seen=()
+  [[ ! -e "$bootstrap_journal" ]] || { printf 'Host TCB bootstrap recovery is required\n' >&2; return 1; }
+  [[ -f "$manifest" && ! -L "$manifest" && "$(stat -c '%U:%G:%a:%h' "$manifest")" == root:root:644:1 ]] || return 1
+  actual_manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
+  while IFS=' ' read -r expected file extra; do
+    [[ -z "$extra" && "$expected" =~ ^[0-9a-f]{64}$ && -z "${seen[$file]+x}" ]] || return 1
+    case "$file" in
+      peilv-control) target=/usr/local/sbin/peilv-control; mode=755 ;;
+      deploy-production.sh|production-preflight.sh|rollback-production.sh|migration-contract.mjs|deploy-operation-ledger.mjs) target="/usr/local/libexec/peilv/$file"; mode=755 ;;
+      *) return 1 ;;
+    esac
+    [[ -f "$target" && ! -L "$target" && "$(stat -c '%U:%G:%a:%h' "$target")" == "root:root:$mode:1" ]] || return 1
+    [[ "$(sha256sum "$target" | awk '{print $1}')" == "$expected" ]] || return 1
+    seen["$file"]=1
+  done <"$manifest"
+  ((${#seen[@]} == 6)) || return 1
+  for file in peilv-control deploy-production.sh production-preflight.sh rollback-production.sh migration-contract.mjs deploy-operation-ledger.mjs; do [[ -n "${seen[$file]+x}" ]] || return 1; done
+  [[ -f "$sudoers" && ! -L "$sudoers" && "$(stat -c '%U:%G:%a:%h' "$sudoers")" == root:root:440:1 ]] || return 1
+  [[ "$expected_sudoers_sha" =~ ^[0-9a-f]{64}$ && "$(sha256sum "$sudoers" | awk '{print $1}')" == "$expected_sudoers_sha" ]] || return 1
+  visudo -c >/dev/null 2>&1 || return 1
+  while IFS= read -r candidate; do
+    [[ "$candidate" == "$sudoers" ]] && continue
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    if grep -Eq '/usr/local/sbin/peilv-control([[:space:]]|$)' "$candidate"; then
+      printf 'Conflicting peilv-control sudo authorization coexists: %s\n' "$candidate" >&2; return 1
+    fi
+  done < <(printf '%s\n' /etc/sudoers; find /etc/sudoers.d -xdev -type f -print 2>/dev/null)
+  HOST_TCB_MANIFEST_SHA256="$actual_manifest_sha"
+  HOST_MIGRATION_HELPER_SHA256="$(awk '$2=="migration-contract.mjs"{print $1}' "$manifest")"
+  HOST_SUDOERS_SHA256="$expected_sudoers_sha"
+  HOST_TCB_GENERATION="$tcb_generation"
+  export HOST_TCB_MANIFEST_SHA256 HOST_MIGRATION_HELPER_SHA256 HOST_SUDOERS_SHA256 HOST_TCB_GENERATION
+}
+
+guard_unfinished_transactions() {
+  [[ ! -e /var/lib/peilv/deploy-transaction.json ]] || { printf '{"status":"blocked","reason":"deploy-transaction-present"}\n' >&2; return 75; }
+  /usr/local/libexec/peilv/deploy-operation-ledger.mjs guard-all "$operation_root"
+}
+
+guard_for_request() {
+  local request="$1" output status
+  if output="$(/usr/local/libexec/peilv/deploy-operation-ledger.mjs guard-all "$operation_root" 2>&1)"; then return 0; fi
+  status=$?
+  [[ "$status" == 75 ]] || { printf '%s\n' "$output" >&2; return "$status"; }
+  REQUEST_ID="$request" GUARD="$output" node -e 'const g=JSON.parse(process.env.GUARD);const b=g.blockers||[];if(!b.length||b.some(x=>x.requestId!==process.env.REQUEST_ID||x.type!=="running-owner-alive"))process.exit(75)' || { printf '%s\n' "$output" >&2; return 75; }
+  printf '%s\n' "$output" >&2
+  return 75
+}
+
+acquire_request_lock() {
+  local request="$1"
+  [[ "$request" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || return 126
+  exec 7>"/run/lock/peilv-request-$request.lock"
+  flock -n 7 || { printf '{"status":"blocked","reason":"request-lock-busy"}\n' >&2; return 75; }
+  export PEILV_REQUEST_LOCK_FD=7
+}
+
+caller="${SUDO_USER:-}"; command_name="${1:-}"
+exec 9>/run/lock/peilv-deploy.lock
+flock -n 9 || { printf '{"schemaVersion":1,"status":"blocked","reason":"global-lock-busy"}\n' >&2; exit 75; }
+exec 8>"$tcb_lock"
+flock -n 8 || { printf '{"schemaVersion":1,"status":"blocked","reason":"tcb-lock-busy"}\n' >&2; exit 75; }
+verify_host_tcb_v3 || { printf 'Host TCB v3 validation failed\n' >&2; exit 126; }
+export PEILV_GLOBAL_LOCK_FD=9 PEILV_TCB_LOCK_FD=8
+
+case "$caller:$command_name:$#" in
+  peilv-audit:preflight-v3:11) guard_unfinished_transactions; acquire_request_lock "$8"; exec /usr/local/libexec/peilv/production-preflight.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" ;;
+  peilv-audit:preflight-v3:12) guard_unfinished_transactions; acquire_request_lock "$8"; [[ "${12}" == --approved-current-unit-hotfix-transition ]] || exit 126; exec /usr/local/libexec/peilv/production-preflight.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" ;;
+  peilv-deploy:deploy-v3:13) guard_for_request "$6"; acquire_request_lock "$6"; [[ "$8" == "$HOST_TCB_GENERATION" && "$9" == "$HOST_TCB_MANIFEST_SHA256" && "${10}" == "$HOST_SUDOERS_SHA256" && "${11}" == "$HOST_MIGRATION_HELPER_SHA256" ]] || exit 126; exec /usr/local/libexec/peilv/deploy-production.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" ;;
+  peilv-deploy:deploy-v3:14) guard_for_request "$6"; acquire_request_lock "$6"; [[ "${14}" == --maintenance-window-confirmed && "$8" == "$HOST_TCB_GENERATION" && "$9" == "$HOST_TCB_MANIFEST_SHA256" && "${10}" == "$HOST_SUDOERS_SHA256" && "${11}" == "$HOST_MIGRATION_HELPER_SHA256" ]] || exit 126; exec /usr/local/libexec/peilv/deploy-production.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" "${14}" ;;
+  peilv-deploy:deploy-status-v2:2) acquire_request_lock "$2"; exec /usr/local/libexec/peilv/deploy-operation-ledger.mjs status "$operation_root" "$2" ;;
+  peilv-rollback:rollback-v2:5) guard_for_request "$4"; acquire_request_lock "$4"; exec /usr/local/libexec/peilv/rollback-production.sh "$2" "$3" "$4" "$5" ;;
+  peilv-rollback:rollback-status-v2:2) acquire_request_lock "$2"; exec /usr/local/libexec/peilv/deploy-operation-ledger.mjs status "$operation_root" "$2" ;;
+  root:recover-operation-v1:3) acquire_request_lock "$2"; exec /usr/local/libexec/peilv/deploy-operation-ledger.mjs recover-running "$operation_root" "$2" "$3" ;;
+  *) printf 'Command is not permitted\n' >&2; exit 126 ;;
+esac

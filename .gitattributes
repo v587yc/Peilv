@@ -12,4 +12,6 @@ scripts/migration-contract.mjs text eol=lf
 scripts/deploy-operation-ledger.mjs text eol=lf
 tests/deploy-v3-bootstrap-dynamic.test.ts text eol=lf
 tests/effective-sudoers-linux.sh text eol=lf
+tests/fixture-peilv-control-v3-old text eol=lf
+tests/fixture-trusted-host-tcb-v3-old.sha256 text eol=lf
 .github/workflows/ci.yml text eol=lf

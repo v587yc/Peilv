@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 [[ "$(id -u)" == 0 && "$(uname -s)" == Linux ]] || { printf 'Linux root fixture is required\n' >&2; exit 1; }
 command -v visudo sudo useradd userdel >/dev/null
-root="$(mktemp -d /tmp/peilv-effective-sudoers.XXXXXX)"; fragment=/etc/sudoers.d/peilv-effective-test
-cleanup(){ rm -f -- "$fragment"; rm -rf -- "$root"; for user in peilv-audit peilv-deploy peilv-rollback; do id "$user" >/dev/null 2>&1 && userdel "$user" || true; done; visudo -c >/dev/null || true; }
+root="$(mktemp -d /tmp/peilv-effective-sudoers.XXXXXX)"; fragment=/etc/sudoers.d/peilv-effective-test; runner_sudoers=/etc/sudoers.d/runner; runner_mode=''
+cleanup(){ rm -f -- "$fragment"; [[ -z "$runner_mode" ]] || chmod "$runner_mode" "$runner_sudoers"; rm -rf -- "$root"; for user in peilv-audit peilv-deploy peilv-rollback; do id "$user" >/dev/null 2>&1 && userdel "$user" || true; done; visudo -c >/dev/null || true; }
 trap cleanup EXIT
+if [[ -f "$runner_sudoers" && ! -L "$runner_sudoers" ]]; then runner_mode="$(stat -c %a "$runner_sudoers")"; chmod 0440 "$runner_sudoers"; fi
 for user in peilv-audit peilv-deploy peilv-rollback; do ! id "$user" >/dev/null 2>&1 || { printf 'Fixture user already exists: %s\n' "$user" >&2; exit 1; }; useradd --system --no-create-home --shell /usr/sbin/nologin "$user"; done
 install -d -o root -g root -m 0755 "$root/includes" "$root/nested"
 install -o root -g root -m 0440 infra/deploy/peilv-sudoers "$root/nested/new"

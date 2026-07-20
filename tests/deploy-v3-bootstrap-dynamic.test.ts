@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -22,8 +23,11 @@ const sources: Record<string, string> = {
 const modes: Record<string, number> = Object.fromEntries(transactionNames.map(name => [name, name === "peilv-sudoers" || name === legacyName ? 0o440 : name === manifestName || name === policyName || name === legacyV2Name ? 0o644 : 0o755]));
 const approvedLegacy = "Defaults:peilv-audit env_reset,use_pty\nDefaults:peilv-deploy env_reset,use_pty\nDefaults:peilv-rollback env_reset,use_pty\npeilv-audit ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control preflight *\npeilv-deploy ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control deploy *\npeilv-rollback ALL=(root) NOPASSWD: /usr/local/sbin/peilv-control rollback *\n";
 const approvedV2Manifest = "ce04c6263d66bb85424b238dd1bd494b0d419653a6564f40019154f02448b536 peilv-control\n03db0d56bad0a92d04721629f63fccc9f402bd8b9087b5ddca34e7434d889367 deploy-production.sh\n4042a7c69e5aaa41bf26a9e55f72740be1213d8c6dedc5e95ae3573460042923 migration-contract.mjs\n1c94d0424a6a7b66734e5b5ac9102a19aee04a9cc42a43ba4f29b122cc6d35b6 deploy-operation-ledger.mjs\n";
-const baseSha = "d039ef97ce72fb4b053afaae5091790e6e74cdd9";
 const approvedOldBytes = new Map<string, Promise<Buffer>>();
+const approvedFixtures = {
+  "infra/deploy/peilv-control": { path: "tests/fixture-peilv-control-v3-old", sha256: "5d4e408f2e72550cb783add81a892643613aacea91596853c6bed79bb048ec95" },
+  "infra/deploy/trusted-host-tcb-v3.sha256": { path: "tests/fixture-trusted-host-tcb-v3-old.sha256", sha256: "bb73c2d965c6fa8f3d62a57ed50597a493ce18da226e544f4a42790e5ae4d943" },
+} as const;
 const isWindows = process.platform === "win32";
 const fixtureTimeout = isWindows ? 90_000 : 30_000;
 
@@ -63,7 +67,7 @@ async function fixture(options: FixtureOptions = {}) {
   for (const name of installNames) {
     if (name === policyName) continue;
     const gitPath = name === "peilv-sudoers" || name === "peilv-control" || name === manifestName ? `infra/deploy/${name === "peilv-sudoers" ? "peilv-sudoers" : name}` : `scripts/${name}`;
-    if (!approvedOldBytes.has(gitPath)) approvedOldBytes.set(gitPath, exec("git", ["show", `${baseSha}:${gitPath}`], { encoding: "buffer" }).then(result => result.stdout));
+    if (!approvedOldBytes.has(gitPath)) approvedOldBytes.set(gitPath, readFile(approvedFixtures[gitPath as keyof typeof approvedFixtures]?.path ?? gitPath));
     const oldBytes = await approvedOldBytes.get(gitPath)!;
     await writeFile(destinations[name], oldBytes); await chmod(destinations[name], modes[name]);
   }
@@ -98,6 +102,12 @@ async function fixture(options: FixtureOptions = {}) {
 }
 
 describe("deploy v3 legacy sudoers retirement transaction", () => {
+  it.each(Object.values(approvedFixtures))("pins approved old-byte fixture $path to exact LF-only bytes", async approved => {
+    const bytes = await readFile(approved.path);
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(approved.sha256);
+    expect(bytes.includes(0x0d)).toBe(false);
+    expect(bytes.at(-1)).toBe(0x0a);
+  });
   if (process.env.HOST_TCB_LINUX_REAL_SEMANTICS === "1") it("runs unmodified bootstrap with real root metadata and visudo", () => { expect(process.platform).toBe("linux"); expect(process.getuid?.()).toBe(0); });
   it.each(["absent", "approved"] as const)("activates all-new with legacy %s", async legacy => { const f = await fixture({ legacy }); await expect(f.run()).resolves.toMatchObject({ stdout: expect.stringContaining("legacy sudoers retired") }); expect(await f.absent(f.destinations[legacyName])).toBe(true); expect(await f.absent(f.destinations[legacyV2Name])).toBe(true); for (const name of installNames) expect(await f.readTrusted(f.destinations[name])).toBe(await f.readTrusted(path.join(f.stage, name))); }, fixtureTimeout);
   it.each(["unknown", "symlink", "hardlink"] as const)("rejects unsafe legacy %s with zero mutation", async legacy => { const f = await fixture({ legacy }); const before = await f.snapshot(); await expect(f.run()).rejects.toBeDefined(); expect(await f.snapshot()).toEqual(before); expect(await f.absent(path.join(f.state, "tcb-v3-activation.json"))).toBe(true); }, fixtureTimeout);
