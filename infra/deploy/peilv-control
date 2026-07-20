@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 readonly manifest=/etc/peilv/trusted-host-tcb-v3.sha256
 readonly sudoers=/etc/sudoers.d/peilv
+readonly legacy_sudoers=/etc/sudoers.d/peilv-deploy
+readonly legacy_v2_manifest=/etc/peilv/trusted-deploy-v2.sha256
 readonly bootstrap_journal=/var/lib/peilv/tcb-v3-activation.json
 readonly tcb_lock=/run/lock/peilv-deploy-tcb.lock
 readonly operation_root=/var/lib/peilv/deploy-operations
@@ -10,9 +12,15 @@ readonly tcb_generation=host-tcb-v3
 readonly expected_sudoers_sha=1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833
 
 verify_host_tcb_v3() {
-  local expected file extra target mode actual_manifest_sha candidate
+  local expected file extra target mode actual_manifest_sha candidate user listing command count
   local -A seen=()
+  local -A effective_commands=(
+    [peilv-audit]='preflight-v3'
+    [peilv-deploy]='deploy-v3 deploy-status-v2'
+    [peilv-rollback]='rollback-v2 rollback-status-v2')
   [[ ! -e "$bootstrap_journal" ]] || { printf 'Host TCB bootstrap recovery is required\n' >&2; return 1; }
+  [[ ! -e "$legacy_sudoers" && ! -L "$legacy_sudoers" ]] || { printf 'Legacy peilv sudo authorization still exists: %s\n' "$legacy_sudoers" >&2; return 1; }
+  [[ ! -e "$legacy_v2_manifest" && ! -L "$legacy_v2_manifest" ]] || { printf 'Legacy Host TCB v2 manifest still exists: %s\n' "$legacy_v2_manifest" >&2; return 1; }
   [[ -f "$manifest" && ! -L "$manifest" && "$(stat -c '%U:%G:%a:%h' "$manifest")" == root:root:644:1 ]] || return 1
   actual_manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
   while IFS=' ' read -r expected file extra; do
@@ -31,10 +39,18 @@ verify_host_tcb_v3() {
   [[ -f "$sudoers" && ! -L "$sudoers" && "$(stat -c '%U:%G:%a:%h' "$sudoers")" == root:root:440:1 ]] || return 1
   [[ "$expected_sudoers_sha" =~ ^[0-9a-f]{64}$ && "$(sha256sum "$sudoers" | awk '{print $1}')" == "$expected_sudoers_sha" ]] || return 1
   visudo -c >/dev/null 2>&1 || return 1
+  for user in peilv-audit peilv-deploy peilv-rollback; do
+    listing="$(sudo -l -U "$user")" || return 1
+    count="$(grep -Fc '/usr/local/sbin/peilv-control ' <<<"$listing")"
+    [[ "$count" == "$(wc -w <<<"${effective_commands[$user]}")" ]] || { printf 'Unexpected effective peilv-control authorization count: %s\n' "$user" >&2; return 1; }
+    for command in ${effective_commands[$user]}; do
+      grep -F "/usr/local/sbin/peilv-control $command *" <<<"$listing" >/dev/null || { printf 'Missing exact effective peilv-control authorization: %s %s\n' "$user" "$command" >&2; return 1; }
+    done
+  done
   while IFS= read -r candidate; do
     [[ "$candidate" == "$sudoers" ]] && continue
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
-    if grep -Eq '/usr/local/sbin/peilv-control([[:space:]]|$)' "$candidate"; then
+    if grep -Eq '/usr/local/sbin/peilv-control([[:space:]]|$)|(^|[^[:alnum:]_-])peilv-(audit|deploy|rollback)([^[:alnum:]_-]|$)' "$candidate"; then
       printf 'Conflicting peilv-control sudo authorization coexists: %s\n' "$candidate" >&2; return 1
     fi
   done < <(printf '%s\n' /etc/sudoers; find /etc/sudoers.d -xdev -type f -print 2>/dev/null)

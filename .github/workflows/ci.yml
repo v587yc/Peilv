@@ -132,6 +132,19 @@ jobs:
           command -v sudo visudo flock sha256sum
           sudo env PATH="$PATH" HOST_TCB_LINUX_REAL_SEMANTICS=1 HOST_TCB_EXPECT_ROOT=1 pnpm exec vitest run tests/deploy-v3-bootstrap-dynamic.test.ts tests/deploy-cas-idempotency-dynamic.test.ts --maxWorkers=1 --minWorkers=1 --reporter=verbose
 
+  host-tcb-effective-sudoers:
+    name: Host TCB effective sudoers exact ABI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify nested includes aliases and effective grants
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_OS" = Linux
+          command -v sudo visudo
+          sudo bash tests/effective-sudoers-linux.sh
+
   host-tcb-loopback-fault-isolation:
     name: Host TCB loopback fault isolation
     runs-on: ubuntu-latest
@@ -151,6 +164,7 @@ jobs:
           sudo install -d -o root -g root -m 0755 "$stage"
           sudo install -o root -g root -m 0755 scripts/deploy-production.sh scripts/production-preflight.sh scripts/rollback-production.sh scripts/migration-contract.mjs scripts/deploy-operation-ledger.mjs infra/deploy/peilv-control "$stage/"
           sudo install -o root -g root -m 0440 infra/deploy/peilv-sudoers "$stage/peilv-sudoers"
+          sudo install -o root -g root -m 0644 infra/deploy/legacy-sudoers-retirement-v1.sha256 "$stage/legacy-sudoers-retirement-v1.sha256"
           sudo install -o root -g root -m 0644 infra/deploy/trusted-host-tcb-v3.sha256 "$stage/trusted-host-tcb-v3.sha256"
           root="$RUNNER_TEMP/host-tcb-root"
           stage_device="$(stat -c %d "$stage")"
@@ -165,6 +179,7 @@ jobs:
             PEILV_TCB_ETC="$root/etc" \
             PEILV_TCB_SUDOERS="$root/sudoers" \
             PEILV_TCB_STATE_ROOT="$root/state" \
+            PEILV_TCB_SUDOERS_MAIN="$root/sudoers-main" \
             bash infra/deploy/bootstrap-deploy-v3.sh "$stage" 2>"$RUNNER_TEMP/cross-device.stderr"; then
             printf 'cross-device bootstrap unexpectedly succeeded\n' >&2; exit 1
           fi
@@ -184,7 +199,11 @@ jobs:
             PEILV_TCB_ETC="$loop_root/etc"
             PEILV_TCB_SUDOERS="$loop_root/sudoers"
             PEILV_TCB_STATE_ROOT="$loop_root/state"
+            PEILV_TCB_SUDOERS_MAIN="$loop_root/sudoers-main"
           )
+          sudo install -d -o root -g root -m 0755 "$loop_root/sudoers"
+          printf '@includedir %s\n' "$loop_root/sudoers" | sudo tee "$loop_root/sudoers-main" >/dev/null
+          sudo chown root:root "$loop_root/sudoers-main"; sudo chmod 0440 "$loop_root/sudoers-main"
           if sudo env "${common_env[@]}" PEILV_TCB_FAIL_AFTER=peilv-sudoers bash infra/deploy/bootstrap-deploy-v3.sh "$loop_stage"; then
             printf 'fault-injected bootstrap unexpectedly succeeded\n' >&2; exit 1
           fi
