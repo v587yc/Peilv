@@ -11,7 +11,13 @@ export default defineConfig({
   test: {
     environment: "node",
     testTimeout: 20_000,
-    exclude: ["**/node_modules/**", "**/.git/**", "**/.claude/worktrees/**", "**/*-linux.test.ts"],
+    exclude: [
+      "**/node_modules/**",
+      "**/.git/**",
+      "**/.claude/worktrees/**",
+      // Root-only Host TCB suite is collected only when VITEST_INCLUDE_LINUX=1 (CI sudo job).
+      ...(process.env.VITEST_INCLUDE_LINUX === "1" ? [] : ["**/*-linux.test.ts"]),
+    ],
     coverage: {
       provider: "v8",
       include: [

@@ -128,7 +128,7 @@ jobs:
           test "$RUNNER_OS" = Linux
           test "$(id -u)" != 0
           command -v sudo visudo flock sha256sum
-          sudo env PATH="$PATH" pnpm exec vitest run tests/deploy-v3-bootstrap-linux.test.ts --maxWorkers=1 --minWorkers=1 --reporter=verbose
+          sudo env PATH="$PATH" VITEST_INCLUDE_LINUX=1 pnpm exec vitest run tests/deploy-v3-bootstrap-linux.test.ts --maxWorkers=1 --minWorkers=1 --reporter=verbose
 
   host-tcb-effective-sudoers:
     name: Host TCB effective sudoers exact ABI
