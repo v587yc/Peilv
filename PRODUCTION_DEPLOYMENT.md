@@ -507,7 +507,7 @@ systemctl list-timers peilv-reconcile.timer peilv-dispatch.timer --no-pager
 - root-only operation ledger 位于 `/var/lib/peilv/deploy-operations/<request>.json`，durable status-v2 result 位于 `/var/lib/peilv/deploy-results/<request>.json`；目录 root:root 0700，文件 0600、非 symlink、单链接、最大 1MiB。共享 ledger helper 以 `O_EXCL|O_NOFOLLOW` 创建临时文件，fsync 文件、原子 rename、fsync 父目录后，部署/回滚才能执行 ledger `finish`。初始化只接受 `ENOENT`，损坏 JSON 或 owner/mode/nlink 异常均 fail closed。Host 重启后的 running 只能由 root 离线通过 `recover-operation-v1` 转为 manual-assessment，不自动重放。
 - migration 未完整完成时始终保持应用与 timers 停止。migration 全部完成后的后续失败，仅当本次 pending 全部 `codeRollbackSafe=true` 才允许恢复旧代码；否则持久化 `manual-assessment`（`migration-incomplete` 或 `non-rollback-safe-migrations-completed`），再次确保 app/timers 停止，不自动恢复数据库。
 - 部署逐个记录并停止 dispatch/reconcile timer，部分 stop 失败也按各自部署前 active/inactive 快照恢复；未知状态 fail closed。成功后 reconcile/dispatch oneshot 分别按 unit 的 `TimeoutStartUSec + 10s` 有界等待，最终必须 `inactive + Result=success`，timer 最终状态严格恢复原快照。
-- Host TCB v3 exact-set manifest 固定为仓库 `infra/deploy/trusted-host-tcb-v3.sha256`，精确绑定 `peilv-control`、`production-preflight.sh`、`deploy-production.sh`、`rollback-production.sh`、`migration-contract.mjs`、`deploy-operation-ledger.mjs` 六个 runtime。bootstrap 将 sudoers、六 runtime、manifest 纳入同一事务；缺失、重复、额外、basename collision、symlink、硬链接、owner/mode/hash 任一异常均拒绝。durable manifest 是唯一 commit marker：manifest 激活并完成目录 fsync 前恢复 all-old，之后保留 all-new，任何 mixed generation fail closed。
+- Host TCB v3 exact-set manifest 固定为仓库 `infra/deploy/trusted-host-tcb-v3.sha256`，精确绑定 `peilv-control`、`production-preflight.sh`、`deploy-production.sh`、`rollback-production.sh`、`migration-contract.mjs`、`deploy-operation-ledger.mjs` 六个 runtime。bootstrap 将 sudoers、六 runtime、legacy retirement policy、legacy 退役状态与 manifest 纳入同一事务；缺失、重复、额外、basename collision、symlink、硬链接、owner/mode/hash 任一异常均拒绝。durable manifest 是唯一 commit marker：manifest 激活并完成目录 fsync 前恢复 all-old（包括恢复批准的 legacy），之后保留 all-new（legacy 必须 absent），任何 mixed generation fail closed。
 - `.github/workflows/deploy-approved-production.yml`：仅允许手动触发；用户把预检 Summary 中的 `Release ID` 与 `Release SHA-256` 填入后，才执行上传和生产发布。
 
 自动发布仍以本文第 1–15 节为约束：
@@ -530,12 +530,16 @@ GitHub 配置：
 
 Host TCB 更新必须走独立受控 bootstrap，不能由待部署 release 或服务器现场计算 manifest：
 
-1. 从已审核的精确 Git commit 取得六个 runtime、fixed manifest、sudoers和 `bootstrap-deploy-v3.sh`。
+1. 从已审核的精确 Git commit 取得六个 runtime、fixed manifest、sudoers、`legacy-sudoers-retirement-v1.sha256` 和 `bootstrap-deploy-v3.sh`。legacy policy 只批准一次性退役 `/etc/sudoers.d/peilv-deploy` 且旧字节 SHA-256 必须为 `e7e825d0c9a81c9514eb42aef12a56ad8c41729cfc9aa6f9fbaf345e9488b35a`；新主机缺失该文件允许继续，未知 hash、额外 legacy basename 或异常 metadata 一律阻断。
 2. 按 sudoers → control/六 runtime → manifest → bootstrap 常量顺序冻结 LF 字节；任何对象变化都必须从头重新冻结并执行 `sha256sum -c --strict`。
 3. bootstrap 只允许在同设备目录内完成 backup/new rename，并对源目录、目标目录和 manifest 目录执行 fsync；journal 固定为单一路径并记录 target absent/旧摘要/备份路径。
 4. SIGKILL 测试只表示进程中断，不称为掉电。每个对象 backup/new rename 前后、manifest 提交前后及 recovery 二次 SIGKILL 均须验证 all-old/all-new；真实文件系统故障仅在隔离 Linux loopback job 中执行。
 5. Linux CI 必须直接运行未改写的生产 bootstrap，验证真实 root/mode/nlink/flock/visudo/fsync/rename/cross-device；Windows 只运行 `process.platform === "win32"` 的临时逻辑 fixture。
 6. 本迁移验证不得触发 production workflow、preflight、deploy 或 rollback。
+
+legacy 退役不是执行 bootstrap 前的手工 `rm`：它作为 journal schema v5 的 `retire` 对象先同设备 rename 到取证 backup，再由 manifest commit marker 决定恢复 old 或维持 absent。事务未提交时回滚必须恢复原 legacy；事务已提交时 controller 持续审计要求 legacy absent。backup 只在既有事务清理阶段按策略删除，禁止操作者提前删除。若需回滚 Host TCB，必须运行 journal recovery；不得单独复制旧 sudoers 或保留新 runtime/manifest 与旧授权的混合状态。
+
+`/etc/peilv/trusted-deploy-v2.sha256` 同样是版本化 `retire` 对象，只接受已审核摘要 `e9c0380879cd8485644f4075cb1e000c60dab3c997120109d1ee5e6d9cf6099e` 或 absent；V3 runtime 永不读取该旧 manifest。成功或恢复会在 `/var/lib/peilv/tcb-forensics/<transaction-id>/` 封存 root-only 旧对象副本与 `bundle.json`（old/new/final SHA、transaction、final state、bundle digest）。bootstrap 只在 evidence 完成文件及目录 fsync 后清理事务临时 backup，绝不自动删除 forensic bundle；清理 bundle 必须走独立审核批准和留存策略，不能与 bootstrap/部署命令耦合。
 
 `peilv-audit` 的 `authorized_keys` 当前契约必须以 `restrict` 开头，sudoers 仅允许调用参数收敛的 `peilv-control preflight-v3`。本轮只静态验证仓库模板，不自动修改服务器配置。把参数改为 stdin 并配合 forced-command、从而完全取消通用远端 shell，是后续独立升级项，不在本轮兼容修复中实施。
 
