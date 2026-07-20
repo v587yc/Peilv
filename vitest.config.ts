@@ -11,7 +11,7 @@ export default defineConfig({
   test: {
     environment: "node",
     testTimeout: 20_000,
-    exclude: ["**/node_modules/**", "**/.git/**", "**/.claude/worktrees/**"],
+    exclude: ["**/node_modules/**", "**/.git/**", "**/.claude/worktrees/**", "**/*.linux.test.ts"],
     coverage: {
       provider: "v8",
       include: [
