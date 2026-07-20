@@ -122,15 +122,13 @@ jobs:
           corepack prepare pnpm@9.0.0 --activate
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Verify original scripts on Linux metadata and fsync semantics
-        env:
-          HOST_TCB_LINUX_REAL_SEMANTICS: "1"
+      - name: Verify original bootstrap on Linux root metadata and fsync semantics
         run: |
+          set -Eeuo pipefail
           test "$RUNNER_OS" = Linux
-          test "$HOST_TCB_LINUX_REAL_SEMANTICS" = 1
           test "$(id -u)" != 0
           command -v sudo visudo flock sha256sum
-          sudo env PATH="$PATH" HOST_TCB_LINUX_REAL_SEMANTICS=1 HOST_TCB_EXPECT_ROOT=1 pnpm exec vitest run tests/deploy-v3-bootstrap-dynamic.test.ts tests/deploy-cas-idempotency-dynamic.test.ts --maxWorkers=1 --minWorkers=1 --reporter=verbose
+          sudo env PATH="$PATH" VITEST_INCLUDE_LINUX=1 pnpm exec vitest run tests/deploy-v3-bootstrap-linux.test.ts --maxWorkers=1 --minWorkers=1 --reporter=verbose
 
   host-tcb-effective-sudoers:
     name: Host TCB effective sudoers exact ABI

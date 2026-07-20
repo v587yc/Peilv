@@ -15,4 +15,19 @@ describe("CI real PostgreSQL concurrency contract", () => {
     expect(workflow).toContain("AUTOMATION_TEST_DATABASE_ACK: ephemeral");
     expect(workflow).toContain("pnpm exec vitest run");
   });
+
+  it("runs the Linux-only Host TCB root suite as a required CI command", async () => {
+    const workflow = await readFile(workflowUrl, "utf8");
+    const job = workflow.match(/  host-tcb-linux-real-semantics:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]+:|$)/)?.[1];
+    const vitestConfig = await readFile(new URL("../vitest.config.ts", import.meta.url), "utf8");
+
+    expect(job).toBeDefined();
+    expect(job).toContain("sudo env PATH=\"$PATH\" VITEST_INCLUDE_LINUX=1 pnpm exec vitest run tests/deploy-v3-bootstrap-linux.test.ts");
+    expect(job).toContain("command -v sudo visudo flock sha256sum");
+    expect(job).not.toContain("continue-on-error");
+    expect(job).not.toMatch(/\bskip\b/i);
+    expect(vitestConfig).toContain("VITEST_INCLUDE_LINUX");
+    expect(vitestConfig).toContain('"**/*-linux.test.ts"');
+    expect(vitestConfig).not.toContain('"**/*.linux.test.ts"');
+  });
 });

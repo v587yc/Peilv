@@ -41,18 +41,30 @@ declare -A allowed_old=(
  [legacy-sudoers-retirement]="$legacy_approved_sha" [legacy-v2-manifest-retirement]="$legacy_v2_manifest_sha")
 
 sync_dir(){ sync -f "$1" 2>/dev/null || sync -d "$1"; }
-hash_or_absent(){ [[ -f "$1" && ! -L "$1" && "$(stat -c %h "$1")" == 1 ]] && sha256sum "$1"|awk '{print $1}' || printf absent; }
-safe_existing_dir(){ local p="$1" mode="$2"; [[ -d "$p" && ! -L "$p" && "$(stat -c '%U:%G:%a' "$p")" == "root:root:$mode" ]]; }
-existing_parent(){ local p="$1"; while [[ ! -e "$p" ]]; do p="$(dirname "$p")"; done; [[ -d "$p" && ! -L "$p" ]] || return 1; printf '%s\n' "$p"; }
+path_entry_exists(){ [[ -e "$1" || -L "$1" ]]; }
+classify_entry(){
+ local p="$1"
+ if ! path_entry_exists "$p"; then printf absent
+ elif [[ -L "$p" ]]; then printf symlink
+ elif [[ -f "$p" ]]; then [[ "$(stat -c %h "$p")" == 1 ]] && printf regular || printf hardlink
+ elif [[ -d "$p" ]]; then printf directory
+ else printf special
+ fi
+}
+require_absent(){ local kind; kind="$(classify_entry "$1")"; [[ "$kind" == absent ]] || { printf 'Unsafe occupied path (%s): %s\n' "$kind" "$1" >&2; return 78; }; }
+hash_or_absent(){ local kind; kind="$(classify_entry "$1")"; if [[ "$kind" == absent ]]; then printf absent; elif [[ "$kind" == regular ]]; then sha256sum "$1"|awk '{print $1}'; else printf 'Unsafe non-regular path (%s): %s\n' "$kind" "$1" >&2; return 78; fi; }
+safe_existing_dir(){ local p="$1" mode="$2"; [[ "$(classify_entry "$p")" == directory && "$(stat -c '%U:%G:%a' "$p")" == "root:root:$mode" ]]; }
+existing_parent(){ local p="$1" kind; while true; do kind="$(classify_entry "$p")"; if [[ "$kind" == absent ]]; then p="$(dirname "$p")"; elif [[ "$kind" == directory ]]; then printf '%s\n' "$p"; return; else return 1; fi; done; }
 write_journal(){
  local phase="$1" active="$2" sequence="$3"
- PHASE="$phase" ACTIVE="$active" SEQUENCE="$sequence" TX="$tx" JOURNAL="$journal" RECORDS="$(printf '%s\n' "${records[@]}")" CREATED="$(printf '%s\n' "${created_dirs[@]:-}")" node <<'NODE'
+ local temp="$journal.next-$$"; require_absent "$temp" || exit 78
+ PHASE="$phase" ACTIVE="$active" SEQUENCE="$sequence" TX="$tx" JOURNAL="$journal" JOURNAL_TEMP="$temp" RECORDS="$(printf '%s\n' "${records[@]}")" CREATED="$(printf '%s\n' "${created_dirs[@]:-}")" node <<'NODE'
 const fs=require("node:fs"),crypto=require("node:crypto"),path=require("node:path");
 const split=k=>(process.env[k]||"").split("\n").filter(Boolean);
 const records=split("RECORDS").map(line=>{const [name,operation,target,backup,oldHash,newHash,existed]=line.split("|");return{name,operation,target,backup,oldHash,newHash,existed:existed==="1"}});
 const body={schemaVersion:5,transactionId:process.env.TX,sequence:Number(process.env.SEQUENCE),phase:process.env.PHASE,activeObject:process.env.ACTIVE||null,records,createdDirectories:split("CREATED")};
 body.digest=crypto.createHash("sha256").update(JSON.stringify(body)).digest("hex");
-const temp=`${process.env.JOURNAL}.next-${process.pid}`,fd=fs.openSync(temp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);
+const temp=process.env.JOURNAL_TEMP,fd=fs.openSync(temp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);
 try{fs.writeFileSync(fd,JSON.stringify(body,null,2)+"\n");fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(temp,process.env.JOURNAL);const d=fs.openSync(path.dirname(process.env.JOURNAL),"r");try{fs.fsyncSync(d)}finally{fs.closeSync(d)}
 NODE
 }
@@ -78,10 +90,11 @@ validate_journal_abi(){
 }
 seal_evidence(){
  local final_state="$1" evidence="$evidence_root/$tx" row name operation target backup old new existed evidence_file
- if [[ -e "$evidence" ]]; then safe_existing_dir "$evidence" 700 || { printf 'Unsafe forensic evidence directory\n' >&2; exit 78; }; else install -d -o root -g root -m 700 "$evidence"; sync_dir "$evidence_root"; fi
- for row in "${records[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; [[ "$existed" == 1 ]] || continue; evidence_file="$evidence/$name.old"; if [[ ! -e "$evidence_file" ]]; then source="$backup"; [[ "$(hash_or_absent "$source")" == "$old" ]] || { [[ "$final_state" == old && "$(hash_or_absent "$target")" == "$old" ]] && source="$target" || { printf 'Forensic source cannot be proven: %s\n' "$name" >&2; exit 78; }; }; install -o root -g root -m 600 "$source" "$evidence_file"; sync -f "$evidence_file"; fi; [[ "$(hash_or_absent "$evidence_file")" == "$old" ]] || { printf 'Forensic evidence hash mismatch\n' >&2; exit 78; }; done
- FINAL_STATE="$final_state" EVIDENCE="$evidence" TX="$tx" RECORDS="$(printf '%s\n' "${records[@]}")" MODES="$(for key in "${activation_names[@]}"; do printf '%s|%s\n' "$key" "${modes[$key]}"; done)" node <<'NODE'
-const fs=require('node:fs'),crypto=require('node:crypto'),path=require('node:path');const hash=file=>{try{const s=fs.lstatSync(file);return s.isFile()&&!s.isSymbolicLink()&&s.nlink===1?crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'):'absent'}catch(e){if(e.code==='ENOENT')return'absent';throw e}};const modes=Object.fromEntries((process.env.MODES||'').split('\n').filter(Boolean).map(line=>line.split('|')));const records=(process.env.RECORDS||'').split('\n').filter(Boolean).map(line=>{const [name,operation,target,backup,oldHash,newHash,existed]=line.split('|');return{name,operation,target,oldHash,newHash,existed:existed==='1',oldMetadata:existed==='1'?{owner:'root',group:'root',mode:modes[name],nlink:1}:null,finalSha256:hash(target)}});const body={schemaVersion:1,transactionId:process.env.TX,finalState:process.env.FINAL_STATE,records};body.digest=crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');const target=path.join(process.env.EVIDENCE,'bundle.json'),temp=`${target}.next-${process.pid}`;fs.writeFileSync(temp,JSON.stringify(body,null,2)+'\n',{mode:0o600,flag:'wx'});const f=fs.openSync(temp,'r');try{fs.fsyncSync(f)}finally{fs.closeSync(f)}fs.renameSync(temp,target);const d=fs.openSync(process.env.EVIDENCE,'r');try{fs.fsyncSync(d)}finally{fs.closeSync(d)}
+ if path_entry_exists "$evidence"; then safe_existing_dir "$evidence" 700 || { printf 'Unsafe forensic evidence directory\n' >&2; exit 78; }; else install -d -o root -g root -m 700 "$evidence"; sync_dir "$evidence_root"; fi
+ for row in "${records[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; [[ "$existed" == 1 ]] || continue; evidence_file="$evidence/$name.old"; if ! path_entry_exists "$evidence_file"; then source="$backup"; [[ "$(hash_or_absent "$source")" == "$old" ]] || { [[ "$final_state" == old && "$(hash_or_absent "$target")" == "$old" ]] && source="$target" || { printf 'Forensic source cannot be proven: %s\n' "$name" >&2; exit 78; }; }; install -o root -g root -m 600 "$source" "$evidence_file"; sync -f "$evidence_file"; else [[ "$(classify_entry "$evidence_file")" == regular ]] || { printf 'Unsafe forensic evidence object\n' >&2; exit 78; }; fi; [[ "$(hash_or_absent "$evidence_file")" == "$old" ]] || { printf 'Forensic evidence hash mismatch\n' >&2; exit 78; }; done
+ require_absent "$evidence/bundle.json" || exit 78; require_absent "$evidence/bundle.json.next-$$" || exit 78
+ FINAL_STATE="$final_state" EVIDENCE="$evidence" TX="$tx" BUNDLE_TEMP="$evidence/bundle.json.next-$$" RECORDS="$(printf '%s\n' "${records[@]}")" MODES="$(for key in "${activation_names[@]}"; do printf '%s|%s\n' "$key" "${modes[$key]}"; done)" node <<'NODE'
+const fs=require('node:fs'),crypto=require('node:crypto'),path=require('node:path');const hash=file=>{try{const s=fs.lstatSync(file);return s.isFile()&&!s.isSymbolicLink()&&s.nlink===1?crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'):'absent'}catch(e){if(e.code==='ENOENT')return'absent';throw e}};const modes=Object.fromEntries((process.env.MODES||'').split('\n').filter(Boolean).map(line=>line.split('|')));const records=(process.env.RECORDS||'').split('\n').filter(Boolean).map(line=>{const [name,operation,target,backup,oldHash,newHash,existed]=line.split('|');return{name,operation,target,oldHash,newHash,existed:existed==='1',oldMetadata:existed==='1'?{owner:'root',group:'root',mode:modes[name],nlink:1}:null,finalSha256:hash(target)}});const body={schemaVersion:1,transactionId:process.env.TX,finalState:process.env.FINAL_STATE,records};body.digest=crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');const target=path.join(process.env.EVIDENCE,'bundle.json'),temp=process.env.BUNDLE_TEMP;fs.writeFileSync(temp,JSON.stringify(body,null,2)+'\n',{mode:0o600,flag:'wx'});const f=fs.openSync(temp,'r');try{fs.fsyncSync(f)}finally{fs.closeSync(f)}fs.renameSync(temp,target);const d=fs.openSync(process.env.EVIDENCE,'r');try{fs.fsyncSync(d)}finally{fs.closeSync(d)}
 NODE
  sync_dir "$evidence_root"
 }
@@ -94,6 +107,10 @@ recover_transaction(){
  mapfile -t created_dirs < <(JOURNAL="$journal" node -e 'for(const d of require(process.env.JOURNAL).createdDirectories)console.log(d)')
  for row in "${rows[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; records+=("$name|$operation|$target|$backup|$old|$new|$existed"); done
  validate_journal_abi || { printf 'TCB journal ABI or path set is invalid\n' >&2; exit 78; }
+ evidence="$evidence_root/$tx"; evidence_kind="$(classify_entry "$evidence")"; [[ "$evidence_kind" == absent || "$evidence_kind" == directory ]] || { printf 'Unsafe forensic evidence directory\n' >&2; exit 78; }
+ for row in "${rows[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; hash_or_absent "$target" >/dev/null || exit 78; hash_or_absent "$backup" >/dev/null || exit 78; evidence_file="$evidence/$name.old"; evidence_kind="$(classify_entry "$evidence_file")"; [[ "$evidence_kind" == absent || "$evidence_kind" == regular ]] || { printf 'Unsafe forensic evidence object\n' >&2; exit 78; }; done
+ bundle_kind="$(classify_entry "$evidence/bundle.json")"; [[ "$bundle_kind" == absent || "$bundle_kind" == regular ]] || { printf 'Unsafe forensic bundle\n' >&2; exit 78; }
+ require_absent "$evidence/bundle.json.next-$$" || exit 78; require_absent "$journal.next-$$" || exit 78
  write_journal recovering '' "$recovery_sequence"
  local manifest_state=unknown row name target backup old new existed actual
   for row in "${rows[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; [[ "$name" != "$manifest_name" ]] || { actual="$(hash_or_absent "$target")"; [[ "$actual" == "$new" ]] && manifest_state=new || { [[ "$actual" == "$old" || ( "$actual" == absent && "$(hash_or_absent "$backup")" == "$old" ) ]] && manifest_state=old; }; }; done
@@ -111,7 +128,8 @@ recover_transaction(){
  printf 'Host TCB v3 recovery completed: %s generation retained\n' "$manifest_state"
 }
 
-if [[ -e "$journal" ]]; then recover_transaction; [[ "$action" == recover ]] && exit 0; fi
+journal_kind="$(classify_entry "$journal")"
+if [[ "$journal_kind" != absent ]]; then [[ "$journal_kind" == regular ]] || { printf 'Unsafe TCB journal path\n' >&2; exit 78; }; recover_transaction; [[ "$action" == recover ]] && exit 0; fi
 [[ "$action" == activate ]] || { printf 'No durable TCB journal requires recovery\n' >&2; exit 1; }
 
 # Validate every staged byte and ABI before touching existing host directory attributes.
@@ -133,13 +151,13 @@ for candidate in "$etc"/trusted-deploy-v2.sha256*; do [[ "$candidate" == "$etc/t
 shopt -u nullglob
 legacy_old_hash=absent
 if [[ -e "$legacy_target" || -L "$legacy_target" ]]; then
- [[ -f "$legacy_target" && ! -L "$legacy_target" && "$(stat -c '%U:%G:%a:%h' "$legacy_target")" == root:root:440:1 ]] || { printf 'Unsafe legacy sudoers metadata\n' >&2; exit 1; }
+ [[ -f "$legacy_target" && ! -L "$legacy_target" && "$(stat -c '%U:%G:%a:%h' "$legacy_target")" == root:root:440:1 ]] || { printf 'Unsafe legacy sudoers metadata\n' >&2; exit 78; }
  legacy_old_hash="$(sha256sum "$legacy_target"|awk '{print $1}')"
  [[ "$legacy_old_hash" == "$legacy_approved_sha" ]] || { printf 'Unapproved legacy sudoers hash\n' >&2; exit 1; }
 fi
 legacy_v2_target="$etc/trusted-deploy-v2.sha256"
 if [[ -e "$legacy_v2_target" || -L "$legacy_v2_target" ]]; then
- [[ -f "$legacy_v2_target" && ! -L "$legacy_v2_target" && "$(stat -c '%U:%G:%a:%h' "$legacy_v2_target")" == root:root:644:1 ]] || { printf 'Unsafe legacy v2 manifest metadata\n' >&2; exit 1; }
+ [[ -f "$legacy_v2_target" && ! -L "$legacy_v2_target" && "$(stat -c '%U:%G:%a:%h' "$legacy_v2_target")" == root:root:644:1 ]] || { printf 'Unsafe legacy v2 manifest metadata\n' >&2; exit 78; }
  [[ "$(sha256sum "$legacy_v2_target"|awk '{print $1}')" == "$legacy_v2_manifest_sha" ]] || { printf 'Unapproved legacy v2 manifest hash\n' >&2; exit 1; }
 fi
 expected_sudoers="$(mktemp "${TMPDIR:-/tmp}/peilv-sudoers-expected.XXXXXX")"; trap 'rm -f -- "$expected_sudoers"' EXIT
@@ -151,16 +169,28 @@ visit(main);if(injected!==1)throw Error('new peilv sudoers is not included exact
 NODE
 chmod 440 "$expected_sudoers"; visudo -cf "$expected_sudoers" >/dev/null
 
-for name in "${install_names[@]}"; do target="${destinations[$name]}"; [[ ! -e "$target" ]] || [[ -f "$target" && ! -L "$target" && "$(stat -c '%U:%G:%a:%h' "$target")" == "root:root:${modes[$name]}:1" ]] || { printf 'Unsafe existing TCB object: %s\n' "$target" >&2; exit 1; }; done
+for name in "${install_names[@]}"; do target="${destinations[$name]}"; target_kind="$(classify_entry "$target")"; [[ "$target_kind" == absent ]] || [[ "$target_kind" == regular && "$(stat -c '%U:%G:%a:%h' "$target")" == "root:root:${modes[$name]}:1" ]] || { printf 'Unsafe existing TCB object: %s\n' "$target" >&2; exit 78; }; done
 for name in "${activation_names[@]}"; do target="${destinations[$name]}"; old_hash="$(hash_or_absent "$target")"; [[ "$old_hash" == absent || ( -n "${allowed_old[$name]:-}" && "$old_hash" == "${allowed_old[$name]}" ) ]] || { printf 'Unapproved existing TCB hash: %s\n' "$name" >&2; exit 1; }; done
 declare -a created_dirs=(); declare -a required_dirs=("$state_root|700" "$operation_root|700" "$result_root|700" "$evidence_root|700" "$sbin|755" "$libexec|755" "$etc|755" "$sudoers_dir|755")
-for item in "${required_dirs[@]}"; do IFS='|' read -r dir mode <<<"$item"; if [[ -e "$dir" ]]; then safe_existing_dir "$dir" "$mode" || { printf 'Unsafe existing directory: %s\n' "$dir" >&2; exit 1; }; else parent="$(dirname "$dir")"; [[ -d "$parent" && ! -L "$parent" ]] || { printf 'Missing trusted parent: %s\n' "$parent" >&2; exit 1; }; install -d -o root -g root -m "$mode" "$dir"; created_dirs+=("$dir"); sync_dir "$parent"; fi; done
+for item in "${required_dirs[@]}"; do
+ IFS='|' read -r dir mode <<<"$item"
+ if path_entry_exists "$dir"; then safe_existing_dir "$dir" "$mode" || { printf 'Unsafe existing directory: %s\n' "$dir" >&2; exit 78; }
+ else
+  parent="$(dirname "$dir")"
+  [[ "$(classify_entry "$parent")" == directory ]] || { printf 'Unsafe trusted parent: %s\n' "$parent" >&2; exit 78; }
+  install -d -o root -g root -m "$mode" "$dir"
+  created_dirs+=("$dir"); sync_dir "$parent"
+ fi
+done
 sync_dir "$stage"
 
 tx="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-records=(); for name in "${activation_names[@]}"; do target="${destinations[$name]}"; operation="${operations[$name]:-install}"; backup="$target.tcb-v3-old-$tx"; existed=0; [[ ! -e "$target" ]] || existed=1; [[ ! -e "$backup" ]] || { printf 'TCB backup path already exists\n' >&2; exit 1; }; [[ "$(stat -c %d "$(dirname "$target")")" == "$(stat -c %d "$(dirname "$backup")")" ]] || exit 1; new_hash=absent; [[ "$operation" == retire ]] || new_hash="$(hash_or_absent "$stage/$name")"; records+=("$name|$operation|$target|$backup|$(hash_or_absent "$target")|$new_hash|$existed"); done
+records=(); for name in "${activation_names[@]}"; do target="${destinations[$name]}"; operation="${operations[$name]:-install}"; backup="$target.tcb-v3-old-$tx"; temp="$target.next-v3-$tx"; existed=0; path_entry_exists "$target" && existed=1; require_absent "$backup" || exit 78; require_absent "$temp" || exit 78; [[ "$(stat -c %d "$(dirname "$target")")" == "$(stat -c %d "$(dirname "$backup")")" ]] || exit 1; new_hash=absent; [[ "$operation" == retire ]] || new_hash="$(hash_or_absent "$stage/$name")"; records+=("$name|$operation|$target|$backup|$(hash_or_absent "$target")|$new_hash|$existed"); done
+evidence="$evidence_root/$tx"; evidence_kind="$(classify_entry "$evidence")"; [[ "$evidence_kind" == absent || "$evidence_kind" == directory ]] || { printf 'Unsafe forensic evidence directory\n' >&2; exit 78; }
+for name in "${activation_names[@]}"; do require_absent "$evidence/$name.old" || exit 78; done
+require_absent "$evidence/bundle.json" || exit 78; require_absent "$evidence/bundle.json.next-$$" || exit 78
 sequence=1; write_journal prepared '' "$sequence"
-for row in "${records[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; temp="$target.next-v3-$tx"; if [[ "$operation" == install ]]; then install -o root -g root -m "${modes[$name]}" "$stage/$name" "$temp"; sync -f "$temp"; sync_dir "$(dirname "$temp")"; fi; [[ ! -e "$target" ]] || { mv -T "$target" "$backup"; sync_dir "$(dirname "$backup")"; }; [[ "${PEILV_TCB_FAIL_AFTER:-}" != "$name:backup" ]] || kill -KILL $$; if [[ "$operation" == install ]]; then mv -T "$temp" "$target"; sync_dir "$(dirname "$target")"; fi; sequence=$((sequence+1)); write_journal activating "$name" "$sequence"; [[ "${PEILV_TCB_FAIL_AFTER:-}" != "$name" ]] || kill -KILL $$; done
+for row in "${records[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; temp="$target.next-v3-$tx"; if [[ "$operation" == install ]]; then install -o root -g root -m "${modes[$name]}" "$stage/$name" "$temp"; sync -f "$temp"; sync_dir "$(dirname "$temp")"; fi; path_entry_exists "$target" && { mv -T "$target" "$backup"; sync_dir "$(dirname "$backup")"; }; [[ "${PEILV_TCB_FAIL_AFTER:-}" != "$name:backup" ]] || kill -KILL $$; if [[ "$operation" == install ]]; then mv -T "$temp" "$target"; sync_dir "$(dirname "$target")"; fi; sequence=$((sequence+1)); write_journal activating "$name" "$sequence"; [[ "${PEILV_TCB_FAIL_AFTER:-}" != "$name" ]] || kill -KILL $$; done
 for row in "${records[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; [[ "$(hash_or_absent "$target")" == "$new" ]] || { printf 'Activated TCB verification failed\n' >&2; exit 78; }; done
 seal_evidence new
 for row in "${records[@]}"; do IFS='|' read -r name operation target backup old new existed <<<"$row"; rm -f -- "$backup"; sync_dir "$(dirname "$backup")"; done
