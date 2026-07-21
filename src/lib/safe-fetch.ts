@@ -5,7 +5,18 @@ import { Readable } from "node:stream";
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
-const REQUEST_TIMEOUT_MS = 15_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const LLM_REQUEST_TIMEOUT_MS = 90_000;
+const SEARCH_REQUEST_TIMEOUT_MS = 12_000;
+
+function requestTimeoutMs(kind: OutboundUrlKind): number {
+  if (kind === "llm") {
+    const raw = Number(process.env.LLM_OUTBOUND_TIMEOUT_MS || process.env.LLM_TIMEOUT_MS || LLM_REQUEST_TIMEOUT_MS);
+    return Number.isFinite(raw) && raw >= 5_000 && raw <= 180_000 ? Math.floor(raw) : LLM_REQUEST_TIMEOUT_MS;
+  }
+  if (kind === "search") return SEARCH_REQUEST_TIMEOUT_MS;
+  return DEFAULT_REQUEST_TIMEOUT_MS;
+}
 
 export type OutboundUrlKind = "fetch-url" | "llm" | "search" | "feishu";
 type ResolvedAddress = { address: string; family: 4 | 6 };
@@ -138,7 +149,7 @@ export async function resolveSafeAddresses(url: URL, kind: OutboundUrlKind, reso
   return addresses;
 }
 
-async function pinnedHttpsRequest(url: URL, init: RequestInit, addresses: ResolvedAddress[]): Promise<Response> {
+async function pinnedHttpsRequest(url: URL, init: RequestInit, addresses: ResolvedAddress[], timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): Promise<Response> {
   const pinned = addresses[0];
   if (!pinned?.address || net.isIP(pinned.address) === 0) {
     throw new Error(`目标 DNS 解析结果无效: ${String(pinned?.address)}`);
@@ -178,7 +189,7 @@ async function pinnedHttpsRequest(url: URL, init: RequestInit, addresses: Resolv
         headers: responseHeaders,
       }));
     });
-    request.setTimeout(REQUEST_TIMEOUT_MS, () => request.destroy(new Error("出站请求超时")));
+    request.setTimeout(timeoutMs, () => request.destroy(new Error(`出站请求超时(${timeoutMs}ms)`)));
     request.on("error", reject);
     if (body !== undefined && body !== null) request.write(body);
     request.end();
@@ -187,7 +198,7 @@ async function pinnedHttpsRequest(url: URL, init: RequestInit, addresses: Resolv
 
 export interface SafeOutboundFetchDependencies {
   resolver?: Resolver;
-  transport?: (url: URL, init: RequestInit, addresses: ResolvedAddress[]) => Promise<Response>;
+  transport?: (url: URL, init: RequestInit, addresses: ResolvedAddress[], timeoutMs: number) => Promise<Response>;
 }
 
 export async function safeOutboundFetch(
@@ -200,7 +211,10 @@ export async function safeOutboundFetch(
   let currentInit = { ...init, redirect: "manual" as const };
   for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect++) {
     const addresses = await resolveSafeAddresses(current, kind, dependencies.resolver);
-    const response = await (dependencies.transport ?? pinnedHttpsRequest)(current, currentInit, addresses);
+    const timeoutMs = requestTimeoutMs(kind);
+    const response = await (dependencies.transport
+      ? dependencies.transport(current, currentInit, addresses, timeoutMs)
+      : pinnedHttpsRequest(current, currentInit, addresses, timeoutMs));
     const target = resolveRedirect(current, response.status, response.headers.get("location"), redirect);
     if (!target) {
       Object.defineProperty(response, "url", { configurable: true, value: current.toString() });
