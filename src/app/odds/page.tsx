@@ -1195,7 +1195,7 @@ export default function OddsMonitorPage() {
       expand: setAnalysisExpanded,
       skipped: () => toast.info("已有最新分析结果", { id: toastId, description: "无需重复分析" }),
       success: result => {
-        const strategyText = String((result as any)?.llmPrediction?.strategy || (result as any)?.strategy || "");
+        const strategyText = String((result as { llmPrediction?: { strategy?: string }; strategy?: string }).llmPrediction?.strategy || (result as { strategy?: string }).strategy || "");
         if (strategyText.includes("规则引擎兜底") || strategyText.includes("LLM调用失败")) {
           toast.warning("规则引擎已出结果（LLM 超时/失败，可重试）", {
             id: toastId,
