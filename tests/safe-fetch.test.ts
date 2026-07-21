@@ -167,4 +167,27 @@ describe("redirect policy", () => {
     })).resolves.toBeInstanceOf(Response);
     expect(transport).toHaveBeenCalledTimes(1);
   });
+
+  it("uses pinned IP connection without custom lookup callbacks", async () => {
+    process.env.ADMIN_OUTBOUND_ALLOWED_HOSTS = "aigpbt.top";
+    const response = await safeOutboundFetch(
+      "https://aigpbt.top/v1/models",
+      { method: "GET", headers: { "User-Agent": "peilv-test" } },
+      "llm",
+      {
+        resolver: async () => [{ address: "1.1.1.1", family: 4 }],
+        transport: async (url, _init, addresses) => {
+          expect(addresses[0]?.address).toBe("1.1.1.1");
+          expect(addresses[0]?.family).toBe(4);
+          return new Response(JSON.stringify({ ok: true, host: url.hostname }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ host: "aigpbt.top" });
+  });
+
 });

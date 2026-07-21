@@ -1,6 +1,6 @@
 import dns from "node:dns/promises";
 import https from "node:https";
-import net, { type LookupFunction } from "node:net";
+import net from "node:net";
 import { Readable } from "node:stream";
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -140,18 +140,31 @@ export async function resolveSafeAddresses(url: URL, kind: OutboundUrlKind, reso
 
 async function pinnedHttpsRequest(url: URL, init: RequestInit, addresses: ResolvedAddress[]): Promise<Response> {
   const pinned = addresses[0];
-  const lookup = ((_hostname, _options, callback) => callback(null, pinned.address, pinned.family)) as LookupFunction;
+  if (!pinned?.address || net.isIP(pinned.address) === 0) {
+    throw new Error(`目标 DNS 解析结果无效: ${String(pinned?.address)}`);
+  }
   const headers = new Headers(init.headers);
+  // Keep original hostname for virtual-hosted HTTPS endpoints.
+  if (!headers.has("host") && !headers.has("Host")) headers.set("Host", url.host);
   const body = init.body;
   if (body !== undefined && body !== null && typeof body !== "string" && !(body instanceof Uint8Array)) {
     throw new Error("安全出站请求仅支持可重放请求体");
   }
 
+  // Connect directly to the validated public IP and keep SNI/servername as the
+  // original hostname. Avoid custom dns.LookupFunction callbacks: Node may call
+  // them with options.all=true, which makes callback(null, ip, family) turn into
+  // "Invalid IP address: undefined".
   return new Promise<Response>((resolve, reject) => {
-    const request = https.request(url, {
+    const request = https.request({
+      protocol: "https:",
+      host: pinned.address,
+      servername: url.hostname,
+      port: url.port || 443,
+      path: `${url.pathname}${url.search}`,
       method: init.method || "GET",
       headers: Object.fromEntries(headers.entries()),
-      agent: new https.Agent({ lookup }),
+      family: pinned.family,
       signal: init.signal || undefined,
     }, response => {
       const responseHeaders = new Headers();
