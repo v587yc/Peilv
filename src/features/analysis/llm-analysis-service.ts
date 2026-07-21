@@ -98,7 +98,7 @@ export function createLlmAnalyzer(invoke: LlmInvoke, logError: (message: string)
       if (error instanceof SyntaxError) return fallback(request, indicators, "LLM返回格式异常，使用规则引擎兜底");
       const message = error instanceof Error ? error.message : "LLM调用失败";
       logError(`[Analysis] LLM error: ${message}`);
-      return fallback(request, indicators, `LLM调用失败(${message.slice(0, 30)})，规则引擎兜底`);
+      return fallback(request, indicators, `LLM调用失败(${message.slice(0, 120)})，规则引擎兜底`);
     }
   };
 }

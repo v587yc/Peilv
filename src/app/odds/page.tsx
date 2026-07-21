@@ -1194,10 +1194,21 @@ export default function OddsMonitorPage() {
       }),
       expand: setAnalysisExpanded,
       skipped: () => toast.info("已有最新分析结果", { id: toastId, description: "无需重复分析" }),
-      success: result => toast.success("AI 分析完成", {
-        id: toastId,
-        description: `${result.homeTeam} vs ${result.awayTeam} · ${formatAnalysisTime(result.analyzedAt)}`,
-      }),
+      success: result => {
+        const strategyText = String((result as any)?.llmPrediction?.strategy || (result as any)?.strategy || "");
+        if (strategyText.includes("规则引擎兜底") || strategyText.includes("LLM调用失败")) {
+          toast.warning("规则引擎已出结果（LLM 超时/失败，可重试）", {
+            id: toastId,
+            description: `${result.homeTeam} vs ${result.awayTeam} · ${formatAnalysisTime(result.analyzedAt)}`,
+            duration: 8000,
+          });
+        } else {
+          toast.success("AI 分析完成", {
+            id: toastId,
+            description: `${result.homeTeam} vs ${result.awayTeam} · ${formatAnalysisTime(result.analyzedAt)}`,
+          });
+        }
+      },
       error: error => {
         const message = error instanceof Error ? error.message : "AI分析失败";
         toast.error("AI 分析失败", { id: toastId, description: `${message}。可稍后重新点击 AI 分析。`, duration: 8000 });

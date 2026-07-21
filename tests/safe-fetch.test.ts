@@ -190,4 +190,42 @@ describe("redirect policy", () => {
     await expect(response.json()).resolves.toMatchObject({ host: "aigpbt.top" });
   });
 
+
+  it("uses longer timeout for llm outbound requests", async () => {
+    process.env.ADMIN_OUTBOUND_ALLOWED_HOSTS = "aigpbt.top";
+    process.env.LLM_OUTBOUND_TIMEOUT_MS = "90000";
+    let seenTimeout = 0;
+    await safeOutboundFetch(
+      "https://aigpbt.top/v1/chat/completions",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      "llm",
+      {
+        resolver: async () => [{ address: "1.1.1.1", family: 4 }],
+        transport: async (_url, _init, _addresses, timeoutMs) => {
+          seenTimeout = timeoutMs;
+          return new Response("{}", { status: 200 });
+        },
+      },
+    );
+    expect(seenTimeout).toBe(90000);
+  });
+
+  it("uses shorter timeout for search outbound requests", async () => {
+    process.env.ADMIN_OUTBOUND_ALLOWED_HOSTS = "aigpbt.top";
+    let seenTimeout = 0;
+    await safeOutboundFetch(
+      "https://aigpbt.top/search",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      "search",
+      {
+        resolver: async () => [{ address: "1.1.1.1", family: 4 }],
+        transport: async (_url, _init, _addresses, timeoutMs) => {
+          seenTimeout = timeoutMs;
+          return new Response("{}", { status: 200 });
+        },
+      },
+    );
+    expect(seenTimeout).toBe(12_000);
+  });
+
 });

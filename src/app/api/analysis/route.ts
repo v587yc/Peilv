@@ -16,6 +16,9 @@ import { isInternalRequest } from "@/lib/internal-auth";
 import { upsertMatchT30Task } from "@/lib/automation/match-t30-task";
 import { SupabaseAutomationRepository } from "@/lib/automation/repository";
 
+export const maxDuration = 120;
+export const dynamic = "force-dynamic";
+
 export async function POST(request: NextRequest) {
   if (isInternalRequest(request)) {
     return NextResponse.json({ success: false, error: "内部任务无权访问此接口" }, { status: 403 });
