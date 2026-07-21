@@ -99,37 +99,95 @@ async function loadLLMConfig(): Promise<LLMConfig> {
 }
 
 /**
- * Non-streaming LLM call
+ * AI analysis LLM retry policy (product requirement):
+ * - Total attempts = 1 initial + 3 retries = 4
+ * - Retry network/timeout/5xx AND 4xx business errors (400/401/403/404/422/429...)
+ * - Config errors from loadLLMConfig() still fail immediately (no empty key thrash)
+ */
+export const LLM_MAX_RETRIES = 3;
+export const LLM_MAX_ATTEMPTS = 1 + LLM_MAX_RETRIES;
+const LLM_RETRY_BASE_DELAY_MS = 500;
+const LLM_RETRY_MAX_DELAY_MS = 3000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(failedAttempt: number): number {
+  // failedAttempt is 1-based count of failures so far
+  return Math.min(LLM_RETRY_MAX_DELAY_MS, LLM_RETRY_BASE_DELAY_MS * (2 ** (failedAttempt - 1)));
+}
+
+function isConfigOnlyLLMError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  // Only block retries for local configuration problems, not upstream 4xx.
+  return /API Key 未配置|LLM API Key|Base URL 无效|未配置。请在 \/test-ai/i.test(message);
+}
+
+/**
+ * Non-streaming LLM call with automatic retries.
+ * Retries up to LLM_MAX_RETRIES times on network errors, empty content, and all HTTP 4xx/5xx.
  */
 export async function llmInvoke(
   messages: ChatMessage[],
   options?: LLMOptions
 ): Promise<LLMResponse> {
   const { apiKey, baseUrl, model } = await loadLLMConfig();
+  let lastError: unknown;
 
-  const res = await safeOutboundFetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: options?.model || model,
-      messages,
-      temperature: options?.temperature ?? 0.3,
-      ...(options?.max_tokens ? { max_tokens: options.max_tokens } : {}),
-    }),
-  }, "llm");
+  for (let attempt = 1; attempt <= LLM_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await safeOutboundFetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: options?.model || model,
+          messages,
+          temperature: options?.temperature ?? 0.3,
+          ...(options?.max_tokens ? { max_tokens: options.max_tokens } : {}),
+        }),
+      }, "llm");
 
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => "");
-    throw new Error(`LLM API error ${res.status}: ${errBody}`);
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        throw new Error(`LLM API error ${res.status}: ${errBody}`);
+      }
+
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content || "";
+      if (!String(content).trim()) {
+        throw new Error("LLM API error 503: empty content");
+      }
+
+      if (attempt > 1) {
+        console.warn(`[LLM] invoke succeeded on attempt ${attempt}/${LLM_MAX_ATTEMPTS}`);
+      }
+      return { content };
+    } catch (error) {
+      lastError = error;
+      // Local config errors: fail fast (do not burn retries).
+      if (isConfigOnlyLLMError(error)) throw error;
+
+      if (attempt >= LLM_MAX_ATTEMPTS) {
+        if (error instanceof Error) {
+          error.message = `${error.message}（已重试${LLM_MAX_RETRIES}次）`;
+        }
+        throw error;
+      }
+
+      const delay = retryDelayMs(attempt);
+      console.warn(
+        `[LLM] invoke failed (attempt ${attempt}/${LLM_MAX_ATTEMPTS}), retry in ${delay}ms:`,
+        error instanceof Error ? error.message : error,
+      );
+      await sleep(delay);
+    }
   }
 
-  const data = await res.json();
-  const content = data.choices?.[0]?.message?.content || "";
-
-  return { content };
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || "LLM failed"));
 }
 
 /**
