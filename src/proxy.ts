@@ -109,11 +109,23 @@ export async function proxy(request: NextRequest, event: NextFetchEvent): Promis
       const login = request.nextUrl.clone();
       const isProduction = process.env.NODE_ENV === "production";
       const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-      const requestHost = isProduction ? forwardedHost : request.headers.get("host");
-      if (requestHost) login.host = requestHost;
-      if (isProduction && forwardedHost) {
+      const requestHostHeader = isProduction
+        ? (forwardedHost || request.headers.get("host") || "")
+        : (request.headers.get("host") || "");
+      // Never leak the internal app port (e.g. :5000) into public redirects.
+      const requestHost = requestHostHeader.split(",")[0]?.trim() || "";
+      const hostname = requestHost.replace(/:\d+$/, "");
+      if (hostname) {
+        login.hostname = hostname;
+        login.port = "";
+      }
+      if (isProduction) {
         const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-        if (forwardedProto === "http" || forwardedProto === "https") login.protocol = `${forwardedProto}:`;
+        if (forwardedProto === "http" || forwardedProto === "https") {
+          login.protocol = `${forwardedProto}:`;
+        } else {
+          login.protocol = "https:";
+        }
       }
       login.pathname = "/login";
       login.search = "";
