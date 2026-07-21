@@ -137,4 +137,16 @@ describe("odds analysis client", () => {
     await expect(requestVerification(fetcher, "20260714")).rejects.toThrow("自动验证失败");
     await expect(requestLearning(fetcher, "handicap")).rejects.toThrow("学习失败");
   });
+
+  it("empty non-json analysis response includes HTTP status", async () => {
+    const input = {
+      match: { id: "m1", homeTeam: "Home", awayTeam: "Away", league: "L", time: "19:30" },
+      matchDate: "20260714",
+      scheduleMode: "today" as const,
+      companies: [],
+    };
+    await expect(requestAnalysis(async () => new Response("", { status: 504 }), input))
+      .rejects.toThrow(/HTTP 504/);
+  });
+
 });

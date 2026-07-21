@@ -62,10 +62,16 @@ export interface EvolutionStats {
 export type AnalysisList = Record<string, AnalysisResultData>;
 
 async function json(response: Response, malformed: string): Promise<Record<string, unknown>> {
+  const contentType = response.headers.get("content-type") || "";
+  const raw = await response.text();
+  if (!raw.trim()) {
+    throw new Error(`${malformed}（HTTP ${response.status}，空响应${contentType ? `，${contentType}` : ""}）`);
+  }
   try {
-    return await response.json() as Record<string, unknown>;
+    return JSON.parse(raw) as Record<string, unknown>;
   } catch {
-    throw new Error(malformed);
+    const snippet = raw.replace(/\s+/g, " ").slice(0, 180);
+    throw new Error(`${malformed}（HTTP ${response.status}${contentType ? `，${contentType}` : ""}：${snippet}）`);
   }
 }
 
