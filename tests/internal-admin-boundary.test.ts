@@ -116,7 +116,7 @@ describe("internal actor/admin capability boundary", () => {
     vi.stubEnv("NODE_ENV", "production");
     const proxied = new NextRequest("http://127.0.0.1:5000/admin/backtests", { headers: { "x-test-identity": "anonymous", "x-forwarded-host": "odds.example.com", "x-forwarded-proto": "https" } });
     const proxiedResponse = await proxy(proxied, event);
-    expect(proxiedResponse.headers.get("location")).toBe("https://odds.example.com:5000/login?next=%2Fadmin%2Fbacktests");
+    expect(proxiedResponse.headers.get("location")).toBe("https://odds.example.com/login?next=%2Fadmin%2Fbacktests");
     vi.unstubAllEnvs();
   });
 

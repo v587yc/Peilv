@@ -108,12 +108,24 @@ export async function proxy(request: NextRequest, event: NextFetchEvent): Promis
       }
       const login = request.nextUrl.clone();
       const isProduction = process.env.NODE_ENV === "production";
-      const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-      const requestHost = isProduction ? forwardedHost : request.headers.get("host");
-      if (requestHost) login.host = requestHost;
-      if (isProduction && forwardedHost) {
+      const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || "";
+      const rawHost = (isProduction
+        ? (forwardedHost || request.headers.get("host") || "")
+        : (request.headers.get("host") || "")
+      ).split(",")[0]?.trim() || "";
+      if (rawHost) {
+        const [hostname, port] = rawHost.split(":");
+        if (hostname) {
+          login.hostname = hostname;
+          // Strip only the internal app port used behind OpenResty.
+          // Preserve local e2e/dev ports such as 3100.
+          login.port = port && port !== "5000" ? port : "";
+        }
+      }
+      if (isProduction) {
         const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
         if (forwardedProto === "http" || forwardedProto === "https") login.protocol = `${forwardedProto}:`;
+        else login.protocol = "https:";
       }
       login.pathname = "/login";
       login.search = "";
