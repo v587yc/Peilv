@@ -97,4 +97,11 @@ describe("Host TCB v3 six-runtime exact-set",()=>{
     expect(bootstrap).toContain("legacy_policy_sha='c22dce014c093f4490e879909b1384ce62e223867d892586483f985ba8824938'");
   });
 
+
+  it("accepts secure deployment ledger directory modes", async () => {
+    const ledger = await readFile("scripts/deploy-operation-ledger.mjs", "utf8");
+    expect(ledger).toContain("safeDeploymentStat");
+    expect(ledger).toContain("[0o700,0o750,0o755]");
+  });
+
 });
