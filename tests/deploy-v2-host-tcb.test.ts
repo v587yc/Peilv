@@ -75,4 +75,12 @@ describe("Host TCB v3 six-runtime exact-set",()=>{
     expect(bootstrap).not.toContain("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
   });
 
+
+  it("accepts secure sudoers.d directory modes", async () => {
+    const bootstrap = await readFile("infra/deploy/bootstrap-deploy-v3.sh", "utf8");
+    expect(bootstrap).toContain('*/sudoers.d:755)');
+    expect(bootstrap).toContain('mode_actual" == "750"');
+    expect(bootstrap).toContain('mode_actual" == "700"');
+  });
+
 });
