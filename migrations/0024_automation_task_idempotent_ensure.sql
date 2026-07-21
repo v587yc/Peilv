@@ -113,7 +113,15 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.ensure_automation_task(JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ensure_automation_task(JSONB) FROM PUBLIC;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON FUNCTION public.ensure_automation_task(JSONB) FROM anon;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON FUNCTION public.ensure_automation_task(JSONB) FROM authenticated;
+  END IF;
+END $$;
 GRANT EXECUTE ON FUNCTION public.ensure_automation_task(JSONB) TO service_role;
 ALTER FUNCTION public.ensure_automation_task(JSONB) OWNER TO automation_task_owner;
 GRANT SELECT, INSERT ON public.automation_tasks TO automation_task_owner;
