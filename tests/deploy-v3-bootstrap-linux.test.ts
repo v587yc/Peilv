@@ -446,4 +446,22 @@ describe("deploy v3 legacy sudoers retirement transaction", () => {
     expect(await privilegedTreeSnapshot(f.root, f.state)).toEqual(stateBefore);
     expect(await transactionArtifactSnapshot(f.root)).toEqual(artifactsBefore);
   }, 90_000);
+
+  it("activates from production mixed baseline fixtures", async () => {
+    const f = await fixture();
+    const mixed = {
+      "peilv-control": "tests/fixtures/prod-mixed-baseline/peilv-control",
+      "production-preflight.sh": "tests/fixtures/prod-mixed-baseline/production-preflight.sh",
+      "deploy-production.sh": "tests/fixtures/prod-mixed-baseline/deploy-production.sh",
+      "rollback-production.sh": "tests/fixtures/prod-mixed-baseline/rollback-production.sh",
+    } as const;
+    for (const [name, source] of Object.entries(mixed)) {
+      const content = (await readFile(source)).toString("utf8");
+      await privilegedWrite(f.root, f.destinations[name], content, modes[name]);
+    }
+    await expect(f.run()).resolves.toMatchObject({ stdout: expect.stringContaining("legacy sudoers retired") });
+    for (const name of installNames) expect(await f.readTrusted(f.destinations[name])).toBe(await f.readTrusted(path.join(f.stage, name)));
+    expect(await f.absent(f.destinations[legacyName])).toBe(true);
+  }, 90_000);
+
 });
