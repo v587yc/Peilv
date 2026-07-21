@@ -24,7 +24,7 @@ export function parseMigrationPlan(text) {
 
 export async function buildLockedMigrationSql({ migrationsDirectory, planText }) {
   const rows = parseMigrationPlan(planText);
-  const declared = rows.flatMap(row => row.file === "0001_production_baseline.sql" ? [row.version, "0001_canonical_baseline"] : [row.version]);
+  const declared = rows.map(row => row.version);
   const blocks = [];
   for (const row of rows) {
     const sql = await readFile(path.join(migrationsDirectory, row.file), "utf8");
@@ -55,10 +55,9 @@ SELECT pg_try_advisory_lock(${STRATEGY_LAB_MIGRATION_LOCK_KEY}) AS migration_loc
 \\endif
 CREATE TEMP TABLE migration_expected(version text PRIMARY KEY) ON COMMIT PRESERVE ROWS;
 INSERT INTO migration_expected(version) VALUES ${expectedValues};
-DO $$ BEGIN IF EXISTS(SELECT 1 FROM schema_migrations WHERE version='0001_canonical_baseline') THEN UPDATE migration_expected SET version='0001_canonical_baseline' WHERE version='0001_production_baseline'; END IF; END $$;
-DO $$ BEGIN IF EXISTS(SELECT 1 FROM schema_migrations m WHERE NOT EXISTS(SELECT 1 FROM migration_expected e WHERE e.version=m.version)) THEN RAISE EXCEPTION 'migration ledger contains unknown version'; END IF; END $$;
+DO $$ BEGIN IF EXISTS(SELECT 1 FROM schema_migrations m WHERE NOT EXISTS(SELECT 1 FROM migration_expected e WHERE e.version=m.version OR (m.version='0001_canonical_baseline' AND e.version='0001_production_baseline') OR (m.version='0001_production_baseline' AND e.version='0001_canonical_baseline'))) THEN RAISE EXCEPTION 'migration ledger contains unknown version'; END IF; END $$;
 ${blocks.join("\n")}
-DO $$ BEGIN IF EXISTS(SELECT version FROM (VALUES ${rows.map(row => `(${literal(row.version)})`).join(",")}) expected(version) WHERE NOT EXISTS(SELECT 1 FROM schema_migrations m WHERE m.version=expected.version)) THEN RAISE EXCEPTION 'migration plan incomplete'; END IF; END $$;
+DO $$ BEGIN IF EXISTS(SELECT version FROM (VALUES ${rows.map(row => `(${literal(row.version)})`).join(",")}) expected(version) WHERE NOT EXISTS(SELECT 1 FROM schema_migrations m WHERE m.version=expected.version OR (expected.version='0001_production_baseline' AND m.version='0001_canonical_baseline') OR (expected.version='0001_canonical_baseline' AND m.version='0001_production_baseline'))) THEN RAISE EXCEPTION 'migration plan incomplete'; END IF; END $$;
 SELECT pg_advisory_unlock(${STRATEGY_LAB_MIGRATION_LOCK_KEY}) AS migration_lock_released \\gset
 \\if :migration_lock_released
 \\else
