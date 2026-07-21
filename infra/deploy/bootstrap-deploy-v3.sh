@@ -15,7 +15,7 @@ sbin="${PEILV_TCB_SBIN:-/usr/local/sbin}"; libexec="${PEILV_TCB_LIBEXEC:-/usr/lo
 etc="${PEILV_TCB_ETC:-/etc/peilv}"; sudoers_dir="${PEILV_TCB_SUDOERS:-/etc/sudoers.d}"
 state_root="${PEILV_TCB_STATE_ROOT:-/var/lib/peilv}"; operation_root="$state_root/deploy-operations"; result_root="$state_root/deploy-results"; evidence_root="$state_root/tcb-forensics"
 journal="$state_root/tcb-v3-activation.json"; manifest_name=trusted-host-tcb-v3.sha256; legacy_policy_name=legacy-sudoers-retirement-v1.sha256
-manifest_sha='37c749713f7b35c434a63f6850930e652474bd76a7d80a604cb0651dec8e3cd9'; sudoers_sha='1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833'
+manifest_sha='6c631fc4a9c1edd8471c1f96673359820c7a1a70008c812d519239c2871f4de4'; sudoers_sha='1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833'
 legacy_policy_sha='c22dce014c093f4490e879909b1384ce62e223867d892586483f985ba8824938'; legacy_approved_sha='e7e825d0c9a81c9514eb42aef12a56ad8c41729cfc9aa6f9fbaf345e9488b35a'; legacy_declared_target='/etc/sudoers.d/peilv-deploy'
 legacy_v2_manifest_sha='e9c0380879cd8485644f4075cb1e000c60dab3c997120109d1ee5e6d9cf6099e'; legacy_v2_declared_target='/etc/peilv/trusted-deploy-v2.sha256'
 sudoers_main="${PEILV_TCB_SUDOERS_MAIN:-/etc/sudoers}"; legacy_target="$sudoers_dir/peilv-deploy"
