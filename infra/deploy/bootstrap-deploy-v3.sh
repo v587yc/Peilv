@@ -41,7 +41,7 @@ declare -A allowed_old=(
  [peilv-control]="9e3224216f45c69f8c53990c09e6e12db5ea7b79e5116936f1eac1943db9b827 5d4e408f2e72550cb783add81a892643613aacea91596853c6bed79bb048ec95 f92dfea3711d50d64e0fa70c15ffa94c994bd998fbeee9045004a0c6e6140f1c"
  [peilv-sudoers]="1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833"
  [$manifest_name]="37c749713f7b35c434a63f6850930e652474bd76a7d80a604cb0651dec8e3cd9 bb73c2d965c6fa8f3d62a57ed50597a493ce18da226e544f4a42790e5ae4d943 6c631fc4a9c1edd8471c1f96673359820c7a1a70008c812d519239c2871f4de4"
- [legacy-sudoers-retirement]="$legacy_approved_sha" [legacy-v2-manifest-retirement]="$legacy_v2_manifest_sha")
+ [legacy-sudoers-retirement]="$legacy_approved_sha" [legacy-v2-manifest-retirement]="$legacy_v2_manifest_sha" [$legacy_policy_name]="$legacy_policy_sha")
 is_allowed_old(){
   local name="$1"
   local hash="$2"
