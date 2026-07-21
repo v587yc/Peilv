@@ -62,7 +62,25 @@ classify_entry(){
 }
 require_absent(){ local kind; kind="$(classify_entry "$1")"; [[ "$kind" == absent ]] || { printf 'Unsafe occupied path (%s): %s\n' "$kind" "$1" >&2; return 78; }; }
 hash_or_absent(){ local kind; kind="$(classify_entry "$1")"; if [[ "$kind" == absent ]]; then printf absent; elif [[ "$kind" == regular ]]; then sha256sum "$1"|awk '{print $1}'; else printf 'Unsafe non-regular path (%s): %s\n' "$kind" "$1" >&2; return 78; fi; }
-safe_existing_dir(){ local p="$1" mode="$2"; [[ "$(classify_entry "$p")" == directory && "$(stat -c '%U:%G:%a' "$p")" == "root:root:$mode" ]]; }
+safe_existing_dir(){
+  local p="$1" mode="$2" actual owner mode_actual
+  [[ "$(classify_entry "$p")" == directory ]] || return 1
+  owner="$(stat -c '%U:%G' "$p")"
+  mode_actual="$(stat -c '%a' "$p")"
+  [[ "$owner" == "root:root" ]] || return 1
+  # Accept exact expected mode, plus common secure alternatives for system dirs.
+  if [[ "$mode_actual" == "$mode" ]]; then return 0; fi
+  case "$p:$mode" in
+    */sudoers.d:755)
+      # Debian/Ubuntu default for /etc/sudoers.d is often 750.
+      [[ "$mode_actual" == "750" || "$mode_actual" == "700" ]] && return 0
+      ;;
+    */peilv:755)
+      [[ "$mode_actual" == "750" || "$mode_actual" == "700" ]] && return 0
+      ;;
+  esac
+  return 1
+}
 existing_parent(){ local p="$1" kind; while true; do kind="$(classify_entry "$p")"; if [[ "$kind" == absent ]]; then p="$(dirname "$p")"; elif [[ "$kind" == directory ]]; then printf '%s\n' "$p"; return; else return 1; fi; done; }
 write_journal(){
  local phase="$1" active="$2" sequence="$3"
