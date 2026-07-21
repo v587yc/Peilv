@@ -369,7 +369,7 @@ if [[ "$original_app_state" == "active" ]]; then
 fi
 if [[ "$original_reconcile_timer_state" == "active" ]]; then systemctl start peilv-reconcile.service; [[ "$(systemctl show peilv-reconcile.service -p Result --value)" == "success" ]]; systemctl start peilv-reconcile.timer; fi
 if [[ "$original_dispatch_timer_state" == "active" ]]; then systemctl start peilv-dispatch.service; [[ "$(systemctl show peilv-dispatch.service -p Result --value)" == "success" ]]; systemctl start peilv-dispatch.timer; fi
-"$operation_ledger" append-deployment-event "$base" rollback "$target_release_id" "$current_id" "$request_id"
+"$operation_ledger" append-deployment-event /var/lib/peilv rollback "$target_release_id" "$current_id" "$request_id"
 rm -f "$transaction_state"
 [[ -z "$openresty_backup" ]] || rm -f "$openresty_backup"
 rm -f "$rendered_openresty"

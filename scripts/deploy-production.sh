@@ -848,7 +848,7 @@ run_oneshot_and_wait peilv-reconcile.service
 run_oneshot_and_wait peilv-dispatch.service
 restore_unit_state peilv-reconcile.timer "$original_reconcile_timer_state"
 restore_unit_state peilv-dispatch.timer "$original_dispatch_timer_state"
-"$operation_ledger" append-deployment-event "$base" deploy "$release_id" "$old_release_id" "$request_id"
+"$operation_ledger" append-deployment-event /var/lib/peilv deploy "$release_id" "$old_release_id" "$request_id"
 rm -f "$transaction_state"
 node -e 'const fs=require("node:fs");const fd=fs.openSync("/var/lib/peilv","r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}'
 [[ -z "$openresty_backup" ]] || rm -f "$openresty_backup"
