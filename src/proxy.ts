@@ -117,9 +117,9 @@ export async function proxy(request: NextRequest, event: NextFetchEvent): Promis
         const [hostname, port] = rawHost.split(":");
         if (hostname) {
           login.hostname = hostname;
-          // Keep explicit local ports in non-production; never publish internal :5000 in production.
-          if (!isProduction && port) login.port = port;
-          else login.port = "";
+          // Strip only the internal app port used behind OpenResty.
+          // Preserve local e2e/dev ports such as 3100.
+          login.port = port && port !== "5000" ? port : "";
         }
       }
       if (isProduction) {
