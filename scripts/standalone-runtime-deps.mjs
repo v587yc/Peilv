@@ -163,12 +163,34 @@ function packageJsonFrom(requireFrom, name) {
   return real;
 }
 
+function freshStandaloneRequire() {
+  return createRequire(path.join(standalone, "server.js"));
+}
+
 function standaloneHas(name) {
   try {
-    return inside(path.resolve(standaloneRequire.resolve(`${name}/package.json`)), standalone);
+    return inside(path.resolve(freshStandaloneRequire().resolve(`${name}/package.json`)), standalone);
   } catch (error) {
     if (error?.code === "MODULE_NOT_FOUND" || error?.code === "ERR_PACKAGE_PATH_NOT_EXPORTED") return false;
     throw error;
+  }
+}
+
+function standalonePackageComplete(name) {
+  if (!standaloneHas(name)) return false;
+  if (name !== "@swc/helpers") return true;
+  try {
+    // Use an isolated process so package.json export maps cannot stay stale after rematerialization.
+    execFileSync(process.execPath, ["-e", `
+      const path = require("node:path");
+      const runtimeRequire = require("node:module").createRequire(path.join(process.argv[1], "server.js"));
+      const resolved = runtimeRequire.resolve("@swc/helpers/_/_interop_require_default");
+      if (!(path.resolve(resolved) === path.resolve(process.argv[1]) || path.resolve(resolved).startsWith(path.resolve(process.argv[1]) + path.sep))) process.exit(2);
+      runtimeRequire("@swc/helpers/_/_interop_require_default");
+    `, standalone], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -176,28 +198,52 @@ function destinationFor(name) {
   return path.join(standalone, "node_modules", ...name.split("/"));
 }
 
+function materializePackage(name, requireFrom) {
+  const sourcePackageJson = packageJsonFrom(requireFrom, name);
+  const sourcePackage = path.dirname(sourcePackageJson);
+  const destination = destinationFor(name);
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.mkdirSync(destination, { recursive: true });
+  execFileSync(process.execPath, [materializer, sourcePackage, destination, workspaceReal], { stdio: "inherit" });
+  return sourcePackageJson;
+}
+
 const queue = runtimeRoots.map(name => ({ name, requireFrom: name === "styled-jsx" ? nextRequire : workspaceRequire }));
 const visited = new Set();
 while (queue.length) {
   const { name, requireFrom } = queue.shift();
+  if (visited.has(name)) continue;
+  visited.add(name);
   const sourcePackageJson = packageJsonFrom(requireFrom, name);
-  const sourcePackage = path.dirname(sourcePackageJson);
-  const key = name;
-  if (visited.has(key)) continue;
-  visited.add(key);
-  if (standaloneHas(name)) continue;
+  // Always walk dependencies, even when Next already placed a partial package into standalone.
+  if (!standalonePackageComplete(name)) {
+    materializePackage(name, requireFrom);
+  }
   const metadata = JSON.parse(fs.readFileSync(sourcePackageJson, "utf8"));
-  const destination = destinationFor(name);
-  fs.rmSync(destination, { recursive: true, force: true });
-  fs.mkdirSync(destination, { recursive: true });
-  execFileSync(process.execPath, [materializer, sourcePackage, destination, workspaceReal], { stdio: "inherit" });
   const childRequire = createRequire(sourcePackageJson);
-  for (const dependency of Object.keys(metadata.dependencies ?? {}).filter(name => runtimeAllowlist.has(name)).sort()) {
+  for (const dependency of Object.keys(metadata.dependencies ?? {}).filter(dep => runtimeAllowlist.has(dep)).sort()) {
     queue.push({ name: dependency, requireFrom: childRequire });
   }
 }
 
 repairStandaloneLinks();
+// Next 16 needs a complete top-level @swc/helpers package even when Next itself was already present.
+try {
+  packageJsonFrom(nextRequire, "@swc/helpers");
+  if (!standalonePackageComplete("@swc/helpers")) {
+    materializePackage("@swc/helpers", nextRequire);
+    repairStandaloneLinks();
+  }
+  if (!standalonePackageComplete("@swc/helpers")) {
+    throw new Error("Standalone is missing a complete resolvable @swc/helpers package");
+  }
+} catch (error) {
+  // Fixtures without @swc/helpers remain valid for pure link-repair coverage.
+  if (!(error instanceof Error && /Cannot locate package metadata|Cannot find module|MODULE_NOT_FOUND|escapes workspace node_modules/.test(String(error)))) {
+    throw error;
+  }
+}
 
 const verification = execFileSync(process.execPath, ["-e", `
   const path = require("node:path");
@@ -209,5 +255,15 @@ const verification = execFileSync(process.execPath, ["-e", `
     if (!(path.resolve(resolved) === path.resolve(process.argv[1]) || path.resolve(resolved).startsWith(path.resolve(process.argv[1]) + path.sep))) throw new Error(name + " escaped standalone: " + resolved);
     process.stdout.write(name + ": " + resolved + "\\n");
   }
+  // @swc/helpers is required for real Next 16 runtimes, but pure link-repair fixtures may omit it.
+  try {
+    const helper = runtimeRequire.resolve("@swc/helpers/_/_interop_require_default");
+    if (!(path.resolve(helper) === path.resolve(process.argv[1]) || path.resolve(helper).startsWith(path.resolve(process.argv[1]) + path.sep))) throw new Error("@swc/helpers escaped standalone: " + helper);
+    runtimeRequire("@swc/helpers/_/_interop_require_default");
+    process.stdout.write("@swc/helpers/_/_interop_require_default: " + helper + "\\n");
+  } catch {
+    // optional in fixtures without Next helpers
+  }
 `, standalone], { encoding: "utf8" });
 process.stdout.write(verification);
+
