@@ -29,16 +29,25 @@ declare -A destinations=(
  [peilv-sudoers]="$sudoers_dir/peilv" [$legacy_policy_name]="$etc/$legacy_policy_name" [legacy-sudoers-retirement]="$legacy_target" [legacy-v2-manifest-retirement]="$etc/trusted-deploy-v2.sha256" [$manifest_name]="$etc/$manifest_name")
 declare -A modes=([deploy-production.sh]=755 [production-preflight.sh]=755 [rollback-production.sh]=755 [migration-contract.mjs]=755 [deploy-operation-ledger.mjs]=755 [peilv-control]=755 [peilv-sudoers]=440 [$legacy_policy_name]=644 [legacy-sudoers-retirement]=440 [legacy-v2-manifest-retirement]=644 [$manifest_name]=644)
 declare -A operations=([legacy-sudoers-retirement]=retire [legacy-v2-manifest-retirement]=retire)
+# Space-separated approved previous hashes per object.
+# Includes exact-set (idempotent re-run), prior approved generations, and the
+# production mixed baseline measured on 156.239.40.5 (read-only inventory).
 declare -A allowed_old=(
- [deploy-production.sh]=9462fbc771b07817ef0a320f58d0b352478b74af74506842077e4e2d0e9daaa5
- [production-preflight.sh]=90d89b973bba29365f035a44e13d53a9dd661a713aacdab25dd89a0b12b30493
- [rollback-production.sh]=2eabe478e3857e750f66344fa9ba09ea90ea72e6c7f1285c0ad216a8c1a50517
- [migration-contract.mjs]=4042a7c69e5aaa41bf26a9e55f72740be1213d8c6dedc5e95ae3573460042923
- [deploy-operation-ledger.mjs]=51ce940a01d5fac4f353cf23562c8a995937fc8670daa11c94d0004712628693
- [peilv-control]=5d4e408f2e72550cb783add81a892643613aacea91596853c6bed79bb048ec95
- [peilv-sudoers]=1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833
- [$manifest_name]=bb73c2d965c6fa8f3d62a57ed50597a493ce18da226e544f4a42790e5ae4d943
+ [deploy-production.sh]="9462fbc771b07817ef0a320f58d0b352478b74af74506842077e4e2d0e9daaa5 08d60222c013dc15ff0495af22ddd51299490cc32e4c5fc219384ea362b81a26"
+ [production-preflight.sh]="90d89b973bba29365f035a44e13d53a9dd661a713aacdab25dd89a0b12b30493 a6b15f553a78d30da95fe6ecaebe74efaaafd7c14b33728f6d35feb54c26abef"
+ [rollback-production.sh]="2eabe478e3857e750f66344fa9ba09ea90ea72e6c7f1285c0ad216a8c1a50517 a7a1655eab7a72b692e671849b7ecb3702fcd0d9ef89394bd4e2b9308de64f35"
+ [migration-contract.mjs]="4042a7c69e5aaa41bf26a9e55f72740be1213d8c6dedc5e95ae3573460042923"
+ [deploy-operation-ledger.mjs]="51ce940a01d5fac4f353cf23562c8a995937fc8670daa11c94d0004712628693"
+ [peilv-control]="9e3224216f45c69f8c53990c09e6e12db5ea7b79e5116936f1eac1943db9b827 5d4e408f2e72550cb783add81a892643613aacea91596853c6bed79bb048ec95 f92dfea3711d50d64e0fa70c15ffa94c994bd998fbeee9045004a0c6e6140f1c"
+ [peilv-sudoers]="1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833"
+ [$manifest_name]="37c749713f7b35c434a63f6850930e652474bd76a7d80a604cb0651dec8e3cd9 bb73c2d965c6fa8f3d62a57ed50597a493ce18da226e544f4a42790e5ae4d943"
  [legacy-sudoers-retirement]="$legacy_approved_sha" [legacy-v2-manifest-retirement]="$legacy_v2_manifest_sha")
+is_allowed_old(){
+  local name="$1"
+  local hash="$2"
+  local allowed=" ${allowed_old[$name]:-} "
+  [[ -n "${allowed_old[$name]:-}" && "$allowed" == *" $hash "* ]]
+}
 
 sync_dir(){ sync -f "$1" 2>/dev/null || sync -d "$1"; }
 path_entry_exists(){ [[ -e "$1" || -L "$1" ]]; }
@@ -81,7 +90,7 @@ validate_journal_abi(){
    expected_operation="${operations[$expected_name]:-install}"
    [[ "$name" == "$expected_name" && "$operation" == "$expected_operation" && "$target" == "$expected_target" && "$backup" == "$expected_target.tcb-v3-old-$tx" ]] || return 1
    [[ "$existed" == 0 || "$existed" == 1 ]] || return 1
-   [[ ( "$existed" == 0 && "$old" == absent ) || ( "$existed" == 1 && -n "${allowed_old[$name]:-}" && "$old" == "${allowed_old[$name]}" ) ]] || return 1
+   if [[ "$existed" == 0 ]]; then [[ "$old" == absent ]] || return 1; else is_allowed_old "$name" "$old" || return 1; fi
     [[ "$new" == absent || "$new" =~ ^[0-9a-f]{64}$ ]] || return 1
     [[ "$operation:$new" == retire:absent || ( "$operation" == install && "$new" != absent ) ]] || return 1
     if [[ "$operation" == install ]]; then [[ "$new" == "$(hash_or_absent "$stage/$name")" ]] || return 1; fi
@@ -170,7 +179,7 @@ NODE
 chmod 440 "$expected_sudoers"; visudo -cf "$expected_sudoers" >/dev/null
 
 for name in "${install_names[@]}"; do target="${destinations[$name]}"; target_kind="$(classify_entry "$target")"; [[ "$target_kind" == absent ]] || [[ "$target_kind" == regular && "$(stat -c '%U:%G:%a:%h' "$target")" == "root:root:${modes[$name]}:1" ]] || { printf 'Unsafe existing TCB object: %s\n' "$target" >&2; exit 78; }; done
-for name in "${activation_names[@]}"; do target="${destinations[$name]}"; old_hash="$(hash_or_absent "$target")"; [[ "$old_hash" == absent || ( -n "${allowed_old[$name]:-}" && "$old_hash" == "${allowed_old[$name]}" ) ]] || { printf 'Unapproved existing TCB hash: %s\n' "$name" >&2; exit 1; }; done
+for name in "${activation_names[@]}"; do target="${destinations[$name]}"; old_hash="$(hash_or_absent "$target")"; [[ "$old_hash" == absent ]] || is_allowed_old "$name" "$old_hash" || { printf 'Unapproved existing TCB hash: %s\n' "$name" >&2; exit 1; }; done
 declare -a created_dirs=(); declare -a required_dirs=("$state_root|700" "$operation_root|700" "$result_root|700" "$evidence_root|700" "$sbin|755" "$libexec|755" "$etc|755" "$sudoers_dir|755")
 for item in "${required_dirs[@]}"; do
  IFS='|' read -r dir mode <<<"$item"

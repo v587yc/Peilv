@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+caller="${SUDO_USER:-}"
+command_name="${1:-}"
+
+case "$caller:$command_name:$#" in
+  peilv-audit:preflight:10)
+    exec /usr/local/libexec/peilv/production-preflight.sh "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
+    ;;
+  peilv-deploy:deploy:6)
+    [[ "$6" == "--maintenance-window-confirmed" ]] || { printf 'Maintenance window confirmation is required\n' >&2; exit 126; }
+    exec /usr/local/libexec/peilv/deploy-production.sh "$2" "$3" "$4" "$5" "$6"
+    ;;
+  peilv-rollback:rollback:5)
+    exec /usr/local/libexec/peilv/rollback-production.sh "$2" "$3" "$4" "$5"
+    ;;
+  *)
+    printf 'Command is not permitted\n' >&2
+    exit 126
+    ;;
+esac

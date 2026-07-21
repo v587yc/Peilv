@@ -55,4 +55,24 @@ describe("Host TCB v3 six-runtime exact-set",()=>{
     const writer=await readFile("scripts/deploy-operation-ledger.mjs","utf8");expect(writer).toContain('command==="append-deployment-event"');expect(writer).toContain('command==="write-result-v2"');expect(writer).toContain("fs.constants.O_EXCL|fs.constants.O_NOFOLLOW");expect(writer).toContain("fs.fsyncSync(fd)");expect(writer).toContain("fs.renameSync(temp,target)");expect(writer).toContain("fs.fsyncSync(directory)");expect(writer).toContain('if(error.code!=="ENOENT")throw error');
     for(const name of ["scripts/deploy-production.sh","scripts/rollback-production.sh"]){const source=await readFile(name,"utf8"),finish=source.lastIndexOf('"$operation_ledger" finish');expect(source.match(/write-result-v2/g)?.length).toBe(name.includes("deploy-production")?3:2);expect(source.match(/append-deployment-event/g)?.length).toBe(1);expect(source).not.toContain("Unsafe deployment ledger metadata");expect(finish).toBeGreaterThan(source.lastIndexOf("write-result-v2"));}
   });
+
+
+
+  it("accepts production mixed baseline hashes in allowed_old window", async () => {
+    const bootstrap = await readFile("infra/deploy/bootstrap-deploy-v3.sh", "utf8");
+    expect(bootstrap).toContain("is_allowed_old()");
+    expect(bootstrap).toMatch(/local name="\$1"/);
+    expect(bootstrap).toMatch(/local hash="\$2"/);
+    expect(bootstrap).toMatch(/local allowed=" \$\{allowed_old\[\$name\]:-\} "/);
+    for (const hash of [
+      "f92dfea3711d50d64e0fa70c15ffa94c994bd998fbeee9045004a0c6e6140f1c",
+      "a6b15f553a78d30da95fe6ecaebe74efaaafd7c14b33728f6d35feb54c26abef",
+      "08d60222c013dc15ff0495af22ddd51299490cc32e4c5fc219384ea362b81a26",
+      "a7a1655eab7a72b692e671849b7ecb3702fcd0d9ef89394bd4e2b9308de64f35",
+      "5d4e408f2e72550cb783add81a892643613aacea91596853c6bed79bb048ec95",
+      "9e3224216f45c69f8c53990c09e6e12db5ea7b79e5116936f1eac1943db9b827",
+    ]) expect(bootstrap).toContain(hash);
+    expect(bootstrap).not.toContain("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+  });
+
 });
