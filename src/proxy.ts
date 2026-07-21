@@ -108,24 +108,24 @@ export async function proxy(request: NextRequest, event: NextFetchEvent): Promis
       }
       const login = request.nextUrl.clone();
       const isProduction = process.env.NODE_ENV === "production";
-      const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-      const requestHostHeader = isProduction
+      const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || "";
+      const rawHost = (isProduction
         ? (forwardedHost || request.headers.get("host") || "")
-        : (request.headers.get("host") || "");
-      // Never leak the internal app port (e.g. :5000) into public redirects.
-      const requestHost = requestHostHeader.split(",")[0]?.trim() || "";
-      const hostname = requestHost.replace(/:\d+$/, "");
-      if (hostname) {
-        login.hostname = hostname;
-        login.port = "";
+        : (request.headers.get("host") || "")
+      ).split(",")[0]?.trim() || "";
+      if (rawHost) {
+        const [hostname, port] = rawHost.split(":");
+        if (hostname) {
+          login.hostname = hostname;
+          // Keep explicit local ports in non-production; never publish internal :5000 in production.
+          if (!isProduction && port) login.port = port;
+          else login.port = "";
+        }
       }
       if (isProduction) {
         const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-        if (forwardedProto === "http" || forwardedProto === "https") {
-          login.protocol = `${forwardedProto}:`;
-        } else {
-          login.protocol = "https:";
-        }
+        if (forwardedProto === "http" || forwardedProto === "https") login.protocol = `${forwardedProto}:`;
+        else login.protocol = "https:";
       }
       login.pathname = "/login";
       login.search = "";
