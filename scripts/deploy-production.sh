@@ -284,16 +284,37 @@ wait_for_inactive() {
   return 1
 }
 run_oneshot_and_wait() {
-  local unit="$1" timeout_usec deadline state result
-  timeout_usec="$(systemctl show "$unit" -p TimeoutStartUSec --value)"
-  [[ "$timeout_usec" =~ ^[1-9][0-9]*$ && "$timeout_usec" -le 3600000000 ]] || { printf 'Invalid TimeoutStartUSec for %s\n' "$unit" >&2; return 1; }
-  deadline=$((SECONDS + (timeout_usec + 999999) / 1000000 + 10))
+  local unit="$1" timeout_raw timeout_usec timeout_sec deadline state result
+  timeout_raw="$(systemctl show "$unit" -p TimeoutStartUSec --value)"
+  if [[ "$timeout_raw" =~ ^[1-9][0-9]*$ ]]; then
+    timeout_usec="$timeout_raw"
+  elif [[ "$timeout_raw" == "infinity" ]]; then
+    timeout_usec=3600000000
+  else
+    timeout_usec="$(systemd-analyze timespan "$timeout_raw" 2>/dev/null | awk -F': *' 'NR==2 {gsub(/[^0-9]/, "", $2); print $2; exit}')"
+  fi
+  [[ "$timeout_usec" =~ ^[1-9][0-9]*$ && "$timeout_usec" -le 3600000000 ]] || { printf 'Invalid TimeoutStartUSec for %s: %s\n' "$unit" "${timeout_raw:-<empty>}" >&2; return 1; }
+  timeout_sec=$(( (timeout_usec + 999999) / 1000000 ))
+  deadline=$((SECONDS + timeout_sec + 10))
   systemctl start --no-block "$unit"
   while (( SECONDS <= deadline )); do
     state="$(systemctl is-active "$unit" 2>/dev/null || true)"
-    case "$state" in inactive) result="$(systemctl show "$unit" -p Result --value)"; [[ "$result" == "success" ]] && return 0; printf 'Oneshot %s failed with Result=%s\n' "$unit" "$result" >&2; return 1;; active|activating|deactivating) sleep 1;; *) printf 'Unsafe oneshot state for %s: %s\n' "$unit" "${state:-<empty>}" >&2; return 1;; esac
+    case "$state" in
+      inactive)
+        result="$(systemctl show "$unit" -p Result --value)"
+        [[ "$result" == "success" ]] && return 0
+        printf 'Oneshot %s failed with Result=%s\n' "$unit" "$result" >&2
+        return 1
+        ;;
+      active|activating|deactivating) sleep 1 ;;
+      *)
+        printf 'Unsafe oneshot state for %s: %s\n' "$unit" "${state:-<empty>}" >&2
+        return 1
+        ;;
+    esac
   done
-  printf 'Timed out waiting for oneshot %s\n' "$unit" >&2; return 1
+  printf 'Timed out waiting for oneshot %s\n' "$unit" >&2
+  return 1
 }
 
 stop_candidate() {

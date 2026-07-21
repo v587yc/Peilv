@@ -190,14 +190,41 @@ describe("migration CAS and deploy request idempotency", () => {
     const deploy = await readFile("scripts/deploy-production.sh", "utf8");
     expect(deploy.indexOf("dispatch_timer_stopped=1", deploy.indexOf("maintenance_entering"))).toBeLessThan(deploy.indexOf("systemctl stop peilv-dispatch.timer", deploy.indexOf("maintenance_entering")));
     expect(deploy.indexOf("reconcile_timer_stopped=1", deploy.indexOf("maintenance_entering"))).toBeLessThan(deploy.indexOf("systemctl stop peilv-reconcile.timer", deploy.indexOf("maintenance_entering")));
-    expect(deploy).toContain("TimeoutStartUSec"); expect(deploy).toContain("+ 10");
-    expect(deploy).toContain('case "$state" in inactive)'); expect(deploy).toContain('[[ "$result" == "success" ]]');
+    expect(deploy).toContain("TimeoutStartUSec"); expect(deploy).toContain("systemd-analyze timespan"); expect(deploy).toContain("+ 10");
+    expect(/case "\$state" in[\s\S]*inactive\)/.test(deploy)).toBe(true);
+    expect(deploy).toContain('[[ "$result" == "success" ]]');
     const start = deploy.indexOf("run_oneshot_and_wait() {");
     const fn = deploy.slice(start, deploy.indexOf("stop_candidate() {", start));
     const root = await mkdtemp(path.join(os.tmpdir(), "oneshot-340-"));
     const harness = path.join(root, "run.sh");
     await writeFile(harness, `#!/usr/bin/env bash\nset -Eeuo pipefail\n${fn}\ncounter="$(dirname "$0")/counter"; printf '0\\n' >"$counter"\nsystemctl(){ case "$1:$2" in show:sample.service) [[ "$3" == -p && "$4" == TimeoutStartUSec ]] && printf '340000000\\n' || printf 'success\\n';; start:--no-block) [[ "$3" == sample.service ]];; is-active:sample.service) calls=$(<"$counter"); calls=$((calls+1)); printf '%s\\n' "$calls" >"$counter"; [[ "$calls" == 1 ]] && printf 'activating\\n' || printf 'inactive\\n';; *) return 90;; esac; }\nsleep(){ SECONDS=$((SECONDS+1)); }\nrun_oneshot_and_wait sample.service\n`);
     await expect(exec("bash", [harness])).resolves.toMatchObject({ stdout: "", stderr: "" });
+
+    const prettyHarness = path.join(root, "run-pretty.sh");
+    await writeFile(prettyHarness, `#!/usr/bin/env bash
+set -Eeuo pipefail
+${fn}
+counter="$(dirname "$0")/counter"; printf '0
+' >"$counter"
+systemctl(){ case "$1:$2" in
+  show:sample.service) [[ "$3" == -p && "$4" == TimeoutStartUSec ]] && printf '5min 40s
+' || printf 'success
+';;
+  start:--no-block) [[ "$3" == sample.service ]];;
+  is-active:sample.service) calls=$(<"$counter"); calls=$((calls+1)); printf '%s
+' "$calls" >"$counter"; [[ "$calls" == 1 ]] && printf 'activating
+' || printf 'inactive
+';;
+  *) return 90;;
+esac; }
+systemd-analyze(){ [[ "$1" == timespan && "$2" == "5min 40s" ]] && printf 'Original: 5min 40s
+μs: 340000000
+Human: 5min 40s
+' || return 91; }
+sleep(){ SECONDS=$((SECONDS+1)); }
+run_oneshot_and_wait sample.service
+`);
+    await expect(exec("bash", [prettyHarness])).resolves.toMatchObject({ stdout: "", stderr: "" });
   });
 
   it("preflight DB query fails closed and never swallows psql failure", async () => {
