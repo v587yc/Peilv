@@ -15,7 +15,7 @@ sbin="${PEILV_TCB_SBIN:-/usr/local/sbin}"; libexec="${PEILV_TCB_LIBEXEC:-/usr/lo
 etc="${PEILV_TCB_ETC:-/etc/peilv}"; sudoers_dir="${PEILV_TCB_SUDOERS:-/etc/sudoers.d}"
 state_root="${PEILV_TCB_STATE_ROOT:-/var/lib/peilv}"; operation_root="$state_root/deploy-operations"; result_root="$state_root/deploy-results"; evidence_root="$state_root/tcb-forensics"
 journal="$state_root/tcb-v3-activation.json"; manifest_name=trusted-host-tcb-v3.sha256; legacy_policy_name=legacy-sudoers-retirement-v1.sha256
-manifest_sha='6d41c53fc4d37f48bdd98063b69ed5fb471ad88eceaf5124dfaa2643231d3a28'; sudoers_sha='1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833'
+manifest_sha='6bb65b086e6153f0911d67f07298d66ba3dd587e262da75b5631fb42119b91fc'; sudoers_sha='1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833'
 legacy_policy_sha='c22dce014c093f4490e879909b1384ce62e223867d892586483f985ba8824938'; legacy_approved_sha='e7e825d0c9a81c9514eb42aef12a56ad8c41729cfc9aa6f9fbaf345e9488b35a'; legacy_declared_target='/etc/sudoers.d/peilv-deploy'
 legacy_v2_manifest_sha='e9c0380879cd8485644f4075cb1e000c60dab3c997120109d1ee5e6d9cf6099e'; legacy_v2_declared_target='/etc/peilv/trusted-deploy-v2.sha256'
 sudoers_main="${PEILV_TCB_SUDOERS_MAIN:-/etc/sudoers}"; legacy_target="$sudoers_dir/peilv-deploy"
@@ -33,14 +33,14 @@ declare -A operations=([legacy-sudoers-retirement]=retire [legacy-v2-manifest-re
 # Includes exact-set (idempotent re-run), prior approved generations, and the
 # production mixed baseline measured on 156.239.40.5 (read-only inventory).
 declare -A allowed_old=(
- [deploy-production.sh]="9462fbc771b07817ef0a320f58d0b352478b74af74506842077e4e2d0e9daaa5 08d60222c013dc15ff0495af22ddd51299490cc32e4c5fc219384ea362b81a26 eb1e505f1c71275c62675271f1bdbfcdf424afcd79a069f7f6bd6e9496a20505"
+ [deploy-production.sh]="9462fbc771b07817ef0a320f58d0b352478b74af74506842077e4e2d0e9daaa5 08d60222c013dc15ff0495af22ddd51299490cc32e4c5fc219384ea362b81a26 eb1e505f1c71275c62675271f1bdbfcdf424afcd79a069f7f6bd6e9496a20505 e6243b12fc0ff18f166ff8d781d12c9ad21c6b7aadbdb5b1f7bc81dd6a58d3ee"
  [production-preflight.sh]="90d89b973bba29365f035a44e13d53a9dd661a713aacdab25dd89a0b12b30493 a6b15f553a78d30da95fe6ecaebe74efaaafd7c14b33728f6d35feb54c26abef"
- [rollback-production.sh]="2eabe478e3857e750f66344fa9ba09ea90ea72e6c7f1285c0ad216a8c1a50517 a7a1655eab7a72b692e671849b7ecb3702fcd0d9ef89394bd4e2b9308de64f35"
+ [rollback-production.sh]="2eabe478e3857e750f66344fa9ba09ea90ea72e6c7f1285c0ad216a8c1a50517 a7a1655eab7a72b692e671849b7ecb3702fcd0d9ef89394bd4e2b9308de64f35 9b5992a7f68b847800233616bdfe02e54fcebc6728d77d2f21aca4e4c704824c"
  [migration-contract.mjs]="4042a7c69e5aaa41bf26a9e55f72740be1213d8c6dedc5e95ae3573460042923"
  [deploy-operation-ledger.mjs]="51ce940a01d5fac4f353cf23562c8a995937fc8670daa11c94d0004712628693 890b68d30d6bdcc44533a8794ac1fc1c085d4e67442e57e679de767b0ad2e45f 9b2882c608d3aeed7d39da660cd90216c74c53646e9c1f25aaa8f6ce3b6deef4"
  [peilv-control]="9e3224216f45c69f8c53990c09e6e12db5ea7b79e5116936f1eac1943db9b827 5d4e408f2e72550cb783add81a892643613aacea91596853c6bed79bb048ec95 f92dfea3711d50d64e0fa70c15ffa94c994bd998fbeee9045004a0c6e6140f1c"
  [peilv-sudoers]="1df904bda1d77c4abdd8b2c4bfe5375fb764a5c58a0e63ab1112f378d2e15833"
- [$manifest_name]="37c749713f7b35c434a63f6850930e652474bd76a7d80a604cb0651dec8e3cd9 bb73c2d965c6fa8f3d62a57ed50597a493ce18da226e544f4a42790e5ae4d943 6c631fc4a9c1edd8471c1f96673359820c7a1a70008c812d519239c2871f4de4 2d1f2b6f111e62db18d57e91d9c0aa7842647259cad7a780725bbe241d1700f6 6d41c53fc4d37f48bdd98063b69ed5fb471ad88eceaf5124dfaa2643231d3a28"
+ [$manifest_name]="37c749713f7b35c434a63f6850930e652474bd76a7d80a604cb0651dec8e3cd9 bb73c2d965c6fa8f3d62a57ed50597a493ce18da226e544f4a42790e5ae4d943 6c631fc4a9c1edd8471c1f96673359820c7a1a70008c812d519239c2871f4de4 2d1f2b6f111e62db18d57e91d9c0aa7842647259cad7a780725bbe241d1700f6 6d41c53fc4d37f48bdd98063b69ed5fb471ad88eceaf5124dfaa2643231d3a28 6bb65b086e6153f0911d67f07298d66ba3dd587e262da75b5631fb42119b91fc"
  [legacy-sudoers-retirement]="$legacy_approved_sha" [legacy-v2-manifest-retirement]="$legacy_v2_manifest_sha" [$legacy_policy_name]="$legacy_policy_sha")
 is_allowed_old(){
   local name="$1"

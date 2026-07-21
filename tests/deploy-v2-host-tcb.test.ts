@@ -104,4 +104,11 @@ describe("Host TCB v3 six-runtime exact-set",()=>{
     expect(ledger).toContain("[0o700,0o750,0o755]");
   });
 
+
+  it("append-deployment-event uses /var/lib/peilv ledger root", async () => {
+    const deploy = await readFile("scripts/deploy-production.sh", "utf8");
+    expect(deploy).toContain('append-deployment-event /var/lib/peilv deploy');
+    expect(deploy).not.toContain('append-deployment-event "$base" deploy');
+  });
+
 });
