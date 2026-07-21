@@ -39,7 +39,7 @@ function makeEvent(): NextFetchEvent {
 describe("proxy admin login redirect", () => {
   beforeEach(() => {
     vi.mocked(authorizeAdminRequest).mockResolvedValue({ ok: false, error: "未登录", status: 401 } as never);
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
   });
 
   it("strips internal :5000 from admin login redirects when forwarded host is public", async () => {
