@@ -20,7 +20,10 @@ describe("automation task atomic ensure", () => {
     expect(source).toContain("SET search_path = pg_catalog, public, pg_temp");
     expect(source).not.toContain("FOR SHARE");
     expect(source).toContain("ON CONFLICT (idempotency_key) DO NOTHING");
-    expect(source).toContain("REVOKE ALL ON FUNCTION public.ensure_automation_task(JSONB) FROM PUBLIC, anon, authenticated");
+    expect(source).toContain("REVOKE ALL ON FUNCTION public.ensure_automation_task(JSONB) FROM PUBLIC");
+    expect(source).toContain("IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon')");
+    expect(source).toContain("IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated')");
+    expect(source).toContain("REVOKE ALL ON FUNCTION public.ensure_automation_task(JSONB) FROM authenticated");
     expect(source).toContain("ON CONFLICT (version) DO NOTHING");
   });
 });

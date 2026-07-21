@@ -142,7 +142,7 @@
     {
       "file": "0024_automation_task_idempotent_ensure.sql",
       "version": "0024_automation_task_idempotent_ensure",
-      "sha256": "8f7ddb4714a4bc0a61bdd0ddc2d38814a23a086e7f5aa7c81eaf09338b63feff",
+      "sha256": "4bf461ed94f3d4454d40b41b79bffd315bc1b1e6155fdf8ef62bbaf05f8b1888",
       "codeRollbackSafe": true
     }
   ]
