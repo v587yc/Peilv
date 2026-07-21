@@ -84,4 +84,44 @@ describe("standalone runtime dependency repair", () => {
     const expected = kind === "cycle" ? /Cyclic/ : kind === "dangling" ? /Dangling/ : /escapes allowed/;
     await expect(exec(process.execPath, [runner, value.standalone, value.workspace])).rejects.toMatchObject({ stderr: expect.stringMatching(expected) });
   });
+
+
+
+  it("materializes complete @swc/helpers for next constants require", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "peilv-runtime-swc-real-"));
+    roots.push(root);
+    const workspace = process.cwd();
+    const standalone = path.join(root, "standalone");
+    await mkdir(path.join(standalone, "node_modules", "next", "dist", "shared", "lib"), { recursive: true });
+    await writeFile(path.join(standalone, "server.js"), "module.exports = {};\n");
+    for (const name of ["next", "styled-jsx", "react", "react-dom", "client-only", "scheduler", "@next/env"]) {
+      const srcPkg = path.join(workspace, "node_modules", ...name.split("/"), "package.json");
+      try {
+        const raw = await readFile(srcPkg, "utf8");
+        const destDir = path.join(standalone, "node_modules", ...name.split("/"));
+        await mkdir(destDir, { recursive: true });
+        await writeFile(path.join(destDir, "package.json"), raw);
+        await writeFile(path.join(destDir, "index.js"), "module.exports = {};\n");
+      } catch {
+        // optional
+      }
+    }
+    const incomplete = path.join(standalone, "node_modules", "@swc", "helpers");
+    await mkdir(path.join(incomplete, "cjs"), { recursive: true });
+    await writeFile(
+      path.join(incomplete, "package.json"),
+      JSON.stringify({ name: "@swc/helpers", version: "0.5.15", exports: { "./package.json": "./package.json" } }),
+    );
+    await writeFile(path.join(incomplete, "cjs", "_interop_require_default.cjs"), "module.exports={_:x=>x};\n");
+    await writeFile(
+      path.join(standalone, "node_modules", "next", "dist", "shared", "lib", "constants.js"),
+      'const h = require("@swc/helpers/_/_interop_require_default"); module.exports = { ok: !!h };\n',
+    );
+    await exec(process.execPath, [runner, standalone, workspace]);
+    const { createRequire } = await import("node:module");
+    const req = createRequire(path.join(standalone, "server.js"));
+    expect(() => req("@swc/helpers/_/_interop_require_default")).not.toThrow();
+    expect(() => req("next/dist/shared/lib/constants.js")).not.toThrow();
+  });
+
 });
