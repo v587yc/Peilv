@@ -90,4 +90,11 @@ describe("Host TCB v3 six-runtime exact-set",()=>{
     expect(ledger.includes(Buffer.from([0x63,0x6c,0x65,0x61,0x72,0x5c,0x6e]))).toBe(false);
   });
 
+
+  it("allows exact-set legacy policy hash for idempotent re-run", async () => {
+    const bootstrap = await readFile("infra/deploy/bootstrap-deploy-v3.sh", "utf8");
+    expect(bootstrap).toContain('[$legacy_policy_name]="$legacy_policy_sha"');
+    expect(bootstrap).toContain("legacy_policy_sha='c22dce014c093f4490e879909b1384ce62e223867d892586483f985ba8824938'");
+  });
+
 });
