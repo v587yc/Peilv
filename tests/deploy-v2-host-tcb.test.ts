@@ -83,4 +83,11 @@ describe("Host TCB v3 six-runtime exact-set",()=>{
     expect(bootstrap).toContain('mode_actual" == "700"');
   });
 
+
+  it("keeps guard-all success silent on stdout", async () => {
+    const ledger = await readFile("scripts/deploy-operation-ledger.mjs");
+    expect(ledger.includes(Buffer.from('command==="guard-all"'))).toBe(true);
+    expect(ledger.includes(Buffer.from([0x63,0x6c,0x65,0x61,0x72,0x5c,0x6e]))).toBe(false);
+  });
+
 });

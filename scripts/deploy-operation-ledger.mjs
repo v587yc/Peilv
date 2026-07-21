@@ -40,7 +40,6 @@ if(command==="append-deployment-event"){
     try{const value=readFile(path.join(ledgerRoot,name));if(value.status==="manual-assessment")blockers.push({type:"manual-assessment",requestId:value.requestId});if(value.status==="running"){const alive=ownerAlive(value.owner);blockers.push({type:alive===true?"running-owner-alive":alive===false?"stale-running":"running-owner-indeterminate",requestId:value.requestId,owner:value.owner})}}catch(error){blockers.push({type:"invalid-ledger",name,error:error.message})}
   }
   if(blockers.length){process.stderr.write(`${JSON.stringify({schemaVersion:1,status:"blocked",reason:"global-operation-guard",blockers})}\n`);process.exit(75)}
-  process.stdout.write("clear\n");
 }else{
   if(!operationPath)throw new Error("Invalid request ID");
   if(command==="check"){
