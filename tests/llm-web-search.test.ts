@@ -98,4 +98,45 @@ describe("llmModelWebSearch Grok / Agent Tools", () => {
       expect(body.search_parameters).toBeUndefined();
     }
   });
+
+  it("treats openai-compatible gpt models as non-Grok and parses message output_text", async () => {
+    process.env.LLM_BASE_URL = "https://aigpbt.top/v1";
+    process.env.LLM_MODEL = "gpt-5.6-sol";
+    clearLLMConfigCache();
+    safeOutboundFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        output: [
+          { type: "web_search_call", status: "completed" },
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "伤停：主力前锋缺阵。" }],
+          },
+        ],
+      }),
+    );
+    const result = await llmModelWebSearch("阿森纳 伤停");
+    expect(result?.[0]?.snippet).toContain("伤停");
+    expect(String(safeOutboundFetch.mock.calls[0][0])).toContain("/responses");
+  });
+
+  it("rejects chat refusal text that claims no web access", async () => {
+    process.env.LLM_BASE_URL = "https://aigpbt.top/v1";
+    process.env.LLM_MODEL = "gpt-5.6-sol";
+    clearLLMConfigCache();
+    safeOutboundFetch
+      .mockResolvedValueOnce(jsonResponse(504, { error: "timeout" }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          choices: [
+            {
+              message: {
+                content: "我目前无法实时联网核验阿森纳最新伤停名单，建议以上官网为准。",
+              },
+            },
+          ],
+        }),
+      );
+    const result = await llmModelWebSearch("阿森纳 伤停");
+    expect(result).toBeNull();
+  });
 });
