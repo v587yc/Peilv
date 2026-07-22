@@ -35,6 +35,13 @@ describe("SSRF URL policy", () => {
     expect(isAllowedHost("example.com")).toBe(false);
   });
 
+  it("allows official OpenAI and xAI LLM hosts by default", () => {
+    expect(isAllowedHost("api.openai.com", "llm")).toBe(true);
+    expect(isAllowedHost("api.x.ai", "llm")).toBe(true);
+    expect(isAllowedHost("evil.api.x.ai", "llm")).toBe(false);
+    expect(() => assertOutboundUrl("https://api.x.ai/v1/responses", "llm")).not.toThrow();
+  });
+
   it("honors normalized configured hosts", () => {
     process.env.FETCH_URL_ALLOWED_HOSTS = " Example.COM, *.test.invalid ";
     expect(isAllowedHost("example.com")).toBe(true);
