@@ -345,13 +345,44 @@ function summaryToResults(text: string): WebSearchResult[] {
   return [{ title: "赛前新闻摘要", snippet: text, url: "" }];
 }
 
-/** Per-attempt budget for model web search (does not use full LLM 90s). */
-const LLM_WEB_SEARCH_ATTEMPT_TIMEOUT_MS = 20_000;
+/**
+ * Per-attempt budget for model web search.
+ * Real OpenAI/gateway Responses+web_search often needs 15–40s; 20s caused mass aborts on production.
+ * Override with LLM_WEB_SEARCH_TIMEOUT_MS (5s–90s). Default 45s.
+ */
+function llmWebSearchAttemptTimeoutMs(): number {
+  const raw = Number(process.env.LLM_WEB_SEARCH_TIMEOUT_MS || 45_000);
+  if (!Number.isFinite(raw)) return 45_000;
+  return Math.min(90_000, Math.max(5_000, Math.floor(raw)));
+}
 
 function isXaiOrGrokEndpoint(baseUrl: string, model: string): boolean {
-  const host = baseUrl.toLowerCase();
-  const m = model.toLowerCase();
-  return host.includes("api.x.ai") || host.includes("x.ai/") || m.includes("grok");
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    if (host === "api.x.ai" || host.endsWith(".x.ai")) return true;
+  } catch {
+    if (baseUrl.toLowerCase().includes("api.x.ai")) return true;
+  }
+  const m = model.toLowerCase().trim();
+  // Only real Grok model ids — do not treat unrelated hosts as Grok
+  return m === "grok" || m.startsWith("grok-") || m.includes("grok-");
+}
+
+/** Chat fallback sometimes returns a refusal instead of searching; treat as failure. */
+function isNonSearchRefusalText(text: string): boolean {
+  const t = text.replace(/\s+/g, "");
+  if (t.length < 8) return false;
+  const patterns = [
+    /无法(?:实时)?联网/,
+    /不能(?:实时)?联网/,
+    /无法(?:直接)?搜索/,
+    /不能(?:直接)?搜索/,
+    /没有(?:联网|实时)?搜索/,
+    /暂不支持联网/,
+    /cannot(?:\s+currently)?(?:\s+access)?(?:\s+the)?(?:\s+internet|\s+web|\s+live)/i,
+    /unable to (?:browse|search|access) (?:the )?(?:web|internet)/i,
+  ];
+  return patterns.some((re) => re.test(text) || re.test(t));
 }
 
 function isDeprecatedLiveSearchError(status: number, body: string): boolean {
@@ -372,10 +403,10 @@ function isDeprecatedLiveSearchError(status: number, body: string): boolean {
  * - 已废弃：chat + search_parameters（Live Search）→ 会 401 + deprecation 文案
  *
  * 其它 OpenAI 兼容中转：先试 /responses + web_search，再试 chat + tools web_search。
- * 默认 **不再调用** search_parameters，避免 Grok 固定 401 噪声。
- * 任一步成功即返回；全部失败 return null。失败只 warn。
- * 单次尝试约 20s 超时，避免拖死 AI 分析。
- */
+  * 默认 **不再调用** search_parameters，避免 Grok 固定 401 噪声。
+  * 任一步成功即返回；全部失败 return null。失败只 warn。
+  * 单次尝试默认约 45s（LLM_WEB_SEARCH_TIMEOUT_MS 可调）；拒绝把“无法联网”空话当成功。
+  */
 export async function llmModelWebSearch(query: string): Promise<WebSearchResult[] | null> {
   let apiKey = "";
   let baseUrl = "";
@@ -397,11 +428,22 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
   const systemPrompt =
     "你是足球赛前情报助手。请基于联网搜索结果，用中文摘要伤停、阵容与赛前分析，不要编造。";
   const grokLike = isXaiOrGrokEndpoint(baseUrl, model);
+  const attemptTimeoutMs = llmWebSearchAttemptTimeoutMs();
   if (grokLike) {
     console.info("[llmModelWebSearch] provider=xai/grok → Agent Tools only (skip deprecated Live Search / search_parameters)");
+  } else {
+    let host = "unknown";
+    try {
+      host = new URL(baseUrl).hostname;
+    } catch {
+      /* ignore */
+    }
+    console.info(
+      `[llmModelWebSearch] provider=openai-compatible host=${host} model=${model} attemptTimeoutMs=${attemptTimeoutMs}`,
+    );
   }
 
-  const attemptSignal = () => AbortSignal.timeout(LLM_WEB_SEARCH_ATTEMPT_TIMEOUT_MS);
+  const attemptSignal = () => AbortSignal.timeout(attemptTimeoutMs);
 
   // 1) Responses API + built-in web_search tool（OpenAI / xAI Agent Tools 主路径）
   try {
@@ -424,11 +466,15 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
     if (res.ok) {
       const data = await res.json();
       const text = extractResponsesOutputText(data);
-      if (text) {
-        console.info("[llmModelWebSearch] channel responses ok");
+      if (text && !isNonSearchRefusalText(text)) {
+        console.info(`[llmModelWebSearch] channel responses ok chars=${text.length}`);
         return summaryToResults(text);
       }
-      console.warn("[llmModelWebSearch] responses: empty output_text");
+      if (text && isNonSearchRefusalText(text)) {
+        console.warn("[llmModelWebSearch] responses: refusal-like text, not treating as search hit");
+      } else {
+        console.warn("[llmModelWebSearch] responses: empty output_text (check output[].message content parsing)");
+      }
     } else {
       const errBody = await res.text().catch(() => "");
       if (isDeprecatedLiveSearchError(res.status, errBody)) {
@@ -446,7 +492,7 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
     console.warn(`[llmModelWebSearch] responses failed: ${msg.slice(0, 160)}`);
   }
 
-  // 2) Chat Completions + tools web_search（部分中转只支持 chat）
+  // 2) Chat Completions + tools web_search（部分中转只支持 chat；官方 OpenAI 常只回 tool_calls 或空话）
   //    不再默认调用 search_parameters：xAI Live Search 已废弃，会返回 401 + deprecation。
   try {
     const targetUrl = `${baseUrl}/chat/completions`;
@@ -472,11 +518,15 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
     if (res.ok) {
       const data = await res.json();
       const text = extractChatContent(data);
-      if (text) {
-        console.info("[llmModelWebSearch] channel chat tools web_search ok");
+      if (text && !isNonSearchRefusalText(text)) {
+        console.info(`[llmModelWebSearch] channel chat tools web_search ok chars=${text.length}`);
         return summaryToResults(text);
       }
-      console.warn("[llmModelWebSearch] chat tools: empty content (tool_calls-only responses are not executed)");
+      if (text && isNonSearchRefusalText(text)) {
+        console.warn("[llmModelWebSearch] chat tools: refusal without real search, ignoring");
+      } else {
+        console.warn("[llmModelWebSearch] chat tools: empty content (tool_calls-only responses are not executed)");
+      }
     } else {
       const errBody = await res.text().catch(() => "");
       if (isDeprecatedLiveSearchError(res.status, errBody)) {
