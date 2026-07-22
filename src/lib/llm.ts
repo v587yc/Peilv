@@ -252,13 +252,130 @@ export async function* llmStream(
   }
 }
 
-async function openAIWebSearch(
-  query: string,
-  maxResults: number
-): Promise<{ title: string; snippet: string; url: string }[] | null> {
+export type WebSearchResult = { title: string; snippet: string; url: string };
+
+function isWebSearchFlagEnabled(value: string | undefined | null, defaultValue: boolean): boolean {
+  if (value == null || String(value).trim() === "") return defaultValue;
+  const v = String(value).trim().toLowerCase();
+  if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+  if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+  return defaultValue;
+}
+
+/**
+ * 是否启用通道 B（模型联网搜索）。DB `llm_web_search_enabled` 优先，env `LLM_WEB_SEARCH` 回退。
+ * 默认 true（用户要求赛前新闻走模型联网）。
+ */
+async function isLLMWebSearchEnabled(): Promise<boolean> {
   try {
-    const { apiKey, baseUrl, model } = await loadLLMConfig();
-    const res = await safeOutboundFetch(`${baseUrl}/responses`, {
+    const { getSupabaseClient } = await import("@/storage/database/supabase-client");
+    const supabase = getSupabaseClient();
+    const { data } = await supabase
+      .from("app_settings")
+      .select("key, value")
+      .eq("key", "llm_web_search_enabled")
+      .maybeSingle();
+
+    if (data?.value != null && String(data.value).trim() !== "") {
+      return isWebSearchFlagEnabled(data.value, true);
+    }
+  } catch {
+    /* fall through to env */
+  }
+  return isWebSearchFlagEnabled(process.env.LLM_WEB_SEARCH, true);
+}
+
+function extractResponsesOutputText(data: unknown): string {
+  if (!data || typeof data !== "object") return "";
+  const obj = data as Record<string, unknown>;
+
+  if (typeof obj.output_text === "string" && obj.output_text.trim()) {
+    return obj.output_text.trim();
+  }
+
+  if (Array.isArray(obj.output)) {
+    const parts: string[] = [];
+    for (const item of obj.output) {
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      if (row.type === "message" && Array.isArray(row.content)) {
+        for (const c of row.content) {
+          if (!c || typeof c !== "object") continue;
+          const part = c as Record<string, unknown>;
+          if ((part.type === "output_text" || part.type === "text") && typeof part.text === "string") {
+            parts.push(part.text);
+          }
+        }
+      }
+      if ((row.type === "output_text" || row.type === "text") && typeof row.text === "string") {
+        parts.push(row.text);
+      }
+    }
+    if (parts.length > 0) return parts.join("\n").trim();
+  }
+
+  return "";
+}
+
+function extractChatContent(data: unknown): string {
+  if (!data || typeof data !== "object") return "";
+  const obj = data as Record<string, unknown>;
+  const choices = obj.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return "";
+  const first = choices[0] as Record<string, unknown> | undefined;
+  const message = first?.message as Record<string, unknown> | undefined;
+  const content = message?.content;
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => {
+        if (typeof c === "string") return c;
+        if (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string") {
+          return (c as { text: string }).text;
+        }
+        return "";
+      })
+      .join("")
+      .trim();
+  }
+  return "";
+}
+
+function summaryToResults(text: string): WebSearchResult[] {
+  return [{ title: "赛前新闻摘要", snippet: text, url: "" }];
+}
+
+/**
+ * 通道 B：用当前 LLM（OpenAI 兼容中转 / Grok /xAI）做联网搜索。
+ * 按顺序尝试：Responses web_search → Chat search_parameters → Chat tools web_search。
+ * 任一步成功即返回；全部失败 return null。失败只 warn，不抛到上层。
+ * 超时固定 20s，避免拖死 AI 分析。
+ */
+export async function llmModelWebSearch(query: string): Promise<WebSearchResult[] | null> {
+  let apiKey = "";
+  let baseUrl = "";
+  let model = "";
+  try {
+    const cfg = await loadLLMConfig();
+    apiKey = cfg.apiKey;
+    baseUrl = cfg.baseUrl;
+    model = cfg.model;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[llmModelWebSearch] LLM 配置不可用: ${msg.slice(0, 160)}`);
+    return null;
+  }
+
+  const userPrompt =
+    `请联网搜索并摘要以下足球赛事的赛前新闻（伤停、阵容、近期状态、关键情报）。` +
+    `用中文简洁列出要点，不要编造。查询：${query}`;
+  const systemPrompt =
+    "你是足球赛前情报助手。请基于联网搜索结果，用中文摘要伤停、阵容与赛前分析，不要编造。";
+
+  // 1) OpenAI Responses + tools web_search
+  try {
+    const targetUrl = `${baseUrl}/responses`;
+    const res = await safeOutboundFetch(targetUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -266,45 +383,147 @@ async function openAIWebSearch(
       },
       body: JSON.stringify({
         model,
-        input: `请联网搜索并摘要以下足球比赛相关新闻，重点关注伤停、阵容、赛前动态、盘口相关消息。查询：${query}`,
+        input: userPrompt,
         tools: [{ type: "web_search" }],
-        max_output_tokens: 500,
+        max_output_tokens: 600,
       }),
     }, "llm");
 
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const texts: string[] = [];
-    for (const item of data.output || []) {
-      if (item.type !== "message") continue;
-      for (const content of item.content || []) {
-        if (content.type === "output_text" && content.text) texts.push(content.text);
+    if (res.ok) {
+      const data = await res.json();
+      const text = extractResponsesOutputText(data);
+      if (text) {
+        console.info("[llmModelWebSearch] channel responses ok");
+        return summaryToResults(text);
       }
+      console.warn("[llmModelWebSearch] responses: empty output_text");
+    } else {
+      const errBody = await res.text().catch(() => "");
+      console.warn(
+        `[llmModelWebSearch] responses HTTP ${res.status}: ${errBody.slice(0, 160)}`,
+      );
     }
-
-    const summary = texts.join("\n").trim();
-    if (!summary) return null;
-
-    return [{
-      title: "OpenAI 联网搜索摘要",
-      snippet: summary,
-      url: "",
-    }].slice(0, maxResults);
-  } catch {
-    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[llmModelWebSearch] responses failed: ${msg.slice(0, 160)}`);
   }
+
+  // 2) Chat Completions + search_parameters（Grok / xAI 风格；4xx 则跳过）
+  try {
+    const targetUrl = `${baseUrl}/chat/completions`;
+    const res = await safeOutboundFetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        search_parameters: { mode: "on", return_citations: true },
+        max_tokens: 600,
+        temperature: 0.2,
+      }),
+    }, "llm");
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = extractChatContent(data);
+      if (text) {
+        console.info("[llmModelWebSearch] channel search_parameters ok");
+        return summaryToResults(text);
+      }
+      console.warn("[llmModelWebSearch] search_parameters: empty content");
+    } else if (res.status >= 400 && res.status < 500) {
+      const errBody = await res.text().catch(() => "");
+      console.warn(
+        `[llmModelWebSearch] search_parameters 4xx ${res.status}, skip: ${errBody.slice(0, 120)}`,
+      );
+    } else {
+      const errBody = await res.text().catch(() => "");
+      console.warn(
+        `[llmModelWebSearch] search_parameters HTTP ${res.status}: ${errBody.slice(0, 160)}`,
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[llmModelWebSearch] search_parameters failed: ${msg.slice(0, 160)}`);
+  }
+
+  // 3) Chat Completions + tools web_search（原生或 function 风格）
+  try {
+    const targetUrl = `${baseUrl}/chat/completions`;
+    const res = await safeOutboundFetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        tools: [
+          { type: "web_search" },
+          {
+            type: "function",
+            function: {
+              name: "web_search",
+              description: "Search the web for recent news",
+              parameters: {
+                type: "object",
+                properties: {
+                  query: { type: "string" },
+                },
+                required: ["query"],
+              },
+            },
+          },
+        ],
+        max_tokens: 600,
+        temperature: 0.2,
+      }),
+    }, "llm");
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = extractChatContent(data);
+      if (text) {
+        console.info("[llmModelWebSearch] channel chat tools web_search ok");
+        return summaryToResults(text);
+      }
+      console.warn("[llmModelWebSearch] chat tools: empty content");
+    } else {
+      const errBody = await res.text().catch(() => "");
+      console.warn(
+        `[llmModelWebSearch] chat tools HTTP ${res.status}: ${errBody.slice(0, 160)}`,
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[llmModelWebSearch] chat tools failed: ${msg.slice(0, 160)}`);
+  }
+
+  return null;
 }
 
 /**
- * Web search — simple wrapper using search API
- * Falls back to OpenAI Responses web_search when no search API is configured
+ * 双通道 Web 搜索（赛前新闻）
+ *
+ * 通道 A（可选优先）：专用 SEARCH_API_KEY + SEARCH_BASE_URL；有结果即返回。
+ * 通道 B（默认启用）：当前 LLM 配置做模型联网（Responses / Grok search_parameters / tools）。
+ * 全部失败 return null。
  */
 export async function webSearch(
   query: string,
   maxResults: number = 5
-): Promise<{ title: string; snippet: string; url: string }[] | null> {
-  // Try DB settings first
+): Promise<WebSearchResult[] | null> {
+  // --- 通道 A：专用搜索 API ---
   let searchApiKey = "";
   let searchBaseUrl = "";
 
@@ -324,32 +543,45 @@ export async function webSearch(
     }
   } catch { /* fall through */ }
 
-  // Fallback to env vars
   if (!searchApiKey) searchApiKey = process.env.SEARCH_API_KEY || "";
   if (!searchBaseUrl) searchBaseUrl = process.env.SEARCH_BASE_URL || "";
 
-  if (!searchApiKey || !searchBaseUrl) {
-    return openAIWebSearch(query, maxResults);
+  if (searchApiKey && searchBaseUrl) {
+    try {
+      const res = await safeOutboundFetch(`${searchBaseUrl}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${searchApiKey}`,
+        },
+        body: JSON.stringify({
+          query,
+          max_results: maxResults,
+        }),
+      }, "search");
+
+      if (res.ok) {
+        const data = await res.json();
+        const results = (data.results || data.web_items || null) as WebSearchResult[] | null;
+        if (Array.isArray(results) && results.length > 0) {
+          console.info(`[webSearch] channel A (dedicated search) ok, n=${results.length}`);
+          return results;
+        }
+        console.warn("[webSearch] channel A returned no results, try channel B");
+      } else {
+        console.warn(`[webSearch] channel A HTTP ${res.status}, try channel B`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[webSearch] channel A failed, try channel B: ${msg.slice(0, 160)}`);
+    }
   }
 
-  try {
-    const res = await safeOutboundFetch(`${searchBaseUrl}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${searchApiKey}`,
-      },
-      body: JSON.stringify({
-        query,
-        max_results: maxResults,
-      }),
-    }, "search");
-
-    if (!res.ok) return openAIWebSearch(query, maxResults);
-
-    const data = await res.json();
-    return data.results || data.web_items || openAIWebSearch(query, maxResults);
-  } catch {
-    return openAIWebSearch(query, maxResults);
+  // --- 通道 B：模型联网搜索 ---
+  if (!(await isLLMWebSearchEnabled())) {
+    console.warn("[webSearch] channel B disabled (llm_web_search_enabled / LLM_WEB_SEARCH)");
+    return null;
   }
+
+  return llmModelWebSearch(query);
 }

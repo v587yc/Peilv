@@ -8,6 +8,7 @@ export const SETTING_DEFINITIONS = [
   { key: "llm_api_key", label: "LLM API Key", sensitive: true, env: "LLM_API_KEY", effectiveAfter: "cache-refresh" },
   { key: "llm_base_url", label: "LLM 服务地址", sensitive: false, env: "LLM_BASE_URL", defaultValue: LLM_DEFAULT_BASE_URL, effectiveAfter: "cache-refresh" },
   { key: "llm_model", label: "LLM 模型", sensitive: false, env: "LLM_MODEL", defaultValue: LLM_DEFAULT_MODEL, effectiveAfter: "cache-refresh" },
+  { key: "llm_web_search_enabled", label: "模型联网搜索", sensitive: false, env: "LLM_WEB_SEARCH", defaultValue: "true", effectiveAfter: "immediate" },
   { key: "search_api_key", label: "搜索 API Key", sensitive: true, env: "SEARCH_API_KEY", effectiveAfter: "immediate" },
   { key: "search_base_url", label: "搜索服务地址", sensitive: false, env: "SEARCH_BASE_URL", effectiveAfter: "immediate" },
   { key: "feishu_webhook_url", label: "飞书 Webhook", sensitive: true, env: "FEISHU_WEBHOOK_URL", effectiveAfter: "cache-refresh" },
@@ -27,6 +28,12 @@ export function createSupabaseSettingsRepository(client: SupabaseClient): Settin
 
 export function validateSettingValue(key: SettingKey, value: unknown): string {
   if (typeof value !== "string" || value.length > 4096) throw new Error(`设置 ${key} 的值无效`);
+  if (key === "llm_web_search_enabled") {
+    const raw = value.trim().toLowerCase();
+    if (["0", "false", "off", "no"].includes(raw)) return "false";
+    if (["1", "true", "on", "yes"].includes(raw)) return "true";
+    throw new Error("设置 llm_web_search_enabled 必须是 true/false");
+  }
   if (key.endsWith("_base_url") || key === "feishu_webhook_url") {
     const kind: OutboundUrlKind = key === "llm_base_url" ? "llm" : key === "search_base_url" ? "search" : "feishu";
     try { assertOutboundUrl(value, kind); } catch (error) {
