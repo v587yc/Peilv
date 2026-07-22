@@ -14,6 +14,7 @@ interface ConfigData {
     llm_api_key: string;
     llm_base_url: string;
     llm_model: string;
+    llm_web_search_enabled?: string;
     search_api_key: string;
     search_base_url: string;
   };
@@ -21,6 +22,7 @@ interface ConfigData {
     LLM_API_KEY: string;
     LLM_BASE_URL: string;
     LLM_MODEL: string;
+    LLM_WEB_SEARCH?: string;
     COZE_SUPABASE_URL: string;
   };
   ready: boolean;
@@ -45,6 +47,8 @@ export default function TestAIPage() {
   const [formModel, setFormModel] = useState("");
   const [formSearchKey, setFormSearchKey] = useState("");
   const [formSearchUrl, setFormSearchUrl] = useState("");
+  /** 启用模型联网搜索（Grok/OpenAI），默认开 */
+  const [formWebSearchEnabled, setFormWebSearchEnabled] = useState(true);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -57,6 +61,12 @@ export default function TestAIPage() {
       if (data.db.llm_model) setFormModel(data.db.llm_model);
       else if (data.env.LLM_MODEL) setFormModel(data.env.LLM_MODEL);
       if (data.db.search_base_url) setFormSearchUrl(data.db.search_base_url);
+      // 模型联网：DB 已解析为 "true"/"false"，默认 true
+      if (data.db?.llm_web_search_enabled != null) {
+        setFormWebSearchEnabled(data.db.llm_web_search_enabled !== "false");
+      } else {
+        setFormWebSearchEnabled(true);
+      }
     } catch {
       setConfig(null);
     }
@@ -70,17 +80,15 @@ export default function TestAIPage() {
     setSaveMsg("");
     setError("");
     try {
-      const payload: Record<string, string> = {};
+      const payload: Record<string, string> = {
+        // 联网开关始终随保存写入
+        llm_web_search_enabled: formWebSearchEnabled ? "true" : "false",
+      };
       if (formApiKey) payload.llm_api_key = formApiKey;
       if (formBaseUrl) payload.llm_base_url = formBaseUrl;
       if (formModel) payload.llm_model = formModel;
       if (formSearchKey) payload.search_api_key = formSearchKey;
       if (formSearchUrl) payload.search_base_url = formSearchUrl;
-
-      if (Object.keys(payload).length === 0) {
-        setError("请至少填写一项配置");
-        return;
-      }
 
       const res = await fetch("/api/test-llm", {
         method: "POST",
@@ -253,12 +261,33 @@ export default function TestAIPage() {
             </div>
 
             <Separator className="bg-gray-700" />
-            <p className="text-xs text-gray-500">以下为可选的联网搜索配置（不填则跳过新闻搜索）</p>
+            <p className="text-xs text-gray-500">
+              赛前新闻搜索：优先专用 Search API；未配置时仍可用「模型联网」（Grok/OpenAI 兼容中转）
+            </p>
+
+            {/* 模型联网搜索开关 */}
+            <div className="flex items-start gap-3 rounded-md border border-gray-700 bg-[#1a1f2e]/60 px-3 py-3">
+              <input
+                id="llm-web-search-enabled"
+                type="checkbox"
+                checked={formWebSearchEnabled}
+                onChange={(e) => setFormWebSearchEnabled(e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-600 bg-[#0a0e17] text-emerald-600 focus:ring-emerald-500"
+              />
+              <div className="flex-1">
+                <Label htmlFor="llm-web-search-enabled" className="text-gray-200 cursor-pointer">
+                  启用模型联网搜索（Grok/OpenAI）
+                </Label>
+                <p className="text-xs text-gray-500 mt-1">
+                  默认开启。未配专用 Search API 时，AI 分析仍会用当前 LLM 做联网赛前新闻摘要（Responses / search_parameters / tools）。超时 20 秒，失败不阻塞分析。
+                </p>
+              </div>
+            </div>
 
             {/* Search API Key */}
             <div>
               <Label className="text-gray-400">
-                Search API Key
+                Search API Key（可选，专用搜索通道）
                 {config?.db.search_api_key && (
                   <span className="ml-2 text-emerald-400 text-xs">(已保存: {config.db.search_api_key})</span>
                 )}
@@ -274,7 +303,7 @@ export default function TestAIPage() {
 
             {/* Search Base URL */}
             <div>
-              <Label className="text-gray-400">Search Base URL</Label>
+              <Label className="text-gray-400">Search Base URL（可选）</Label>
               <Input
                 value={formSearchUrl}
                 onChange={(e) => setFormSearchUrl(e.target.value)}
