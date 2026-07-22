@@ -345,11 +345,36 @@ function summaryToResults(text: string): WebSearchResult[] {
   return [{ title: "赛前新闻摘要", snippet: text, url: "" }];
 }
 
+/** Per-attempt budget for model web search (does not use full LLM 90s). */
+const LLM_WEB_SEARCH_ATTEMPT_TIMEOUT_MS = 20_000;
+
+function isXaiOrGrokEndpoint(baseUrl: string, model: string): boolean {
+  const host = baseUrl.toLowerCase();
+  const m = model.toLowerCase();
+  return host.includes("api.x.ai") || host.includes("x.ai/") || m.includes("grok");
+}
+
+function isDeprecatedLiveSearchError(status: number, body: string): boolean {
+  if (status < 400 || status >= 500) return false;
+  const t = body.toLowerCase();
+  return (
+    t.includes("live search is deprecated") ||
+    t.includes("agent tools api") ||
+    (t.includes("search_parameters") && t.includes("deprecated"))
+  );
+}
+
 /**
- * 通道 B：用当前 LLM（OpenAI 兼容中转 / Grok /xAI）做联网搜索。
- * 按顺序尝试：Responses web_search → Chat search_parameters → Chat tools web_search。
- * 任一步成功即返回；全部失败 return null。失败只 warn，不抛到上层。
- * 超时固定 20s，避免拖死 AI 分析。
+ * 通道 B：用当前 LLM 做联网搜索（需 Bearer API Key，不是免密钥）。
+ *
+ * xAI / Grok（官方文档）：
+ * - 正确路径：POST /v1/responses + tools: [{ type: "web_search" }]（Agent Tools）
+ * - 已废弃：chat + search_parameters（Live Search）→ 会 401 + deprecation 文案
+ *
+ * 其它 OpenAI 兼容中转：先试 /responses + web_search，再试 chat + tools web_search。
+ * 默认 **不再调用** search_parameters，避免 Grok 固定 401 噪声。
+ * 任一步成功即返回；全部失败 return null。失败只 warn。
+ * 单次尝试约 20s 超时，避免拖死 AI 分析。
  */
 export async function llmModelWebSearch(query: string): Promise<WebSearchResult[] | null> {
   let apiKey = "";
@@ -371,8 +396,14 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
     `用中文简洁列出要点，不要编造。查询：${query}`;
   const systemPrompt =
     "你是足球赛前情报助手。请基于联网搜索结果，用中文摘要伤停、阵容与赛前分析，不要编造。";
+  const grokLike = isXaiOrGrokEndpoint(baseUrl, model);
+  if (grokLike) {
+    console.info("[llmModelWebSearch] provider=xai/grok → Agent Tools only (skip deprecated Live Search / search_parameters)");
+  }
 
-  // 1) OpenAI Responses + tools web_search
+  const attemptSignal = () => AbortSignal.timeout(LLM_WEB_SEARCH_ATTEMPT_TIMEOUT_MS);
+
+  // 1) Responses API + built-in web_search tool（OpenAI / xAI Agent Tools 主路径）
   try {
     const targetUrl = `${baseUrl}/responses`;
     const res = await safeOutboundFetch(targetUrl, {
@@ -387,6 +418,7 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
         tools: [{ type: "web_search" }],
         max_output_tokens: 600,
       }),
+      signal: attemptSignal(),
     }, "llm");
 
     if (res.ok) {
@@ -399,16 +431,23 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
       console.warn("[llmModelWebSearch] responses: empty output_text");
     } else {
       const errBody = await res.text().catch(() => "");
-      console.warn(
-        `[llmModelWebSearch] responses HTTP ${res.status}: ${errBody.slice(0, 160)}`,
-      );
+      if (isDeprecatedLiveSearchError(res.status, errBody)) {
+        console.warn(
+          `[llmModelWebSearch] responses reported deprecation/auth issue ${res.status} (not treated as missing key alone): ${errBody.slice(0, 160)}`,
+        );
+      } else {
+        console.warn(
+          `[llmModelWebSearch] responses HTTP ${res.status}: ${errBody.slice(0, 160)}`,
+        );
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[llmModelWebSearch] responses failed: ${msg.slice(0, 160)}`);
   }
 
-  // 2) Chat Completions + search_parameters（Grok / xAI 风格；4xx 则跳过）
+  // 2) Chat Completions + tools web_search（部分中转只支持 chat）
+  //    不再默认调用 search_parameters：xAI Live Search 已废弃，会返回 401 + deprecation。
   try {
     const targetUrl = `${baseUrl}/chat/completions`;
     const res = await safeOutboundFetch(targetUrl, {
@@ -423,71 +462,11 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        search_parameters: { mode: "on", return_citations: true },
+        tools: [{ type: "web_search" }],
         max_tokens: 600,
         temperature: 0.2,
       }),
-    }, "llm");
-
-    if (res.ok) {
-      const data = await res.json();
-      const text = extractChatContent(data);
-      if (text) {
-        console.info("[llmModelWebSearch] channel search_parameters ok");
-        return summaryToResults(text);
-      }
-      console.warn("[llmModelWebSearch] search_parameters: empty content");
-    } else if (res.status >= 400 && res.status < 500) {
-      const errBody = await res.text().catch(() => "");
-      console.warn(
-        `[llmModelWebSearch] search_parameters 4xx ${res.status}, skip: ${errBody.slice(0, 120)}`,
-      );
-    } else {
-      const errBody = await res.text().catch(() => "");
-      console.warn(
-        `[llmModelWebSearch] search_parameters HTTP ${res.status}: ${errBody.slice(0, 160)}`,
-      );
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[llmModelWebSearch] search_parameters failed: ${msg.slice(0, 160)}`);
-  }
-
-  // 3) Chat Completions + tools web_search（原生或 function 风格）
-  try {
-    const targetUrl = `${baseUrl}/chat/completions`;
-    const res = await safeOutboundFetch(targetUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        tools: [
-          { type: "web_search" },
-          {
-            type: "function",
-            function: {
-              name: "web_search",
-              description: "Search the web for recent news",
-              parameters: {
-                type: "object",
-                properties: {
-                  query: { type: "string" },
-                },
-                required: ["query"],
-              },
-            },
-          },
-        ],
-        max_tokens: 600,
-        temperature: 0.2,
-      }),
+      signal: attemptSignal(),
     }, "llm");
 
     if (res.ok) {
@@ -497,16 +476,73 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
         console.info("[llmModelWebSearch] channel chat tools web_search ok");
         return summaryToResults(text);
       }
-      console.warn("[llmModelWebSearch] chat tools: empty content");
+      console.warn("[llmModelWebSearch] chat tools: empty content (tool_calls-only responses are not executed)");
     } else {
       const errBody = await res.text().catch(() => "");
-      console.warn(
-        `[llmModelWebSearch] chat tools HTTP ${res.status}: ${errBody.slice(0, 160)}`,
-      );
+      if (isDeprecatedLiveSearchError(res.status, errBody)) {
+        console.warn(
+          `[llmModelWebSearch] chat tools: Live Search/Agent Tools deprecation ${res.status}: ${errBody.slice(0, 160)}`,
+        );
+      } else {
+        console.warn(
+          `[llmModelWebSearch] chat tools HTTP ${res.status}: ${errBody.slice(0, 160)}`,
+        );
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[llmModelWebSearch] chat tools failed: ${msg.slice(0, 160)}`);
+  }
+
+  // 3) Legacy Live Search (search_parameters) — only for non-Grok gateways that still document it.
+  //    Explicitly skipped for xAI/Grok to avoid guaranteed 401 noise.
+  if (!grokLike && process.env.LLM_ALLOW_LEGACY_SEARCH_PARAMETERS === "1") {
+    try {
+      const targetUrl = `${baseUrl}/chat/completions`;
+      const res = await safeOutboundFetch(targetUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          search_parameters: { mode: "on", return_citations: true },
+          max_tokens: 600,
+          temperature: 0.2,
+        }),
+        signal: attemptSignal(),
+      }, "llm");
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = extractChatContent(data);
+        if (text) {
+          console.info("[llmModelWebSearch] channel legacy search_parameters ok");
+          return summaryToResults(text);
+        }
+      } else {
+        const errBody = await res.text().catch(() => "");
+        if (isDeprecatedLiveSearchError(res.status, errBody)) {
+          console.warn(
+            `[llmModelWebSearch] legacy search_parameters deprecated ${res.status}: ${errBody.slice(0, 160)}`,
+          );
+        } else {
+          console.warn(
+            `[llmModelWebSearch] legacy search_parameters HTTP ${res.status}: ${errBody.slice(0, 160)}`,
+          );
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[llmModelWebSearch] legacy search_parameters failed: ${msg.slice(0, 160)}`);
+    }
+  } else if (grokLike) {
+    console.info("[llmModelWebSearch] skipped deprecated Live Search (search_parameters) for Grok/xAI");
   }
 
   return null;
@@ -516,7 +552,7 @@ export async function llmModelWebSearch(query: string): Promise<WebSearchResult[
  * 双通道 Web 搜索（赛前新闻）
  *
  * 通道 A（可选优先）：专用 SEARCH_API_KEY + SEARCH_BASE_URL；有结果即返回。
- * 通道 B（默认启用）：当前 LLM 配置做模型联网（Responses / Grok search_parameters / tools）。
+ * 通道 B（默认启用）：当前 LLM 配置做模型联网（Agent Tools / Responses web_search；Grok 不再走 Live Search）。
  * 全部失败 return null。
  */
 export async function webSearch(

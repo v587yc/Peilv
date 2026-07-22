@@ -24,7 +24,8 @@ type Resolver = (hostname: string) => Promise<ResolvedAddress[]>;
 
 const DEFAULT_ALLOWED_HOSTS: Record<OutboundUrlKind, readonly string[]> = {
   "fetch-url": ["coze.cn", "www.coze.cn"],
-  llm: ["api.openai.com"],
+  // Official OpenAI + xAI (Grok Agent Tools / chat). Other gateways still need ADMIN_OUTBOUND_ALLOWED_HOSTS.
+  llm: ["api.openai.com", "api.x.ai"],
   search: ["api.tavily.com"],
   feishu: ["open.feishu.cn", "open.larksuite.com"],
 };
